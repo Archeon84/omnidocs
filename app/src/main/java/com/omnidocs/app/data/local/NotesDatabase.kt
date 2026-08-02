@@ -1,0 +1,145 @@
+package com.omnidocs.app.data.local
+
+import android.content.Context
+import android.util.Base64
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.omnidocs.app.data.local.entity.NoteEntity
+import com.omnidocs.app.data.local.entity.NoteFtsEntity
+import net.sqlcipher.database.SQLiteDatabase
+import net.sqlcipher.database.SupportFactory
+import java.io.File
+import java.security.SecureRandom
+
+@Database(entities = [NoteEntity::class, NoteFtsEntity::class], version = 4, exportSchema = false)
+abstract class NotesDatabase : RoomDatabase() {
+    abstract fun noteDao(): NoteDao
+
+    companion object {
+        @Volatile
+        private var INSTANCE: NotesDatabase? = null
+
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN isDeleted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE VIRTUAL TABLE IF NOT EXISTS `notes_fts` USING fts4(
+                        content=`notes`,
+                        `title`,
+                        `plainText`
+                    )"""
+                )
+                // Triggers keep the FTS token index in sync with the notes table
+                db.execSQL(
+                    """CREATE TRIGGER IF NOT EXISTS `notes_fts_ai` AFTER INSERT ON `notes` BEGIN
+                        INSERT INTO `notes_fts`(`docid`, `title`, `plainText`)
+                        VALUES (new.`rowid`, new.`title`, new.`plainText`);
+                    END"""
+                )
+                db.execSQL(
+                    """CREATE TRIGGER IF NOT EXISTS `notes_fts_ad` AFTER DELETE ON `notes` BEGIN
+                        DELETE FROM `notes_fts` WHERE `docid` = old.`rowid`;
+                    END"""
+                )
+                db.execSQL(
+                    """CREATE TRIGGER IF NOT EXISTS `notes_fts_au` AFTER UPDATE ON `notes` BEGIN
+                        DELETE FROM `notes_fts` WHERE `docid` = old.`rowid`;
+                        INSERT INTO `notes_fts`(`docid`, `title`, `plainText`)
+                        VALUES (new.`rowid`, new.`title`, new.`plainText`);
+                    END"""
+                )
+                // Populate FTS index with existing data
+                db.execSQL(
+                    "INSERT INTO `notes_fts`(`docid`, `title`, `plainText`) SELECT `rowid`, `title`, `plainText` FROM `notes` WHERE `isDeleted` = 0"
+                )
+            }
+        }
+
+        fun getDatabase(context: Context): NotesDatabase {
+            return INSTANCE ?: synchronized(this) {
+                // Initialize SQLCipher native libraries (only once)
+                SQLiteDatabase.loadLibs(context)
+
+                // Derive encryption passphrase
+                val password = getEncryptionPassword(context)
+                val passphraseBytes = SQLiteDatabase.getBytes(password.toCharArray())
+
+                // If the database file exists, verify that our current passphrase
+                // can open it. This handles the case where the passphrase was rotated
+                // or SharedPreferences was corrupted (e.g. during a prior failed
+                // KeyStore migration attempt).
+                val dbFile = context.getDatabasePath("notes_database")
+                if (dbFile.exists()) {
+                    try {
+                        val testDb = SQLiteDatabase.openDatabase(
+                            dbFile.absolutePath, password, null,
+                            SQLiteDatabase.OPEN_READONLY
+                        )
+                        testDb.close()
+                    } catch (e: Exception) {
+                        // Passphrase doesn't match — delete the stale database
+                        // so Room/SQLCipher can create a fresh one below
+                        dbFile.delete()
+                        File(dbFile.absolutePath + "-wal").delete()
+                        File(dbFile.absolutePath + "-shm").delete()
+                    }
+                }
+
+                // SupportFactory wraps SQLCipher's database to implement Room's
+                // SupportSQLiteOpenHelper interface — this is the official integration path.
+                val factory = SupportFactory(passphraseBytes)
+
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    NotesDatabase::class.java,
+                    "notes_database"
+                )
+                .openHelperFactory(factory)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .fallbackToDestructiveMigrationOnDowngrade()
+                .build()
+                INSTANCE = instance
+                instance
+            }
+        }
+
+        private const val KEY_LEGACY = "db_passphrase"
+
+        /**
+         * Returns a stable encryption passphrase for SQLCipher.
+         *
+         * Generates a random Base64-encoded 256-bit passphrase on first run and stores it
+         * in app-private SharedPreferences. The passphrase is prefixed with "omnidocs_db_"
+         * and passed to SQLCipher via its key-derivation function.
+         *
+         * Note: The passphrase is stored in plaintext SharedPreferences (not KeyStore-wrapped)
+         * because the database file itself is already encrypted by SQLCipher's built-in
+         * encryption. The SharedPreferences are app-private and inaccessible without root.
+         */
+        private fun getEncryptionPassword(context: Context): String {
+            val prefs = context.getSharedPreferences("crypto_prefs", Context.MODE_PRIVATE)
+            var passphrase = prefs.getString(KEY_LEGACY, null)
+            if (passphrase == null) {
+                val bytes = ByteArray(32)
+                SecureRandom().nextBytes(bytes)
+                passphrase = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                prefs.edit().putString(KEY_LEGACY, passphrase).apply()
+            }
+            return "omnidocs_db_${passphrase}"
+        }
+    }
+}

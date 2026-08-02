@@ -1,0 +1,26 @@
+# Build outputs
+app/build/
+build/
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Kotlin
+.kotlin/
+
+# Native build
+app/.cxx/
+
+# Models (download separately)
+app/src/main/assets/models/ocr/*.nb
+
+# Paddle Lite (downloaded)
+app/PaddleLite/
+
+# Cache
+.cache/
+*.log

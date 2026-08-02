@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Note Editor</title>
+    <style>
+        :root {
+            --color-text: #1a1a1a;
+            --color-bg: #ffffff;
+            --color-code-bg: #f0f0f0;
+            --color-quote-bg: #f9f9f9;
+            --color-quote-border: #ddd;
+            --color-border: #ddd;
+            --color-muted: #767676;
+            --color-link: #0066cc;
+            --color-th-bg: #f5f5f5;
+            --color-hr: #ddd;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            font-size: 16px;
+            line-height: 1.6;
+            color: var(--color-text);
+            background: var(--color-bg);
+            padding: 16px;
+            transition: background-color 0.15s ease, color 0.15s ease;
+        }
+
+        #editor {
+            outline: none;
+            min-height: calc(100vh - 100px);
+            padding: 8px;
+        }
+
+        #editor:empty:before {
+            content: "Start writing...";
+            color: var(--color-muted);
+            pointer-events: none;
+        }
+
+        #editor:focus {
+            outline: 2px solid var(--color-link);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 600;
+            margin: 16px 0 8px;
+            color: var(--color-text);
+        }
+
+        h2 {
+            font-size: 22px;
+            font-weight: 500;
+            margin: 14px 0 6px;
+            color: var(--color-text);
+        }
+
+        h3 {
+            font-size: 16px;
+            font-weight: 500;
+            margin: 12px 0 4px;
+            color: var(--color-text);
+        }
+
+        p {
+            margin: 8px 0;
+        }
+
+        ul, ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+
+        li {
+            margin: 4px 0;
+        }
+
+        blockquote {
+            border-left: 3px solid var(--color-quote-border);
+            margin: 8px 0;
+            padding: 8px 16px;
+            background: var(--color-quote-bg);
+            font-style: italic;
+        }
+
+        code {
+            background: var(--color-code-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 14px;
+        }
+
+        pre {
+            background: var(--color-code-bg);
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 8px 0;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+        }
+
+        hr {
+            border: none;
+            border-top: 1px solid var(--color-hr);
+            margin: 16px 0;
+        }
+
+        a {
+            color: var(--color-link);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin: 8px 0;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 8px 0;
+        }
+
+        th, td {
+            border: 1px solid var(--color-border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        th {
+            background: var(--color-th-bg);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div contenteditable="true" id="editor" role="textbox" aria-multiline="true" aria-label="Note content"><!-- CONTENT_PLACEHOLDER --></div>
+
+    <script>
+        const editor = document.getElementById('editor');
+
+        // Debounce timer for content sync
+        let debounceTimer;
+
+        // Debounce timer for format state sync
+        let formatStateTimer;
+
+        // Notify Android of content changes
+        editor.addEventListener('input', function() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(function() {
+                if (window.Android && window.Android.onContentChanged) {
+                    window.Android.onContentChanged(editor.innerHTML);
+                }
+            }, 300);
+        });
+
+        // Notify Android of format state changes (debounced selection change)
+        editor.addEventListener('keyup', function() { notifyFormatState(); });
+        editor.addEventListener('mouseup', function() { notifyFormatState(); });
+        editor.addEventListener('click', function() { notifyFormatState(); });
+
+        function notifyFormatState() {
+            clearTimeout(formatStateTimer);
+            formatStateTimer = setTimeout(function() {
+                if (window.Android && window.Android.onFormatStateChanged) {
+                    window.Android.onFormatStateChanged(JSON.stringify({
+                        bold: document.queryCommandState('bold'),
+                        italic: document.queryCommandState('italic'),
+                        underline: document.queryCommandState('underline'),
+                        strike: document.queryCommandState('strikeThrough'),
+                        orderedList: document.queryCommandState('insertOrderedList'),
+                        unorderedList: document.queryCommandState('insertUnorderedList')
+                    }));
+                }
+            }, 50);
+        }
+
+        // Set editor theme colors from Android
+        function setTheme(colors) {
+            // colors: { text, background, codeBg, quoteBg, quoteBorder, border, muted, link, thBg, hr }
+            const root = document.documentElement;
+            if (colors.text) root.style.setProperty('--color-text', colors.text);
+            if (colors.background) root.style.setProperty('--color-bg', colors.background);
+            if (colors.codeBg) root.style.setProperty('--color-code-bg', colors.codeBg);
+            if (colors.quoteBg) root.style.setProperty('--color-quote-bg', colors.quoteBg);
+            if (colors.quoteBorder) root.style.setProperty('--color-quote-border', colors.quoteBorder);
+            if (colors.border) root.style.setProperty('--color-border', colors.border);
+            if (colors.muted) root.style.setProperty('--color-muted', colors.muted);
+            if (colors.link) root.style.setProperty('--color-link', colors.link);
+            if (colors.thBg) root.style.setProperty('--color-th-bg', colors.thBg);
+            if (colors.hr) root.style.setProperty('--color-hr', colors.hr);
+        }
+
+        // Helper functions for formatting
+        function formatText(command, value) {
+            document.execCommand(command, false, value || null);
+            editor.focus();
+        }
+
+        function wrapSelection(before, after) {
+            const selection = window.getSelection();
+            if (selection.rangeCount) {
+                const range = selection.getRangeAt(0);
+                const selectedText = range.toString();
+                range.deleteContents();
+                range.insertNode(document.createTextNode(before + selectedText + after));
+            }
+        }
+
+        // Update content from Android
+        function updateContent(content) {
+            editor.innerHTML = content;
+        }
+
+        // Get content for Android
+        function getContent() {
+            return editor.innerHTML;
+        }
+
+        // Clear editor
+        function clearContent() {
+            editor.innerHTML = '';
+        }
+
+        // Insert HTML at cursor
+        function insertHtml(html) {
+            editor.focus();
+            document.execCommand('insertHTML', false, html);
+        }
+    </script>
+</body>
+</html>

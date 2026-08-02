@@ -1,0 +1,38 @@
+[
+  {
+    "file": "app/src/main/java/com/omnidocs/app/ai/LlamaCppService.kt",
+    "line": 91,
+    "summary": "TOCTOU race between modelLoaded check and modelMutex acquisition in generate()",
+    "failure_scenario": "Thread A calls generate(). Line 91 reads modelLoaded = true (model appears loaded). Before line 100 acquires modelMutex, Thread B calls unloadModel() which acquires modelMutex, calls nativeFree(), and sets modelLoaded = false. Thread A then acquires modelMutex, skips the isInitialized check (Kotlin field is never cleared by unloadModel), and calls nativeGenerate() at line 110. nativeGenerate() acquires g_llama_mutex at the C++ level and sees is_initialized = false (the C++ variable, which nativeFree set to false), returning an empty string. The Kotlin side converts this to null via result?.ifEmpty { null }. Result: AI feature silently returns null instead of a generated response, with no error logged at the Kotlin level. The existing deadlock-avoidance design (loading model before acquiring mutex at line 89) is correct, but there's no re-validation of modelLoaded inside the mutex after acquiring it."
+  },
+  {
+    "file": "app/src/main/java/com/omnidocs/app/ai/LlamaCppService.kt",
+    "line": 101,
+    "summary": "isInitialized check in generate() is ineffective because it's never set to false by unloadModel()",
+    "failure_scenario": "The Kotlin @Volatile var isInitialized is only set in the init block (when System.loadLibrary succeeds). unloadModel() calls nativeFree() which sets the C++ is_initialized to false, but the Kotlin field remains true forever. The guard at line 101 always passes after a successful init, providing no protection against calling nativeGenerate() when the native resources have been freed. The C++ g_llama_mutex and its own is_initialized check prevent a crash, but the Kotlin-side check is misleading dead code that gives a false sense of security."
+  },
+  {
+    "file": "app/src/main/java/com/omnidocs/app/ui/screens/home/HomeViewModel.kt",
+    "line": 143,
+    "summary": "InputStream leak in importFile() when mimeType does not match any known type",
+    "failure_scenario": "When importFile() is called with an unsupported MIME type, the else branch at line 143 executes return@withContext null. The InputStream opened at line 127 is never closed before this return. The text/plain branch correctly closes via bufferedReader().use {}, but the else branch has no such cleanup. Each import with an unsupported type leaks a file descriptor. Over many imports, this can exhaust the process's file descriptor limit (typically 1024 on Android), causing subsequent openInputStream() calls to fail with IOException."
+  },
+  {
+    "file": "app/src/main/java/com/omnidocs/app/ui/screens/home/HomeViewModel.kt",
+    "line": 184,
+    "summary": "InputStream leak in readDocFile() when doc.text() throws after HWPFDocument construction",
+    "failure_scenario": "HWPFDocument(inputStream) successfully reads the stream into memory. If doc.text at line 187 throws (e.g., corrupted document data), the exception is caught by the catch block at line 190, but doc.close() at line 188 is never reached. Apache POI's HWPFDocument.close() also closes the underlying InputStream. Without close(), the stream handle leaks. The catch block returns an error string but the stream resource is leaked until GC finalization (which may never run for InputStream)."
+  },
+  {
+    "file": "app/src/main/java/com/omnidocs/app/ui/screens/home/HomeViewModel.kt",
+    "line": 198,
+    "summary": "InputStream leak in readDocxFile() when processing throws after XWPFDocument construction",
+    "failure_scenario": "XWPFDocument(inputStream) successfully reads the stream into memory. If doc.paragraphs iteration (line 201-202) or any subsequent processing throws, the exception is caught by the catch block at line 206, but doc.close() at line 204 is never reached. The underlying InputStream is leaked. Same mechanism as readDocFile. Corrupted .docx files or memory-pressure failures during text extraction trigger this leak."
+  },
+  {
+    "file": "app/src/main/cpp/llama_jni.cpp",
+    "lines": "146, 179, 188, 225, 237",
+    "summary": "Format specifier %lld is correct for int64_t on all Android ABIs -- no bug here",
+    "failure_scenario": "No failure. std::chrono::duration_cast<std::chrono::milliseconds>(...).count() returns std::chrono::milliseconds::rep which is int64_t. The Android NDK (Bionic libc) defines int64_t as 'long long' consistently across all ABIs (arm, arm64, x86, x86_64). This is a deliberate design decision to avoid printf format portability issues. %lld is the correct format specifier on all four Android ABIs. There is also no buffer overflow in any format string: the prompt preview uses %.80s, model path uses %s with logcat's 1024-byte truncation, and all integral format specifiers (%d, %lld, %zu) match their argument types."
+  }
+]

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="database" path="notes_database" />
+        <include domain="sharedpref" path="." />
+        <include domain="file" path="attachments" />
+        <include domain="file" path="models" />
+        <exclude domain="root" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="notes_database" />
+        <include domain="sharedpref" path="." />
+        <include domain="file" path="attachments" />
+        <include domain="file" path="models" />
+        <exclude domain="root" />
+    </device-transfer>
+</data-extraction-rules>

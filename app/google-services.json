@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "73463739066",
+    "firebase_url": "https://omnidocs-d1f0e-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "omnidocs-d1f0e",
+    "storage_bucket": "omnidocs-d1f0e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:73463739066:android:a23be619cd2ab242a28883",
+        "android_client_info": {
+          "package_name": "com.omnidocs.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "73463739066-2403hqvjpuic3r3nevhlc7uq4lto8k04.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.omnidocs.app",
+            "certificate_hash": "81f61bd6a4e3c87d7ddf37347fd95029c6a6f692"
+          }
+        },
+        {
+          "client_id": "73463739066-avd29mrr41skn4ksakgqrpgfi4ne6m9e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDQ5mWl60rKZ1JGwOhNy6Gyra2BBVY1LJ4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "73463739066-avd29mrr41skn4ksakgqrpgfi4ne6m9e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
