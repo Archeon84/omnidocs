@@ -1,3 +1,6 @@
+import java.net.URL
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -26,6 +29,14 @@ android {
             // Only build for 64-bit ARM — the target device (Xiaomi 13 Ultra) is arm64,
             // and the ARM arch flags (armv8.6-a+dotprod+i8mm) are 64-bit only.
             abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags("-std=c++11 -frtti -fexceptions -Wno-format")
+                arguments("-DANDROID_PLATFORM=android-26", "-DANDROID_STL=c++_shared", "-DANDROID_ARM_NEON=TRUE")
+                abiFilters("arm64-v8a")
+            }
         }
     }
 
@@ -119,10 +130,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-auth:21.0.0")
     implementation("com.google.android.gms:play-services-auth-api-phone:18.0.2")
 
-    // ML Kit - Text Recognition (for OCR)
-    implementation("com.google.mlkit:text-recognition:16.0.0")
-    implementation("com.google.mlkit:text-recognition-chinese:16.0.0")
-
     // ML Kit - Document Scanner
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
 
@@ -169,4 +176,53 @@ dependencies {
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.02.00"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.room:room-testing:2.6.1")
+}
+
+// Paddle Lite native libraries download
+val paddleArchives = listOf(
+    mapOf(
+        "src" to "https://paddleocr.bj.bcebos.com/libs/paddle_lite_libs_v2_10.tar.gz",
+        "dest" to "${project.projectDir}/PaddleLite"
+    )
+)
+
+tasks.register("downloadPaddleLite", DefaultTask::class) {
+    doFirst {
+        println("Downloading Paddle Lite native libraries")
+    }
+    doLast {
+        val cachePath = file("${buildDir}/cache")
+        if (!cachePath.exists()) {
+            cachePath.mkdirs()
+        }
+        paddleArchives.forEach { archive ->
+            val messageDigest = MessageDigest.getInstance("MD5")
+            messageDigest.update(archive["src"]!!.toByteArray())
+            val cacheName = BigInteger(1, messageDigest.digest()).toString(32)
+            val destFile = file(archive["dest"]!!)
+            var copyFiles = !destFile.exists()
+            val cacheFile = file("${cachePath}/${cacheName}.tar.gz")
+            if (!cacheFile.exists()) {
+                // Use ant builder for downloading
+                val antBuilder = org.apache.tools.ant.Project()
+                antBuilder.init()
+                val getTask = org.apache.tools.ant.taskdefs.Get()
+                getTask.setProject(antBuilder)
+                getTask.setSrc(URL(archive["src"]!!))
+                getTask.setDest(cacheFile)
+                getTask.execute()
+                copyFiles = true
+            }
+            if (copyFiles) {
+                copy {
+                    from(tarTree(cacheFile))
+                    into(archive["dest"]!!)
+                }
+            }
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("downloadPaddleLite")
 }

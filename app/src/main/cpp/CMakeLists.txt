@@ -59,3 +59,36 @@ target_include_directories(llama-android PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
 )
+
+# ============================================================================
+# Paddle OCR JNI Bridge
+# ============================================================================
+
+# Set C++ standard for Paddle
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Paddle Lite libraries path
+# After downloading, the extracted structure is: PaddleLite/inference_lite_lib.android.armv8.clang.c++_shared/
+# Adjust these paths based on the actual extracted directory structure
+set(PADDLE_LITE_DIR "${CMAKE_SOURCE_DIR}/../PaddleLite")
+set(PADDLE_LITE_LIB_DIR "${PADDLE_LITE_DIR}/inference_lite_lib.android.armv8.clang.c++_shared/java/lib")
+set(PADDLE_LITE_INCLUDE_DIR "${PADDLE_LITE_DIR}/inference_lite_lib.android.armv8.clang.c++_shared/java/include")
+
+# Include Paddle Lite headers
+include_directories(${PADDLE_LITE_INCLUDE_DIR})
+
+# Add JNI bridge source
+add_library(paddle_ocr_jni SHARED paddle_ocr_jni.cpp)
+
+# Find required libraries
+find_library(log-lib log)
+find_library(android-lib android)
+
+# Link Paddle Lite
+target_link_libraries(
+    paddle_ocr_jni
+    ${PADDLE_LITE_LIB_DIR}/libpaddle_lite_jni.so
+    ${log-lib}
+    ${android-lib}
+)
