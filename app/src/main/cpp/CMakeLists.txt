@@ -85,11 +85,16 @@ add_library(paddle_ocr_jni SHARED paddle_ocr_jni.cpp)
 find_library(log-lib log)
 find_library(android-lib android)
 
-# NOTE: Paddle Lite .so is loaded at runtime via System.loadLibrary() in PaddleNative.kt.
-# We do NOT link it here because the prebuilt .so has symbol table issues with newer NDK linkers.
-# The JNI bridge uses dlopen/dlsym at runtime to resolve Paddle Lite symbols.
+# Link against Paddle Lite static library (symbol table in .so causes linker issues)
+set(PADDLE_LITE_CXX_LIB "${PADDLE_LITE_DIR}/cxx/libs/arm64-v8a/libpaddle_api_light_bundled.a")
+
+# Find OpenMP (needed by Paddle Lite)
+find_package(OpenMP REQUIRED)
+
 target_link_libraries(
     paddle_ocr_jni
+    ${PADDLE_LITE_CXX_LIB}
+    OpenMP::OpenMP_CXX
     ${log-lib}
     ${android-lib}
 )

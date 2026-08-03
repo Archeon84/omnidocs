@@ -46,7 +46,6 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.omnidocs.app.ocr.OcrBlock
 import com.omnidocs.app.ocr.OcrHtmlBuilder
-import com.omnidocs.app.ocr.PaddleNative
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -136,7 +135,10 @@ fun OcrScreen(
                         }
                     },
                     isFrozen = isFrozen,
-                    language = ocrLanguage
+                    language = ocrLanguage,
+                    recognizeFromFile = { filePath ->
+                        viewModel.recognizeFromFile(filePath)
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -587,7 +589,8 @@ fun OcrScreen(
 fun LiveCameraOcrView(
     onTextDetected: (String, String) -> Unit,
     isFrozen: Boolean,
-    language: String
+    language: String,
+    recognizeFromFile: suspend (String) -> Pair<String, String>?
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -610,26 +613,11 @@ fun LiveCameraOcrView(
     LaunchedEffect(isFrozen) {
         if (isFrozen && hasCapturedFrame.value && lastFrameFile.exists()) {
             try {
-                val engine = PaddleNative()
-                val result = engine.recognize(lastFrameFile.absolutePath, 0.5f)
-
-                if (result != null && result.isNotEmpty()) {
-                    val blocks = result.map { row ->
-                        OcrBlock(
-                            text = "Text",
-                            confidence = row[1],
-                            boundingBox = android.graphics.RectF(
-                                row[2], row[3], row[6], row[7]
-                            )
-                        )
-                    }
-
-                    val fullText = blocks.joinToString("\n") { it.text }
-                    val html = OcrHtmlBuilder.fromPlainText(fullText)
-
+                val result = recognizeFromFile(lastFrameFile.absolutePath)
+                if (result != null) {
+                    val (text, html) = result
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        ocrBlocks = blocks
-                        onTextDetected(fullText, html)
+                        onTextDetected(text, html)
                     }
                 }
             } catch (e: Exception) {

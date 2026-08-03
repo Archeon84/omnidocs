@@ -201,6 +201,24 @@ class OcrViewModel @Inject constructor(
         _recognizedText.value = _originalText.value
     }
 
+    /**
+     * Recognize text from a file path (used by live camera OCR).
+     * Returns Pair(text, html) or null on failure.
+     */
+    suspend fun recognizeFromFile(filePath: String): Pair<String, String>? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val engine = engineFactory.getEngine()
+                val uri = Uri.fromFile(java.io.File(filePath))
+                val result = engine.recognizeText(uri, _ocrLanguage.value)
+                result?.let { Pair(it.text, it.html) }
+            } catch (e: Exception) {
+                Log.e(TAG, "File recognition error", e)
+                null
+            }
+        }
+    }
+
     fun translateText(text: String, targetLang: String) {
         viewModelScope.launch {
             try {
