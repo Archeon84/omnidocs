@@ -4,6 +4,9 @@ build/
 .gradle/
 local.properties
 
+# Generated native libs (copied by Gradle task)
+app/src/main/jniLibs/
+
 # IDE
 .idea/
 *.iml
