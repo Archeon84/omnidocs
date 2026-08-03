@@ -235,13 +235,19 @@ class NllbTranslationService @Inject constructor(
 
     private suspend fun loadModel(): Boolean = withContext(Dispatchers.IO) {
         try {
-            // Use the active model for translation (same model as summarize/proofread/rewrite)
             val model = modelDownloadManager.getDownloadedModels().firstOrNull { it.isDownloaded }
                 ?: return@withContext false
 
-            Log.d(TAG, "Using ${model.name} for translation")
-            modelLoaded = true
-            true
+            // FIX: Actually load the model via llamaCppService
+            val loaded = llamaCppService.loadModel(model.id)
+            if (loaded) {
+                modelLoaded = true
+                Log.d(TAG, "Model loaded successfully: ${model.name}")
+                true
+            } else {
+                Log.e(TAG, "Failed to load model: ${model.name}")
+                false
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error loading model", e)
             false
