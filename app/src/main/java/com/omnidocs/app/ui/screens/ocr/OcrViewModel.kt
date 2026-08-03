@@ -52,6 +52,12 @@ class OcrViewModel @Inject constructor(
     private val _ocrError = MutableStateFlow<String?>(null)
     val ocrError: StateFlow<String?> = _ocrError.asStateFlow()
 
+    private val _originalText = MutableStateFlow("")
+    val originalText: StateFlow<String> = _originalText.asStateFlow()
+
+    private val _batchProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val batchProgress: StateFlow<Pair<Int, Int>?> = _batchProgress.asStateFlow()
+
     val supportedLanguages: Map<String, String> = engineFactory.getSupportedLanguages()
 
     override fun onCleared() {
@@ -86,6 +92,7 @@ class OcrViewModel @Inject constructor(
                 val result = engine.recognizeText(uri, _ocrLanguage.value)
 
                 if (result != null) {
+                    _originalText.value = result.text
                     _recognizedText.value = result.text
                     _recognizedHtml.value = result.html
 
@@ -129,6 +136,7 @@ class OcrViewModel @Inject constructor(
                 val result = engine.recognizeText(uri, _ocrLanguage.value)
 
                 if (result != null) {
+                    _originalText.value = result.text
                     _recognizedText.value = result.text
                     _recognizedHtml.value = result.html
 
@@ -148,6 +156,49 @@ class OcrViewModel @Inject constructor(
                 _isLoading.value = false
             }
         }
+    }
+
+    fun batchRecognizeText(uris: List<Uri>) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _ocrError.value = null
+            _batchProgress.value = 0 to uris.size
+            val allText = mutableListOf<String>()
+            val allHtml = mutableListOf<String>()
+
+            for ((index, uri) in uris.withIndex()) {
+                _batchProgress.value = index + 1 to uris.size
+                try {
+                    val engine = engineFactory.getEngine()
+                    val result = engine.recognizeText(uri, _ocrLanguage.value)
+                    result?.let {
+                        allText.add(it.text)
+                        allHtml.add(it.html)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Batch OCR error for image $index", e)
+                }
+            }
+
+            val combinedText = allText.joinToString("\n\n---\n\n")
+            val combinedHtml = allHtml.joinToString("\n\n<hr>\n\n")
+            _originalText.value = combinedText
+            _recognizedText.value = combinedText
+            _recognizedHtml.value = combinedHtml
+            _batchProgress.value = null
+            _isLoading.value = false
+
+            // Auto-translate if target is set
+            if (combinedText.isNotEmpty()) {
+                _translationTarget.value?.let { targetLang ->
+                    translateText(combinedText, targetLang)
+                }
+            }
+        }
+    }
+
+    fun resetToOriginal() {
+        _recognizedText.value = _originalText.value
     }
 
     fun translateText(text: String, targetLang: String) {

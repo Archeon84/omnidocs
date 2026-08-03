@@ -1,12 +1,16 @@
 package com.omnidocs.app.ui.screens.ocr
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -70,10 +74,15 @@ fun OcrScreen(
     val translationTarget by viewModel.translationTarget.collectAsState()
     val translatedText by viewModel.translatedText.collectAsState()
     val ocrError by viewModel.ocrError.collectAsState()
+    val originalText by viewModel.originalText.collectAsState()
+    val batchProgress by viewModel.batchProgress.collectAsState()
     var showLiveCamera by remember { mutableStateOf(false) }
     var liveDetectedText by remember { mutableStateOf("") }
     var liveDetectedHtml by remember { mutableStateOf("") }
     var isFrozen by remember { mutableStateOf(false) }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     val cameraPermissionState = rememberPermissionState(Manifest.permission.CAMERA)
 
@@ -83,6 +92,14 @@ fun OcrScreen(
         uri?.let {
             viewModel.setImageUri(it)
             viewModel.recognizeTextFromImage(it)
+        }
+    }
+
+    val batchGalleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(10)
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            viewModel.batchRecognizeText(uris)
         }
     }
 
@@ -104,7 +121,8 @@ fun OcrScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -403,12 +421,34 @@ fun OcrScreen(
                     }
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Batch scan button
+                OutlinedButton(
+                    onClick = { batchGalleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                ) {
+                    Icon(Icons.Default.Collections, null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Batch Scan (Multiple Images)", style = MaterialTheme.typography.labelMedium)
+                }
+
                 Spacer(modifier = Modifier.height(24.dp))
 
                 if (isLoading) {
-                    CircularProgressIndicator()
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Recognizing text...")
+                    if (batchProgress != null) {
+                        val (current, total) = batchProgress!!
+                        LinearProgressIndicator(
+                            progress = { current.toFloat() / total },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Processing image $current of $total...")
+                    } else {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Recognizing text...")
+                    }
                 }
 
                 ocrError?.let { error ->
@@ -439,13 +479,23 @@ fun OcrScreen(
                 }
 
                 if (recognizedText.isNotEmpty()) {
-                    Text(
-                        text = "Recognized Text:",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics { liveRegion = LiveRegionMode.Polite },
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    // Word count and confidence info
+                    val wordCount = recognizedText.split("\\s+".toRegex()).filter { it.isNotEmpty() }.size
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Recognized Text:",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "$wordCount words",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
 
                     OutlinedTextField(
@@ -479,21 +529,57 @@ fun OcrScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Button(
-                        onClick = {
-                            val textToShow = if (translatedText.isNotEmpty()) translatedText else recognizedText
-                            val html = viewModel.recognizedHtml.value
-                            if (html.isNotEmpty() && translatedText.isEmpty()) {
-                                onTextExtracted(html)
-                            } else {
-                                onTextExtracted("<p>${textToShow.replace("\n", "</p><p>")}</p>")
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
+                    // Action buttons row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.Check, null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (translatedText.isNotEmpty()) "Use Translated Text" else "Use This Text")
+                        // Copy button
+                        OutlinedButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("OCR Text", recognizedText)
+                                clipboard.setPrimaryClip(clip)
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("Text copied to clipboard")
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Copy", style = MaterialTheme.typography.labelMedium)
+                        }
+
+                        // Reset button (only show if text was edited)
+                        if (recognizedText != originalText) {
+                            OutlinedButton(
+                                onClick = { viewModel.resetToOriginal() },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Reset", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        // Use text button
+                        Button(
+                            onClick = {
+                                val textToShow = if (translatedText.isNotEmpty()) translatedText else recognizedText
+                                val html = viewModel.recognizedHtml.value
+                                if (html.isNotEmpty() && translatedText.isEmpty()) {
+                                    onTextExtracted(html)
+                                } else {
+                                    onTextExtracted("<p>${textToShow.replace("\n", "</p><p>")}</p>")
+                                }
+                            },
+                            modifier = Modifier.weight(1.5f)
+                        ) {
+                            Icon(Icons.Default.Check, null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (translatedText.isNotEmpty()) "Use Translated" else "Use Text")
+                        }
                     }
                 }
             }
