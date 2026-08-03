@@ -13,8 +13,10 @@ class PaddleNative {
     companion object {
         init {
             try {
+                // Load Paddle Lite runtime first, then our JNI bridge
+                System.loadLibrary("paddle_lite_jni")
                 System.loadLibrary("paddle_ocr_jni")
-                Log.d(TAG, "Native library loaded")
+                Log.d(TAG, "Native libraries loaded")
             } catch (e: UnsatisfiedLinkError) {
                 Log.e(TAG, "Failed to load native library", e)
             }

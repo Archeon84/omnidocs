@@ -226,3 +226,16 @@ tasks.register("downloadPaddleLite", DefaultTask::class) {
 tasks.named("preBuild") {
     dependsOn("downloadPaddleLite")
 }
+
+// Copy PaddleLite .so files to jniLibs so they get packaged in the APK
+tasks.register("copyPaddleLiteLibs", Copy::class) {
+    dependsOn("downloadPaddleLite")
+    from("${project.projectDir}/PaddleLite/java/libs") {
+        include("**/*.so")
+    }
+    into("${project.projectDir}/src/main/jniLibs")
+}
+
+tasks.named("preBuild") {
+    dependsOn("copyPaddleLiteLibs")
+}

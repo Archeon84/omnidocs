@@ -69,11 +69,11 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Paddle Lite libraries path
-# After downloading, the extracted structure is: PaddleLite/inference_lite_lib.android.armv8.clang.c++_shared/
-# Adjust these paths based on the actual extracted directory structure
-set(PADDLE_LITE_DIR "${CMAKE_SOURCE_DIR}/../PaddleLite")
-set(PADDLE_LITE_LIB_DIR "${PADDLE_LITE_DIR}/inference_lite_lib.android.armv8.clang.c++_shared/java/lib")
-set(PADDLE_LITE_INCLUDE_DIR "${PADDLE_LITE_DIR}/inference_lite_lib.android.armv8.clang.c++_shared/java/include")
+# Actual extracted structure: PaddleLite/java/libs/arm64-v8a/ and PaddleLite/cxx/include/
+# CMAKE_SOURCE_DIR is app/src/main/cpp/, so we need ../../../ to reach app/
+set(PADDLE_LITE_DIR "${CMAKE_SOURCE_DIR}/../../../PaddleLite")
+set(PADDLE_LITE_LIB_DIR "${PADDLE_LITE_DIR}/java/libs/arm64-v8a")
+set(PADDLE_LITE_INCLUDE_DIR "${PADDLE_LITE_DIR}/cxx/include")
 
 # Include Paddle Lite headers
 include_directories(${PADDLE_LITE_INCLUDE_DIR})
@@ -85,10 +85,11 @@ add_library(paddle_ocr_jni SHARED paddle_ocr_jni.cpp)
 find_library(log-lib log)
 find_library(android-lib android)
 
-# Link Paddle Lite
+# NOTE: Paddle Lite .so is loaded at runtime via System.loadLibrary() in PaddleNative.kt.
+# We do NOT link it here because the prebuilt .so has symbol table issues with newer NDK linkers.
+# The JNI bridge uses dlopen/dlsym at runtime to resolve Paddle Lite symbols.
 target_link_libraries(
     paddle_ocr_jni
-    ${PADDLE_LITE_LIB_DIR}/libpaddle_lite_jni.so
     ${log-lib}
     ${android-lib}
 )

@@ -37,11 +37,7 @@ import coil.compose.AsyncImage
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.omnidocs.app.ocr.visionTextToHtml
+import com.omnidocs.app.ocr.OcrHtmlBuilder
 import java.util.concurrent.Executors
 
 private const val TAG = "OcrScreen"
@@ -57,7 +53,6 @@ fun OcrScreen(
     val recognizedText by viewModel.recognizedText.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val selectedImageUri by viewModel.selectedImageUri.collectAsState()
-    val ocrEngine by viewModel.ocrEngine.collectAsState()
     val ocrLanguage by viewModel.ocrLanguage.collectAsState()
     val translationTarget by viewModel.translationTarget.collectAsState()
     val translatedText by viewModel.translatedText.collectAsState()
@@ -107,13 +102,14 @@ fun OcrScreen(
         ) {
             if (showLiveCamera) {
                 LiveCameraOcrView(
-                    onTextDetected = { visionText ->
+                    onTextDetected = { text, html ->
                         if (!isFrozen) {
-                            liveDetectedText = visionText.text
-                            liveDetectedHtml = visionTextToHtml(visionText)
+                            liveDetectedText = text
+                            liveDetectedHtml = html
                         }
                     },
-                    isFrozen = isFrozen
+                    isFrozen = isFrozen,
+                    language = ocrLanguage
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -204,7 +200,10 @@ fun OcrScreen(
                     "en" to "English",
                     "zh" to "Chinese",
                     "ja" to "Japanese",
-                    "ko" to "Korean"
+                    "ko" to "Korean",
+                    "ar" to "Arabic",
+                    "hi" to "Hindi (Devanagari)",
+                    "ru" to "Russian (Cyrillic)"
                 )
                 val currentOcrLangName = ocrLangNames[ocrLanguage] ?: ocrLanguage
 
@@ -491,60 +490,21 @@ fun OcrScreen(
 
 @Composable
 fun LiveCameraOcrView(
-    onTextDetected: (Text) -> Unit,
-    isFrozen: Boolean
+    onTextDetected: (String, String) -> Unit,
+    isFrozen: Boolean,
+    language: String
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val textRecognizer = remember {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    }
-
-    val imageAnalysis = remember {
-        ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-    }
-
-    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-
     // Store camera provider so it can be unbound in DisposableEffect
     var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
-    LaunchedEffect(isFrozen) {
-        if (!isFrozen) {
-            imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                val mediaImage = imageProxy.image
-                if (mediaImage != null) {
-                    val image = InputImage.fromMediaImage(
-                        mediaImage,
-                        imageProxy.imageInfo.rotationDegrees
-                    )
-                    textRecognizer.process(image)
-                        .addOnSuccessListener { result ->
-                            if (result.text.isNotBlank()) {
-                                onTextDetected(result)
-                            }
-                            imageProxy.close()
-                        }
-                        .addOnFailureListener {
-                            imageProxy.close()
-                        }
-                } else {
-                    imageProxy.close()
-                }
-            }
-        } else {
-            imageAnalysis.clearAnalyzer()
-        }
-    }
-
+    // For now, just show camera preview without live OCR
+    // Live camera OCR with PaddleOCR will be implemented in Plan 2
     DisposableEffect(Unit) {
         onDispose {
-            textRecognizer.close()
             cameraProviderRef?.unbindAll()
-            analysisExecutor.shutdown()
         }
     }
 
@@ -565,8 +525,7 @@ fun LiveCameraOcrView(
                     cameraProvider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageAnalysis
+                        preview
                     )
                 } catch (e: Exception) {
                     Log.e(TAG, "Camera binding failed", e)
