@@ -1,6 +1,9 @@
 package com.omnidocs.app.ui.screens.ocr
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -10,11 +13,10 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -23,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -37,8 +40,18 @@ import coil.compose.AsyncImage
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import com.omnidocs.app.ocr.OcrBlock
+import com.omnidocs.app.ocr.OcrEngineFactory
 import com.omnidocs.app.ocr.OcrHtmlBuilder
+import com.omnidocs.app.ocr.PaddleNative
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "OcrScreen"
 
@@ -496,48 +509,152 @@ fun LiveCameraOcrView(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
 
     // Store camera provider so it can be unbound in DisposableEffect
     var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
-    // For now, just show camera preview without live OCR
-    // Live camera OCR with PaddleOCR will be implemented in Plan 2
-    DisposableEffect(Unit) {
+    // Bounding boxes for overlay
+    var ocrBlocks by remember { mutableStateOf<List<OcrBlock>>(emptyList()) }
+
+    // Debounce state
+    val lastProcessingTime = remember { AtomicLong(0) }
+    val isProcessing = remember { AtomicBoolean(false) }
+    val debounceMs = 200L
+
+    // Create temp file for OCR processing
+    val tempFile = remember { File(context.cacheDir, "live_ocr_frame.jpg") }
+
+    DisposableEffect(isFrozen) {
         onDispose {
             cameraProviderRef?.unbindAll()
         }
     }
 
-    AndroidView(
-        factory = { ctx ->
-            val previewView = PreviewView(ctx)
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-
-            cameraProviderFuture.addListener({
-                val cameraProvider = cameraProviderFuture.get()
-                cameraProviderRef = cameraProvider
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
-
-                try {
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "Camera binding failed", e)
-                }
-            }, ContextCompat.getMainExecutor(ctx))
-
-            previewView
-        },
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(300.dp)
             .clip(RoundedCornerShape(12.dp))
             .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
-    )
+    ) {
+        // Camera preview
+        AndroidView(
+            factory = { ctx ->
+                val previewView = PreviewView(ctx)
+                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+
+                val imageAnalysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setTargetResolution(android.util.Size(640, 480))
+                    .build()
+
+                val analysisExecutor = Executors.newSingleThreadExecutor()
+
+                imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                    if (!isFrozen && !isProcessing.get()) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastProcessingTime.get() >= debounceMs) {
+                            isProcessing.set(true)
+                            lastProcessingTime.set(now)
+
+                            // Convert ImageProxy to bitmap
+                            val image = imageProxy.image
+                            if (image != null) {
+                                try {
+                                    val buffer = image.planes[0].buffer
+                                    val bytes = ByteArray(buffer.remaining())
+                                    buffer.get(bytes)
+
+                                    var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                    if (bitmap != null) {
+                                        // Rotate if needed
+                                        val rotation = imageProxy.imageInfo.rotationDegrees
+                                        if (rotation != 0) {
+                                            val matrix = Matrix()
+                                            matrix.postRotate(rotation.toFloat())
+                                            bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                                        }
+
+                                        // Save to temp file
+                                        FileOutputStream(tempFile).use { out ->
+                                            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                                        }
+
+                                        // Run OCR in background
+                                        scope.launch {
+                                            try {
+                                                val engine = PaddleNative()
+                                                val result = engine.recognize(tempFile.absolutePath, 0.5f)
+
+                                                if (result != null && result.isNotEmpty()) {
+                                                    val blocks = result.map { row ->
+                                                        OcrBlock(
+                                                            text = "Text",
+                                                            confidence = row[1],
+                                                            boundingBox = android.graphics.RectF(
+                                                                row[2], row[3], row[6], row[7]
+                                                            )
+                                                        )
+                                                    }
+
+                                                    val fullText = blocks.joinToString("\n") { it.text }
+                                                    val html = OcrHtmlBuilder.fromPlainText(fullText)
+
+                                                    // Update UI on main thread
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                        ocrBlocks = blocks
+                                                        onTextDetected(fullText, html)
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Live OCR error", e)
+                                            } finally {
+                                                isProcessing.set(false)
+                                            }
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Frame processing error", e)
+                                    isProcessing.set(false)
+                                }
+                            } else {
+                                isProcessing.set(false)
+                            }
+                        }
+                    }
+                    imageProxy.close()
+                }
+
+                cameraProviderFuture.addListener({
+                    val cameraProvider = cameraProviderFuture.get()
+                    cameraProviderRef = cameraProvider
+                    val preview = Preview.Builder().build().also {
+                        it.setSurfaceProvider(previewView.surfaceProvider)
+                    }
+
+                    try {
+                        cameraProvider.unbindAll()
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            preview,
+                            imageAnalysis
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Camera binding failed", e)
+                    }
+                }, ContextCompat.getMainExecutor(ctx))
+
+                previewView
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Bounding box overlay
+        LiveCameraOverlay(
+            blocks = ocrBlocks,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
 }
