@@ -343,10 +343,10 @@
                 var range = sel.getRangeAt(0);
                 var rect = range.getBoundingClientRect();
                 var editorRect = editor.getBoundingClientRect();
-                // If cursor is below the visible editor area, scroll it into view
-                if (rect.bottom > editorRect.bottom || rect.top < editorRect.top) {
+                // Only scroll if cursor is actually hidden below the visible area
+                if (rect.bottom > editorRect.bottom) {
                     range.startContainer.parentElement && range.startContainer.parentElement.scrollIntoView({
-                        block: 'center',
+                        block: 'end',
                         behavior: 'smooth'
                     });
                 }
