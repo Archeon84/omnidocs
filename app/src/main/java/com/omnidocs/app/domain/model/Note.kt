@@ -11,5 +11,6 @@ data class Note(
     val updatedAt: Long = System.currentTimeMillis(),
     val imageUrl: String? = null,
     val attachments: String = "[]", // JSON array of attachment paths
-    val isDeleted: Boolean = false
+    val isDeleted: Boolean = false,
+    val tags: String = "[]"
 )

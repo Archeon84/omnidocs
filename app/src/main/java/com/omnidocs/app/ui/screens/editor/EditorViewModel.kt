@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.domain.model.Note
 import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.ai.AiService
+import com.omnidocs.app.ai.AutoTagger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -16,7 +17,8 @@ import javax.inject.Inject
 @HiltViewModel
 class EditorViewModel @Inject constructor(
     private val repository: NotesRepository,
-    private val aiService: AiService
+    private val aiService: AiService,
+    private val autoTagger: AutoTagger
 ) : ViewModel() {
 
     private val _currentNote = MutableStateFlow<Note?>(null)
@@ -218,6 +220,15 @@ class EditorViewModel @Inject constructor(
                     language = _currentLanguage.value
                 )
                 _currentNote.value = newNote
+                // Auto-tag new notes with sufficient content
+                if (_content.value.length > 100) {
+                    try {
+                        val tags = autoTagger.generateTags(_title.value, _content.value)
+                        repository.updateNote(newNote.copy(tags = tags))
+                    } catch (e: Exception) {
+                        // Tagging failure shouldn't block save
+                    }
+                }
             }
             _snackbarEvent.tryEmit("Note saved")
         } catch (e: Exception) {

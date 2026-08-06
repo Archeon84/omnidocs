@@ -14,7 +14,7 @@ import net.sqlcipher.database.SupportFactory
 import java.io.File
 import java.security.SecureRandom
 
-@Database(entities = [NoteEntity::class, NoteFtsEntity::class], version = 4, exportSchema = false)
+@Database(entities = [NoteEntity::class, NoteFtsEntity::class], version = 5, exportSchema = false)
 abstract class NotesDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
 
@@ -69,6 +69,12 @@ abstract class NotesDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
         fun getDatabase(context: Context): NotesDatabase {
             return INSTANCE ?: synchronized(this) {
                 // Initialize SQLCipher native libraries (only once)
@@ -109,7 +115,7 @@ abstract class NotesDatabase : RoomDatabase() {
                     "notes_database"
                 )
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
                 INSTANCE = instance
