@@ -604,11 +604,6 @@ fun LiveCameraOcrView(
     // rememberUpdatedState ensures the analyzer lambda reads the current value.
     val currentIsFrozen by rememberUpdatedState(isFrozen)
 
-    // Log freeze state changes (OCR now runs directly in the analyzer)
-    LaunchedEffect(isFrozen) {
-        Log.d(TAG, "LaunchedEffect: isFrozen=$isFrozen")
-    }
-
     DisposableEffect(Unit) {
         onDispose {
             cameraProviderRef?.unbindAll()
@@ -648,7 +643,6 @@ fun LiveCameraOcrView(
                                 val rotation = imageProxy.imageInfo.rotationDegrees
                                 Log.d(TAG, "Analyzer: frozen frame ${mediaImage.width}x${mediaImage.height} rot=$rotation")
                                 val result = recognizeFromMediaImage(mediaImage, rotation)
-                                Log.d(TAG, "Analyzer: OCR result=${result?.first?.take(100) ?: "null"}")
                                 if (result != null) {
                                     val (text, html) = result
                                     scope.launch {

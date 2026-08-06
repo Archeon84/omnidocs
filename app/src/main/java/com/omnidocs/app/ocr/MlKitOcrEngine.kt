@@ -40,9 +40,7 @@ class MlKitOcrEngine @Inject constructor(
     override suspend fun recognizeText(uri: Uri, language: String): OcrResult? {
         return withContext(Dispatchers.IO) {
             try {
-                Log.d(TAG, "recognizeText: uri=$uri language=$language")
                 val recognizer = getOrCreateRecognizer(language)
-                Log.d(TAG, "recognizeText: recognizer created, building InputImage")
                 val image = if (uri.scheme == "file") {
                     val filePath = uri.path ?: throw IOException("File URI has no path: $uri")
                     val bitmap = BitmapFactory.decodeFile(filePath)
@@ -51,7 +49,6 @@ class MlKitOcrEngine @Inject constructor(
                 } else {
                     InputImage.fromFilePath(context, uri)
                 }
-                Log.d(TAG, "recognizeText: InputImage created from URI scheme=${uri.scheme}, processing...")
 
                 val result = try {
                     recognizer.process(image).await()
@@ -68,7 +65,6 @@ class MlKitOcrEngine @Inject constructor(
 
                 val blocks = result.textBlocks.map { block ->
                     val blockRect = block.boundingBox ?: android.graphics.Rect(0, 0, 0, 0)
-                    Log.d(TAG, "Block: '${block.text.take(50)}...' rect=$blockRect")
                     OcrBlock(
                         text = block.text,
                         confidence = 1.0f,
@@ -100,10 +96,8 @@ class MlKitOcrEngine @Inject constructor(
     suspend fun recognizeBitmap(bitmap: Bitmap, rotationDegrees: Int, language: String): OcrResult? {
         return withContext(Dispatchers.IO) {
             try {
-                Log.d(TAG, "recognizeBitmap: ${bitmap.width}x${bitmap.height} rotation=$rotationDegrees lang=$language")
                 val recognizer = getOrCreateRecognizer(language)
                 val image = InputImage.fromBitmap(bitmap, rotationDegrees)
-                Log.d(TAG, "recognizeBitmap: InputImage created, processing...")
 
                 val result = try {
                     recognizer.process(image).await()
@@ -149,10 +143,8 @@ class MlKitOcrEngine @Inject constructor(
      */
     fun recognizeFromMediaImage(image: Image, rotationDegrees: Int, language: String): OcrResult? {
         try {
-            Log.d(TAG, "recognizeFromMediaImage: ${image.width}x${image.height} rotation=$rotationDegrees lang=$language")
             val recognizer = getOrCreateRecognizer(language)
             val inputImage = InputImage.fromMediaImage(image, rotationDegrees)
-            Log.d(TAG, "recognizeFromMediaImage: InputImage created, processing...")
 
             // Block on ML Kit result (called from background thread)
             val result = com.google.android.gms.tasks.Tasks.await(recognizer.process(inputImage))

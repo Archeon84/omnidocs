@@ -208,15 +208,11 @@ class OcrViewModel @Inject constructor(
     suspend fun recognizeFromFile(filePath: String): Pair<String, String>? {
         return withContext(Dispatchers.IO) {
             try {
-                Log.d(TAG, "recognizeFromFile: filePath=$filePath lang=${_ocrLanguage.value}")
                 val file = java.io.File(filePath)
-                Log.d(TAG, "recognizeFromFile: file exists=${file.exists()} size=${file.length()}")
                 val engine = engineFactory.getEngine()
-                Log.d(TAG, "recognizeFromFile: engine=${engine.javaClass.simpleName}")
                 val uri = Uri.fromFile(file)
-                Log.d(TAG, "recognizeFromFile: uri=$uri")
                 val result = engine.recognizeText(uri, _ocrLanguage.value)
-                Log.d(TAG, "recognizeFromFile: result=${result?.text?.take(100) ?: "null"}")
+                Log.d(TAG, "recognizeFromFile: success, ${result?.text?.length ?: 0} chars")
                 result?.let { Pair(it.text, it.html) }
             } catch (e: Throwable) {
                 Log.e(TAG, "File recognition error", e)
@@ -234,7 +230,7 @@ class OcrViewModel @Inject constructor(
             val engine = engineFactory.getEngine()
             if (engine is com.omnidocs.app.ocr.MlKitOcrEngine) {
                 val result = engine.recognizeFromMediaImage(image, rotationDegrees, _ocrLanguage.value)
-                Log.d(TAG, "recognizeFromMediaImage: result=${result?.text?.take(100) ?: "null"}")
+                Log.d(TAG, "recognizeFromMediaImage: success, ${result?.text?.length ?: 0} chars")
                 return result?.let { Pair(it.text, it.html) }
             }
             return null
