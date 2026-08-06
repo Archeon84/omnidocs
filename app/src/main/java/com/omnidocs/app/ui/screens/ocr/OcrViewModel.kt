@@ -208,14 +208,39 @@ class OcrViewModel @Inject constructor(
     suspend fun recognizeFromFile(filePath: String): Pair<String, String>? {
         return withContext(Dispatchers.IO) {
             try {
+                Log.d(TAG, "recognizeFromFile: filePath=$filePath lang=${_ocrLanguage.value}")
+                val file = java.io.File(filePath)
+                Log.d(TAG, "recognizeFromFile: file exists=${file.exists()} size=${file.length()}")
                 val engine = engineFactory.getEngine()
-                val uri = Uri.fromFile(java.io.File(filePath))
+                Log.d(TAG, "recognizeFromFile: engine=${engine.javaClass.simpleName}")
+                val uri = Uri.fromFile(file)
+                Log.d(TAG, "recognizeFromFile: uri=$uri")
                 val result = engine.recognizeText(uri, _ocrLanguage.value)
+                Log.d(TAG, "recognizeFromFile: result=${result?.text?.take(100) ?: "null"}")
                 result?.let { Pair(it.text, it.html) }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "File recognition error", e)
                 null
             }
+        }
+    }
+
+    /**
+     * Recognize text directly from a camera Image (YUV_420_888).
+     * No bitmap/JPEG conversion — ML Kit handles YUV natively.
+     */
+    fun recognizeFromMediaImage(image: android.media.Image, rotationDegrees: Int): Pair<String, String>? {
+        try {
+            val engine = engineFactory.getEngine()
+            if (engine is com.omnidocs.app.ocr.MlKitOcrEngine) {
+                val result = engine.recognizeFromMediaImage(image, rotationDegrees, _ocrLanguage.value)
+                Log.d(TAG, "recognizeFromMediaImage: result=${result?.text?.take(100) ?: "null"}")
+                return result?.let { Pair(it.text, it.html) }
+            }
+            return null
+        } catch (e: Throwable) {
+            Log.e(TAG, "recognizeFromMediaImage error", e)
+            return null
         }
     }
 

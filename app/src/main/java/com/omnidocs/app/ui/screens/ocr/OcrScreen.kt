@@ -6,7 +6,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
 import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -48,6 +51,7 @@ import com.omnidocs.app.ocr.OcrBlock
 import com.omnidocs.app.ocr.OcrHtmlBuilder
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
@@ -129,15 +133,13 @@ fun OcrScreen(
             if (showLiveCamera) {
                 LiveCameraOcrView(
                     onTextDetected = { text, html ->
-                        if (!isFrozen) {
-                            liveDetectedText = text
-                            liveDetectedHtml = html
-                        }
+                        liveDetectedText = text
+                        liveDetectedHtml = html
                     },
                     isFrozen = isFrozen,
                     language = ocrLanguage,
-                    recognizeFromFile = { filePath ->
-                        viewModel.recognizeFromFile(filePath)
+                    recognizeFromMediaImage = { image, rotation ->
+                        viewModel.recognizeFromMediaImage(image, rotation)
                     }
                 )
 
@@ -590,7 +592,7 @@ fun LiveCameraOcrView(
     onTextDetected: (String, String) -> Unit,
     isFrozen: Boolean,
     language: String,
-    recognizeFromFile: suspend (String) -> Pair<String, String>?
+    recognizeFromMediaImage: (android.media.Image, Int) -> Pair<String, String>?
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -602,31 +604,17 @@ fun LiveCameraOcrView(
     // Bounding boxes for overlay
     var ocrBlocks by remember { mutableStateOf<List<OcrBlock>>(emptyList()) }
 
-    // Store last captured frame for OCR on freeze
-    val lastFrameFile = remember { File(context.cacheDir, "live_ocr_frame.jpg") }
-    val hasCapturedFrame = remember { mutableStateOf(false) }
+    // Keep a Compose State that always reflects the latest isFrozen value.
+    // The AndroidView factory runs once and captures variables by reference;
+    // rememberUpdatedState ensures the analyzer lambda reads the current value.
+    val currentIsFrozen by rememberUpdatedState(isFrozen)
 
-    // Create temp file for OCR processing
-    val tempFile = remember { File(context.cacheDir, "live_ocr_frame.jpg") }
-
-    // When freeze is tapped, run OCR on the last captured frame
+    // Log freeze state changes (OCR now runs directly in the analyzer)
     LaunchedEffect(isFrozen) {
-        if (isFrozen && hasCapturedFrame.value && lastFrameFile.exists()) {
-            try {
-                val result = recognizeFromFile(lastFrameFile.absolutePath)
-                if (result != null) {
-                    val (text, html) = result
-                    withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        onTextDetected(text, html)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Freeze OCR error", e)
-            }
-        }
+        Log.d(TAG, "LaunchedEffect: isFrozen=$isFrozen")
     }
 
-    DisposableEffect(isFrozen) {
+    DisposableEffect(Unit) {
         onDispose {
             cameraProviderRef?.unbindAll()
         }
@@ -653,37 +641,36 @@ fun LiveCameraOcrView(
                 val analysisExecutor = Executors.newSingleThreadExecutor()
 
                 imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                    if (!isFrozen) {
-                        // Convert ImageProxy to bitmap and save as last frame
-                        val image = imageProxy.image
-                        if (image != null) {
-                            try {
-                                val buffer = image.planes[0].buffer
-                                val bytes = ByteArray(buffer.remaining())
-                                buffer.get(bytes)
-
-                                var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                if (bitmap != null) {
-                                    // Rotate if needed
-                                    val rotation = imageProxy.imageInfo.rotationDegrees
-                                    if (rotation != 0) {
-                                        val matrix = Matrix()
-                                        matrix.postRotate(rotation.toFloat())
-                                        bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                    if (!currentIsFrozen) {
+                        // Not frozen — just close the frame
+                        imageProxy.close()
+                    } else {
+                        // Frozen — run OCR directly on the MediaImage
+                        // imageProxy MUST stay open while ML Kit processes it
+                        try {
+                            val mediaImage = imageProxy.image
+                            if (mediaImage != null) {
+                                val rotation = imageProxy.imageInfo.rotationDegrees
+                                Log.d(TAG, "Analyzer: frozen frame ${mediaImage.width}x${mediaImage.height} rot=$rotation")
+                                val result = recognizeFromMediaImage(mediaImage, rotation)
+                                Log.d(TAG, "Analyzer: OCR result=${result?.first?.take(100) ?: "null"}")
+                                if (result != null) {
+                                    val (text, html) = result
+                                    scope.launch {
+                                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            onTextDetected(text, html)
+                                        }
                                     }
-
-                                    // Save as last captured frame
-                                    FileOutputStream(tempFile).use { out ->
-                                        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
-                                    }
-                                    hasCapturedFrame.value = true
                                 }
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Frame capture error", e)
+                            } else {
+                                Log.w(TAG, "Analyzer: imageProxy.image is null")
                             }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Analyzer: OCR error", e)
+                        } finally {
+                            imageProxy.close()
                         }
                     }
-                    imageProxy.close()
                 }
 
                 cameraProviderFuture.addListener({
@@ -717,4 +704,33 @@ fun LiveCameraOcrView(
             modifier = Modifier.fillMaxSize()
         )
     }
+}
+
+/**
+ * Convert a CameraX ImageProxy (YUV_420_888) to a Bitmap.
+ * BitmapFactory cannot decode raw YUV data -- we must compress to JPEG first.
+ */
+private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+    val image = imageProxy.image ?: return null
+
+    val yBuffer = image.planes[0].buffer
+    val uBuffer = image.planes[1].buffer
+    val vBuffer = image.planes[2].buffer
+
+    val ySize = yBuffer.remaining()
+    val uSize = uBuffer.remaining()
+    val vSize = vBuffer.remaining()
+
+    val nv21 = ByteArray(ySize + uSize + vSize)
+    // Y plane
+    yBuffer.get(nv21, 0, ySize)
+    // VU plane (interleaved for NV21)
+    vBuffer.get(nv21, ySize, vSize)
+    uBuffer.get(nv21, ySize + vSize, uSize)
+
+    val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+    val out = ByteArrayOutputStream()
+    yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
+    val jpegBytes = out.toByteArray()
+    return BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
 }

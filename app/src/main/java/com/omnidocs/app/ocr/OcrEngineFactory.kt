@@ -5,18 +5,18 @@ import javax.inject.Singleton
 
 /**
  * Factory for creating OCR engines.
- * Currently only supports PaddleOCR, but the interface allows for future engines.
+ * Uses ML Kit Text Recognition as the primary engine.
  */
 @Singleton
 class OcrEngineFactory @Inject constructor(
-    private val paddleOcrEngine: PaddleOcrEngine
+    private val mlKitOcrEngine: MlKitOcrEngine
 ) {
     /**
      * Get the default OCR engine.
      *
      * @return OcrEngine instance
      */
-    fun getEngine(): OcrEngine = paddleOcrEngine
+    fun getEngine(): OcrEngine = mlKitOcrEngine
 
     /**
      * Get available languages from the default engine.
