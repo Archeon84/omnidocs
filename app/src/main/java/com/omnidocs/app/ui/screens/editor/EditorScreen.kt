@@ -141,6 +141,7 @@ fun EditorScreen(
     val content by viewModel.content.collectAsState()
     val isSaving by viewModel.isSaving.collectAsState()
     val wordCount by viewModel.wordCount.collectAsState()
+    val readingTime by viewModel.readingTimeMinutes.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
     val aiPreviewState by viewModel.aiPreview.collectAsState()
     val aiModelName by viewModel.aiModelName.collectAsState()
@@ -374,6 +375,21 @@ fun EditorScreen(
                         )
                     }
 
+                    // Word count + reading time
+                    if (wordCount > 0) {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        ) {
+                            Text(
+                                text = "$wordCount" + if (readingTime > 0) " · ${readingTime}m" else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
                     // Save indicator
                     if (isSaving) {
                         CircularProgressIndicator(
@@ -405,19 +421,6 @@ fun EditorScreen(
                 onImageClick = { imageLauncher.launch("image/*") },
                 onAudioClick = { audioLauncher.launch("audio/*") }
             )
-
-            // Word count — below toolbar, above editor
-            if (wordCount > 0) {
-                val readingTime by viewModel.readingTimeMinutes.collectAsState()
-                Text(
-                    text = "$wordCount words" + if (readingTime > 0) " · ~${readingTime} min read" else "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
 
             // Rich text editor
             RichTextEditor(
