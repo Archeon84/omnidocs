@@ -5,8 +5,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,7 +26,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -52,7 +62,9 @@ import coil.compose.AsyncImage
 import com.omnidocs.app.domain.model.Note
 import com.omnidocs.app.ui.components.ShimmerGrid
 import com.omnidocs.app.ui.theme.AppTheme
+import com.omnidocs.app.ui.theme.MotionTokens
 import com.omnidocs.app.ui.theme.isReducedMotionEnabled
+import kotlinx.coroutines.delay
 
 /** Supported MIME types for document import. */
 private val IMPORT_MIME_TYPES = arrayOf(
@@ -148,6 +160,18 @@ fun HomeScreen(
         }
     }
 
+    // Breathing gradient animation for TopAppBar title
+    val infiniteTransition = rememberInfiniteTransition(label = "ambient")
+    val breathOffset by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(6000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "breathOffset"
+    )
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -190,7 +214,12 @@ fun HomeScreen(
                             )
                         } else {
                             Column {
-                                Text("OmniDocs")
+                                Text(
+                                    text = "OmniDocs",
+                                    modifier = Modifier.graphicsLayer {
+                                        translationY = if (isSearching) 0f else breathOffset * 0.5f
+                                    }
+                                )
                                 Text(
                                     text = "v1.0.0",
                                     style = MaterialTheme.typography.labelSmall,
@@ -427,12 +456,13 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(notes) { note ->
+                            itemsIndexed(notes) { index, note ->
                                 Box(Modifier) {
                                     SelectableNoteCard(
                                         note = note,
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
+                                        entranceDelay = index * MotionTokens.STAGGER_MS,
                                         onClick = {
                                             if (isSelectionMode) {
                                                 viewModel.toggleNoteSelection(note.id)
@@ -478,12 +508,13 @@ fun HomeScreen(
                                     )
                                 }
                             }
-                            items(pinnedNotes) { note ->
+                            itemsIndexed(pinnedNotes) { index, note ->
                                 Box(Modifier) {
                                     SelectableNoteCard(
                                         note = note,
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
+                                        entranceDelay = index * MotionTokens.STAGGER_MS,
                                         onClick = {
                                             if (isSelectionMode) {
                                                 viewModel.toggleNoteSelection(note.id)
@@ -524,12 +555,14 @@ fun HomeScreen(
                                     }
                                 }
                             }
-                            items(otherNotes) { note ->
+                            val pinnedCount = pinnedNotes.size
+                            itemsIndexed(otherNotes) { index, note ->
                                 Box(Modifier) {
                                     SelectableNoteCard(
                                         note = note,
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
+                                        entranceDelay = (pinnedCount + index) * MotionTokens.STAGGER_MS,
                                         onClick = {
                                             if (isSelectionMode) {
                                                 viewModel.toggleNoteSelection(note.id)
@@ -653,44 +686,65 @@ fun SelectableNoteCard(
     isSelectionMode: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onImport: (() -> Unit)? = null
+    onImport: (() -> Unit)? = null,
+    entranceDelay: Long = 0L
 ) {
     val wordCount = remember(note.plainText) {
         if (note.plainText.isBlank()) 0
         else note.plainText.split(Regex("\\s+")).size
     }
 
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val reducedMotion = isReducedMotionEnabled()
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed && !reducedMotion) 0.98f else 1f,
-        animationSpec = tween(durationMillis = 150),
-        label = "cardScale"
-    )
+    val density = LocalDensity.current
+            var appeared by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                delay(entranceDelay)
+                appeared = true
+            }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .animateContentSize()
-            .semantics {
-                selected = isSelected
-                stateDescription = buildString {
-                    if (note.isPinned) append("Pinned. ")
-                    if (isSelected) append("Selected. ")
-                    append("${note.title.ifEmpty { "Untitled" }}")
-                }
-            }
-            .combinedClickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick,
-                onLongClick = onLongClick
-            ),
+            val reducedMotion = isReducedMotionEnabled()
+            val entranceOffsetY by animateDpAsState(
+                targetValue = if (appeared) 0.dp else 40.dp,
+                animationSpec = if (reducedMotion) snap() else tween(durationMillis = 400, easing = FastOutSlowInEasing),
+                label = "entranceOffsetY"
+            )
+            val entranceAlpha by animateFloatAsState(
+                targetValue = if (appeared) 1f else 0f,
+                animationSpec = tween(durationMillis = 300),
+                label = "entranceAlpha"
+            )
+
+            val interactionSource = remember { MutableInteractionSource() }
+            val isPressed by interactionSource.collectIsPressedAsState()
+            val scale by animateFloatAsState(
+                targetValue = if (isPressed && !reducedMotion) 0.98f else 1f,
+                animationSpec = if (reducedMotion) tween(durationMillis = 150) else MotionTokens.CardPress,
+                label = "cardScale"
+            )
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationY = with(density) { entranceOffsetY.toPx() }
+                        alpha = entranceAlpha
+                    }
+                    .animateContentSize()
+                    .semantics {
+                        selected = isSelected
+                        stateDescription = buildString {
+                            if (note.isPinned) append("Pinned. ")
+                            if (isSelected) append("Selected. ")
+                            append("${note.title.ifEmpty { "Untitled" }}")
+                        }
+                    }
+                    .combinedClickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    ),
         colors = CardDefaults.cardColors(
             containerColor = if (isSelected) {
                 MaterialTheme.colorScheme.primaryContainer
