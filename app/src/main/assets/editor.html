@@ -186,6 +186,14 @@
     <script>
         const editor = document.getElementById('editor');
 
+        // Notify Android of editor focus state
+        editor.addEventListener('focus', function() {
+            try { Android.onEditorFocusChanged(true); } catch(e) {}
+        });
+        editor.addEventListener('blur', function() {
+            try { Android.onEditorFocusChanged(false); } catch(e) {}
+        });
+
         // Debounce timer for content sync
         let debounceTimer;
 
@@ -327,6 +335,22 @@
                     content.forEach(el => wrapper.appendChild(el));
                 }
             });
+        }
+        // Scroll the cursor into view when the keyboard opens
+        function scrollCursorIntoView() {
+            var sel = window.getSelection();
+            if (sel.rangeCount > 0) {
+                var range = sel.getRangeAt(0);
+                var rect = range.getBoundingClientRect();
+                var editorRect = editor.getBoundingClientRect();
+                // If cursor is below the visible editor area, scroll it into view
+                if (rect.bottom > editorRect.bottom || rect.top < editorRect.top) {
+                    range.startContainer.parentElement && range.startContainer.parentElement.scrollIntoView({
+                        block: 'center',
+                        behavior: 'smooth'
+                    });
+                }
+            }
         }
     </script>
 </body>

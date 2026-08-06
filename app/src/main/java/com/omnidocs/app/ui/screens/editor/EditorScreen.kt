@@ -20,7 +20,10 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -149,6 +152,9 @@ fun EditorScreen(
     var showLanguageMenu by remember { mutableStateOf(false) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var formatState by remember { mutableStateOf(FormatState()) }
+    var isEditorFocused by remember { mutableStateOf(false) }
+    var contentReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { contentReady = true }
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
     val snackbarHostState = remember { SnackbarHostState() }
@@ -414,34 +420,53 @@ fun EditorScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .imePadding()
         ) {
-            // Formatting toolbar
-            FormattingToolbar(
-                formatState = formatState,
-                onBoldClick = { webViewRef?.evaluateJavascript("formatText('bold')", null) },
-                onItalicClick = { webViewRef?.evaluateJavascript("formatText('italic')", null) },
-                onUnderlineClick = { webViewRef?.evaluateJavascript("formatText('underline')", null) },
-                onStrikeClick = { webViewRef?.evaluateJavascript("formatText('strikeThrough')", null) },
-                onListClick = { webViewRef?.evaluateJavascript("formatText('insertUnorderedList')", null) },
-                onNumberedListClick = { webViewRef?.evaluateJavascript("formatText('insertOrderedList')", null) },
-                onHeadingClick = { webViewRef?.evaluateJavascript("formatHeading()", null) },
-                onQuoteClick = { webViewRef?.evaluateJavascript("formatText('formatBlock', 'blockquote')", null) },
-                onCodeClick = { webViewRef?.evaluateJavascript("formatCode()", null) },
-                onImageClick = { imageLauncher.launch("image/*") },
-                onAudioClick = { audioLauncher.launch("audio/*") },
-                onToggleSections = { webViewRef?.evaluateJavascript("toggleAllCollapse()", null) }
+            // Formatting toolbar - appears with stagger delay
+            val toolbarAlpha by animateFloatAsState(
+                targetValue = if (contentReady) 1f else 0f,
+                animationSpec = tween(300, delayMillis = 200),
+                label = "toolbarAlpha"
             )
+            Box(modifier = Modifier.graphicsLayer { alpha = toolbarAlpha }) {
+                FormattingToolbar(
+                    formatState = formatState,
+                    onBoldClick = { webViewRef?.evaluateJavascript("formatText('bold')", null) },
+                    onItalicClick = { webViewRef?.evaluateJavascript("formatText('italic')", null) },
+                    onUnderlineClick = { webViewRef?.evaluateJavascript("formatText('underline')", null) },
+                    onStrikeClick = { webViewRef?.evaluateJavascript("formatText('strikeThrough')", null) },
+                    onListClick = { webViewRef?.evaluateJavascript("formatText('insertUnorderedList')", null) },
+                    onNumberedListClick = { webViewRef?.evaluateJavascript("formatText('insertOrderedList')", null) },
+                    onHeadingClick = { webViewRef?.evaluateJavascript("formatHeading()", null) },
+                    onQuoteClick = { webViewRef?.evaluateJavascript("formatText('formatBlock', 'blockquote')", null) },
+                    onCodeClick = { webViewRef?.evaluateJavascript("formatCode()", null) },
+                    onImageClick = { imageLauncher.launch("image/*") },
+                    onAudioClick = { audioLauncher.launch("audio/*") },
+                    onToggleSections = { webViewRef?.evaluateJavascript("toggleAllCollapse()", null) }
+                )
+            }
 
-            // Rich text editor
-            RichTextEditor(
-                content = content,
-                onContentChange = { viewModel.updateContent(it) },
-                onFormatStateChange = { formatState = it },
-                onWebViewCreated = { webViewRef = it },
+            // Rich text editor - appears with stagger delay
+            val editorAlpha by animateFloatAsState(
+                targetValue = if (contentReady) 1f else 0f,
+                animationSpec = tween(300, delayMillis = 300),
+                label = "editorAlpha"
+            )
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .weight(1f)
-            )
+                    .graphicsLayer { alpha = editorAlpha }
+            ) {
+                RichTextEditor(
+                    content = content,
+                    onContentChange = { viewModel.updateContent(it) },
+                    onFormatStateChange = { formatState = it },
+                    onWebViewCreated = { webViewRef = it },
+                    onEditorFocusChanged = { isEditorFocused = it },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     }
 
@@ -875,6 +900,7 @@ fun RichTextEditor(
     onContentChange: (String) -> Unit,
     onFormatStateChange: (FormatState) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit = {},
+    onEditorFocusChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var lastContent by remember { mutableStateOf("") }
@@ -969,10 +995,26 @@ fun RichTextEditor(
                             onFormatStateChange(fs)
                         } catch (_: Exception) { }
                     }
+
+                    @JavascriptInterface
+                    fun onEditorFocusChanged(focused: Boolean) {
+                        onEditorFocusChanged(focused)
+                    }
                 }, "Android")
 
                 webView = this
                 onWebViewCreated(this)
+
+                // Scroll cursor into view when keyboard opens (height change)
+                var lastHeight = 0
+                addOnLayoutChangeListener { _, _, _, _, _, _, _, _, oldHeight ->
+                    if (lastHeight == 0) lastHeight = oldHeight
+                    val heightChanged = height != lastHeight
+                    lastHeight = height
+                    if (heightChanged && hasFocus()) {
+                        post { evaluateJavascript("scrollCursorIntoView()", null) }
+                    }
+                }
 
                 // Load editor from assets with sanitized content
                 val htmlTemplate = context.assets.open("editor.html").bufferedReader().use { it.readText() }
