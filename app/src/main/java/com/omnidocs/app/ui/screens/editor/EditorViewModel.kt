@@ -33,6 +33,10 @@ class EditorViewModel @Inject constructor(
         if (text.isBlank()) 0 else text.split(Regex("\\s+")).size
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
+    val readingTimeMinutes: StateFlow<Int> = wordCount.map { words ->
+        if (words == 0) 0 else maxOf(1, words / 200) // 200 WPM average
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     private val _currentLanguage = MutableStateFlow("en")
     val currentLanguage: StateFlow<String> = _currentLanguage.asStateFlow()
 

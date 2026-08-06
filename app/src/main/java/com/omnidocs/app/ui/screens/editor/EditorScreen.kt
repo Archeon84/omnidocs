@@ -408,8 +408,9 @@ fun EditorScreen(
 
             // Word count — below toolbar, above editor
             if (wordCount > 0) {
+                val readingTime by viewModel.readingTimeMinutes.collectAsState()
                 Text(
-                    text = "$wordCount words",
+                    text = "$wordCount words" + if (readingTime > 0) " · ~${readingTime} min read" else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     modifier = Modifier
