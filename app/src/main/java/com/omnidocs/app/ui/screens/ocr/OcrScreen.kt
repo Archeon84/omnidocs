@@ -4,12 +4,7 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
-import android.graphics.Matrix
 import android.graphics.Rect
-import android.graphics.YuvImage
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -704,33 +699,4 @@ fun LiveCameraOcrView(
             modifier = Modifier.fillMaxSize()
         )
     }
-}
-
-/**
- * Convert a CameraX ImageProxy (YUV_420_888) to a Bitmap.
- * BitmapFactory cannot decode raw YUV data -- we must compress to JPEG first.
- */
-private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
-    val image = imageProxy.image ?: return null
-
-    val yBuffer = image.planes[0].buffer
-    val uBuffer = image.planes[1].buffer
-    val vBuffer = image.planes[2].buffer
-
-    val ySize = yBuffer.remaining()
-    val uSize = uBuffer.remaining()
-    val vSize = vBuffer.remaining()
-
-    val nv21 = ByteArray(ySize + uSize + vSize)
-    // Y plane
-    yBuffer.get(nv21, 0, ySize)
-    // VU plane (interleaved for NV21)
-    vBuffer.get(nv21, ySize, vSize)
-    uBuffer.get(nv21, ySize + vSize, uSize)
-
-    val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-    val out = ByteArrayOutputStream()
-    yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
-    val jpegBytes = out.toByteArray()
-    return BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
 }
