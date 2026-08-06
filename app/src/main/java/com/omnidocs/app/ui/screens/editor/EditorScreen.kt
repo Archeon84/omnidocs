@@ -364,6 +364,14 @@ fun EditorScreen(
                         )
                     }
 
+                    // Export as Markdown
+                    IconButton(onClick = { viewModel.exportAsMarkdown(context) }) {
+                        Icon(
+                            imageVector = Icons.Default.FileDownload,
+                            contentDescription = "Export as Markdown"
+                        )
+                    }
+
                     // Undo
                     IconButton(
                         onClick = { viewModel.undo() },

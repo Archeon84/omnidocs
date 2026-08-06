@@ -7,11 +7,13 @@ import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.ai.AiService
 import com.omnidocs.app.ai.AutoTagger
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
@@ -195,6 +197,27 @@ class EditorViewModel @Inject constructor(
         viewModelScope.launch {
             saveNoteInternal()
             onNavigated()
+        }
+    }
+
+    fun exportAsMarkdown(context: android.content.Context) {
+        viewModelScope.launch {
+            try {
+                val note = _currentNote.value ?: run {
+                    _snackbarEvent.tryEmit("Save the note first before exporting")
+                    return@launch
+                }
+                val markdown = com.omnidocs.app.util.HtmlToMarkdown.convert(_content.value)
+                val safeName = note.title.take(50).replace(Regex("[^a-zA-Z0-9\\s-]"), "").trim().replace(Regex("\\s+"), "_")
+                val fileName = if (safeName.isNotEmpty()) "$safeName.md" else "note.md"
+                val dir = java.io.File(context.getExternalFilesDir(null), "exports")
+                dir.mkdirs()
+                val file = java.io.File(dir, fileName)
+                file.writeText("# ${note.title}\n\n$markdown")
+                _snackbarEvent.tryEmit("Exported to: ${file.name}")
+            } catch (e: Exception) {
+                _snackbarEvent.tryEmit("Export failed: ${e.message ?: "Unknown error"}")
+            }
         }
     }
 
