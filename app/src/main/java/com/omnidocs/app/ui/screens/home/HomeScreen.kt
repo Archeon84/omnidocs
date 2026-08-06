@@ -107,6 +107,7 @@ fun HomeScreen(
     var showShareDialog by remember { mutableStateOf(false) }
     var showImportMenu by remember { mutableStateOf(false) }
     var showThemeSubmenu by remember { mutableStateOf(false) }
+    var isSearching by remember { mutableStateOf(false) }
     val hapticFeedback = LocalHapticFeedback.current
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -163,16 +164,51 @@ fun HomeScreen(
             } else {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text("OmniDocs")
-                            Text(
-                                text = "v1.0.0",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (isSearching) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { viewModel.updateSearchQuery(it) },
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = { Text("Search notes...") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Search,
+                                        contentDescription = "Search"
+                                    )
+                                },
+                                trailingIcon = {
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                                            Icon(
+                                                imageVector = Icons.Default.Clear,
+                                                contentDescription = "Clear"
+                                            )
+                                        }
+                                    }
+                                },
+                                singleLine = true
                             )
+                        } else {
+                            Column {
+                                Text("OmniDocs")
+                                Text(
+                                    text = "v1.0.0",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     },
                     actions = {
+                        IconButton(onClick = {
+                            isSearching = !isSearching
+                            if (!isSearching) viewModel.updateSearchQuery("")
+                        }) {
+                            Icon(
+                                imageVector = if (isSearching) Icons.Default.Close else Icons.Default.Search,
+                                contentDescription = if (isSearching) "Close search" else "Search"
+                            )
+                        }
                         IconButton(onClick = onFeedClick) {
                             Icon(
                                 imageVector = Icons.Default.Update,
@@ -288,33 +324,6 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Search bar
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { viewModel.updateSearchQuery(it) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Search notes...") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Search"
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                            Icon(
-                                imageVector = Icons.Default.Clear,
-                                contentDescription = "Clear"
-                            )
-                        }
-                    }
-                },
-                singleLine = true
-            )
-
             if (isInitialLoading && notes.isEmpty() && searchQuery.isEmpty()) {
                 // Shimmer skeleton while Room first emits
                 Box(
