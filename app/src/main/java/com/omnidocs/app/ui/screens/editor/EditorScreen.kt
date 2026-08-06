@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
@@ -460,24 +462,54 @@ fun EditorScreen(
 
     // Language Menu
     if (showLanguageMenu) {
+        val languages = mapOf(
+            "en" to "English",
+            "ms" to "Bahasa Melayu",
+            "zh" to "Chinese",
+            "ja" to "Japanese",
+            "ko" to "Korean",
+            "ar" to "Arabic",
+            "hi" to "Hindi",
+            "ru" to "Russian",
+            "fr" to "French",
+            "de" to "German",
+            "es" to "Spanish",
+            "pt" to "Portuguese",
+            "it" to "Italian",
+            "nl" to "Dutch",
+            "tr" to "Turkish",
+            "vi" to "Vietnamese",
+            "th" to "Thai",
+            "id" to "Indonesian"
+        )
         AlertDialog(
             onDismissRequest = { showLanguageMenu = false },
             title = { Text("Note Language") },
-            text = { Text("Select the primary language for AI features") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.setLanguage("en")
-                    showLanguageMenu = false
-                }) {
-                    Text("English")
+            text = {
+                LazyColumn {
+                    items(languages.entries.toList()) { (code, name) ->
+                        ListItem(
+                            headlineContent = { Text(name) },
+                            leadingContent = {
+                                if (viewModel.currentLanguage.value == code) {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            },
+                            modifier = Modifier.clickable {
+                                viewModel.setLanguage(code)
+                                showLanguageMenu = false
+                            }
+                        )
+                    }
                 }
             },
-            dismissButton = {
-                TextButton(onClick = {
-                    viewModel.setLanguage("ms")
-                    showLanguageMenu = false
-                }) {
-                    Text("Bahasa Melayu")
+            confirmButton = {
+                TextButton(onClick = { showLanguageMenu = false }) {
+                    Text("Cancel")
                 }
             }
         )
