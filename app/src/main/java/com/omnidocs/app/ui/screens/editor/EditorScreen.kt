@@ -20,8 +20,12 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
@@ -277,6 +281,19 @@ fun EditorScreen(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
+            // Title entrance animation — slides up + fades in with spring
+            val titleAlpha by animateFloatAsState(
+                targetValue = if (contentReady) 1f else 0f,
+                animationSpec = tween(300, delayMillis = 100),
+                label = "titleAlpha"
+            )
+            val titleOffset by animateDpAsState(
+                targetValue = if (contentReady) 0.dp else 10.dp,
+                animationSpec = spring(dampingRatio = 0.7f, stiffness = 300f),
+                label = "titleOffset"
+            )
+            val editorDensity = LocalDensity.current
+
             TopAppBar(
                 title = {
                     OutlinedTextField(
@@ -285,6 +302,10 @@ fun EditorScreen(
                         placeholder = { Text("Title") },
                         modifier = Modifier
                             .fillMaxWidth()
+                            .graphicsLayer {
+                                alpha = titleAlpha
+                                translationY = editorDensity.run { titleOffset.toPx() }
+                            }
                             .focusRequester(titleFocusRequester),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
@@ -422,13 +443,25 @@ fun EditorScreen(
                 .padding(paddingValues)
                 .imePadding()
         ) {
-            // Formatting toolbar - appears with stagger delay
+            // Formatting toolbar - spring slide-in from top with stagger
             val toolbarAlpha by animateFloatAsState(
                 targetValue = if (contentReady) 1f else 0f,
                 animationSpec = tween(300, delayMillis = 200),
                 label = "toolbarAlpha"
             )
-            Box(modifier = Modifier.graphicsLayer { alpha = toolbarAlpha }) {
+            val toolbarOffset by animateDpAsState(
+                targetValue = if (contentReady) 0.dp else (-12).dp,
+                animationSpec = spring(dampingRatio = 0.7f, stiffness = 300f),
+                label = "toolbarOffset"
+            )
+            val bodyDensity = LocalDensity.current
+            Box(
+                modifier = Modifier
+                    .graphicsLayer {
+                        alpha = toolbarAlpha
+                        translationY = bodyDensity.run { toolbarOffset.toPx() }
+                    }
+            ) {
                 FormattingToolbar(
                     formatState = formatState,
                     onBoldClick = { webViewRef?.evaluateJavascript("formatText('bold')", null) },
@@ -446,17 +479,25 @@ fun EditorScreen(
                 )
             }
 
-            // Rich text editor - appears with stagger delay
+            // Rich text editor - spring slide-in from bottom with stagger
             val editorAlpha by animateFloatAsState(
                 targetValue = if (contentReady) 1f else 0f,
                 animationSpec = tween(300, delayMillis = 300),
                 label = "editorAlpha"
             )
+            val editorOffset by animateDpAsState(
+                targetValue = if (contentReady) 0.dp else 12.dp,
+                animationSpec = spring(dampingRatio = 0.7f, stiffness = 300f),
+                label = "editorOffset"
+            )
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .weight(1f)
-                    .graphicsLayer { alpha = editorAlpha }
+                    .graphicsLayer {
+                        alpha = editorAlpha
+                        translationY = bodyDensity.run { editorOffset.toPx() }
+                    }
             ) {
                 RichTextEditor(
                     content = content,
@@ -733,13 +774,25 @@ private fun FormatIconButton(
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.85f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
+        label = "formatBtnScale"
+    )
 
     Surface(
         onClick = onClick,
         shape = MaterialTheme.shapes.small,
         color = containerColor,
+        interactionSource = interactionSource,
         modifier = Modifier
             .size(48.dp)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            }
             .semantics {
                 selected = isActive
                 stateDescription = if (isActive) "$contentDescription active" else contentDescription
