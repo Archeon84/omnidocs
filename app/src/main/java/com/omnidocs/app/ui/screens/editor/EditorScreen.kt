@@ -153,6 +153,7 @@ fun EditorScreen(
     val colorScheme = MaterialTheme.colorScheme
     val snackbarHostState = remember { SnackbarHostState() }
     val titleFocusRequester = remember { FocusRequester() }
+    var showTemplateDialog by remember { mutableStateOf(noteId == null) }
 
     // Auto-focus title field on new note creation
     LaunchedEffect(noteId) {
@@ -513,6 +514,36 @@ fun EditorScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showLanguageMenu = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Template selection dialog for new notes
+    if (showTemplateDialog) {
+        AlertDialog(
+            onDismissRequest = { showTemplateDialog = false },
+            title = { Text("Choose a template") },
+            text = {
+                LazyColumn {
+                    items(noteTemplates) { template ->
+                        ListItem(
+                            headlineContent = { Text(template.name) },
+                            leadingContent = { Text(template.icon, style = MaterialTheme.typography.headlineSmall) },
+                            modifier = Modifier.clickable {
+                                viewModel.updateTitle(template.title)
+                                if (template.content.isNotEmpty()) {
+                                    viewModel.updateContent(template.content)
+                                }
+                                showTemplateDialog = false
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTemplateDialog = false }) {
                     Text("Cancel")
                 }
             }
