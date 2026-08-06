@@ -1,5 +1,10 @@
 package com.omnidocs.app.ui.navigation
 
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -7,12 +12,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.ui.Alignment
 import com.omnidocs.app.ui.screens.auth.AuthScreen
 import com.omnidocs.app.ui.screens.editor.EditorScreen
 import com.omnidocs.app.ui.screens.feed.FeedScreen
 import com.omnidocs.app.ui.screens.home.HomeScreen
 import com.omnidocs.app.ui.screens.ocr.OcrScreen
 import com.omnidocs.app.ui.screens.settings.SettingsScreen
+import com.omnidocs.app.ui.theme.MotionTokens
 import com.omnidocs.app.ui.theme.screenEnterTransition
 import com.omnidocs.app.ui.theme.screenExitTransition
 import com.omnidocs.app.ui.theme.screenPopEnterTransition
@@ -71,10 +78,34 @@ fun NotesNavHost(
                     defaultValue = null
                 }
             ),
-            enterTransition = { screenEnterTransition() },
-            exitTransition = { screenExitTransition() },
-            popEnterTransition = { screenPopEnterTransition() },
-            popExitTransition = { screenPopExitTransition() }
+            enterTransition = {
+                fadeIn(animationSpec = tween(MotionTokens.DURATION_MS)) +
+                    expandVertically(
+                        animationSpec = tween(MotionTokens.DURATION_MS),
+                        expandFrom = Alignment.Top
+                    )
+            },
+            exitTransition = {
+                fadeOut(animationSpec = tween(300)) +
+                    shrinkVertically(
+                        animationSpec = tween(300),
+                        shrinkTowards = Alignment.Top
+                    )
+            },
+            popEnterTransition = {
+                fadeIn(animationSpec = tween(MotionTokens.DURATION_MS)) +
+                    expandVertically(
+                        animationSpec = tween(MotionTokens.DURATION_MS),
+                        expandFrom = Alignment.Top
+                    )
+            },
+            popExitTransition = {
+                fadeOut(animationSpec = tween(300)) +
+                    shrinkVertically(
+                        animationSpec = tween(300),
+                        shrinkTowards = Alignment.Top
+                    )
+            }
         ) { backStackEntry ->
             val noteId = backStackEntry.arguments?.getString("noteId")
             EditorScreen(
