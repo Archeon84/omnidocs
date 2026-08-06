@@ -420,7 +420,8 @@ fun EditorScreen(
                 onQuoteClick = { webViewRef?.evaluateJavascript("formatText('formatBlock', 'blockquote')", null) },
                 onCodeClick = { webViewRef?.evaluateJavascript("formatCode()", null) },
                 onImageClick = { imageLauncher.launch("image/*") },
-                onAudioClick = { audioLauncher.launch("audio/*") }
+                onAudioClick = { audioLauncher.launch("audio/*") },
+                onToggleSections = { webViewRef?.evaluateJavascript("toggleAllCollapse()", null) }
             )
 
             // Rich text editor
@@ -564,7 +565,8 @@ fun FormattingToolbar(
     onQuoteClick: () -> Unit,
     onCodeClick: () -> Unit,
     onImageClick: () -> Unit = {},
-    onAudioClick: () -> Unit = {}
+    onAudioClick: () -> Unit = {},
+    onToggleSections: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -656,6 +658,16 @@ fun FormattingToolbar(
                 contentDescription = "Insert Audio",
                 isActive = false,
                 onClick = onAudioClick
+            )
+
+            ToolbarDivider()
+
+            // Group 5: Sections
+            FormatIconButton(
+                icon = Icons.Default.UnfoldMore,
+                contentDescription = "Toggle Sections",
+                isActive = false,
+                onClick = onToggleSections
             )
         }
     }

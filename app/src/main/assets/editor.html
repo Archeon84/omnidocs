@@ -153,6 +153,31 @@
             background: var(--color-th-bg);
             font-weight: bold;
         }
+
+        .collapsible-heading {
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+            padding-left: 20px;
+        }
+        .collapsible-heading::before {
+            content: '\25B8';
+            position: absolute;
+            left: 0;
+            transition: transform 0.2s;
+            font-size: 0.8em;
+        }
+        .collapsible-heading.expanded::before {
+            transform: rotate(90deg);
+        }
+        .collapsible-content {
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        .collapsible-content.collapsed {
+            max-height: 0 !important;
+            opacity: 0;
+        }
     </style>
 </head>
 <body>
@@ -233,6 +258,7 @@
         // Update content from Android
         function updateContent(content) {
             editor.innerHTML = content;
+            initCollapsibles();
         }
 
         // Get content for Android
@@ -249,6 +275,58 @@
         function insertHtml(html) {
             editor.focus();
             document.execCommand('insertHTML', false, html);
+        }
+
+        function toggleCollapse(heading) {
+            heading.classList.toggle('expanded');
+            heading.classList.toggle('collapsed');
+            const content = heading.nextElementSibling;
+            if (content && content.classList.contains('collapsible-content')) {
+                content.classList.toggle('collapsed');
+            }
+        }
+
+        function toggleAllCollapse() {
+            const headings = document.querySelectorAll('.collapsible-heading');
+            const anyExpanded = Array.from(headings).some(h => h.classList.contains('expanded'));
+            headings.forEach(h => {
+                if (anyExpanded) {
+                    h.classList.add('collapsed');
+                    h.classList.remove('expanded');
+                } else {
+                    h.classList.add('expanded');
+                    h.classList.remove('collapsed');
+                }
+                const content = h.nextElementSibling;
+                if (content && content.classList.contains('collapsible-content')) {
+                    if (anyExpanded) {
+                        content.classList.add('collapsed');
+                    } else {
+                        content.classList.remove('collapsed');
+                    }
+                }
+            });
+        }
+
+        function initCollapsibles() {
+            document.querySelectorAll('h2, h3').forEach(heading => {
+                if (heading.classList.contains('collapsible-heading')) return;
+                heading.classList.add('collapsible-heading', 'expanded');
+                heading.onclick = () => toggleCollapse(heading);
+
+                let content = [];
+                let sibling = heading.nextElementSibling;
+                while (sibling && !['H1', 'H2', 'H3'].includes(sibling.tagName)) {
+                    content.push(sibling);
+                    sibling = sibling.nextElementSibling;
+                }
+                if (content.length > 0) {
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'collapsible-content expanded';
+                    heading.parentNode.insertBefore(wrapper, heading.nextSibling);
+                    content.forEach(el => wrapper.appendChild(el));
+                }
+            });
         }
     </script>
 </body>
