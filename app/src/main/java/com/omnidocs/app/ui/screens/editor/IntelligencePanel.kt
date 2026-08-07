@@ -1,8 +1,5 @@
 package com.omnidocs.app.ui.screens.editor
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.omnidocs.app.ai.ExtractedConcept
 
@@ -46,7 +44,7 @@ fun IntelligencePanel(
     }
 
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().imePadding(),
         tonalElevation = 3.dp,
         shadowElevation = 8.dp,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
@@ -93,32 +91,38 @@ fun IntelligencePanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 200.dp)
-                        .padding(vertical = 4.dp),
+                        .padding(vertical = 4.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(messages) { msg ->
                         val isUser = msg.role == "user"
-                        Surface(
-                            shape = RoundedCornerShape(
-                                topStart = 12.dp, topEnd = 12.dp,
-                                bottomStart = if (isUser) 12.dp else 4.dp,
-                                bottomEnd = if (isUser) 4.dp else 12.dp
-                            ),
-                            color = if (isUser)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else
-                                MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth(0.85f)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
                         ) {
-                            Text(
-                                text = msg.content,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(10.dp),
+                            Surface(
+                                shape = RoundedCornerShape(
+                                    topStart = 12.dp, topEnd = 12.dp,
+                                    bottomStart = if (isUser) 12.dp else 4.dp,
+                                    bottomEnd = if (isUser) 4.dp else 12.dp
+                                ),
                                 color = if (isUser)
-                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                    MaterialTheme.colorScheme.primaryContainer
                                 else
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.fillMaxWidth(0.85f)
+                            ) {
+                                Text(
+                                    text = msg.content,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(10.dp),
+                                    color = if (isUser)
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    else
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                     if (isLoading) {
@@ -191,7 +195,10 @@ fun ConceptDialog(
         onDismissRequest = onDismiss,
         title = { Text("Extracted Concepts") },
         text = {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 400.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 items(concepts) { concept ->
                     Surface(
                         shape = MaterialTheme.shapes.medium,
