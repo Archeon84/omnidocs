@@ -340,6 +340,9 @@ class ModelDownloadManager @Inject constructor(
 
                 val fileSize = connection.contentLength.toLong()
 
+                // Stream SHA-256 during download for integrity verification
+                val digest = MessageDigest.getInstance("SHA-256")
+
                 connection.inputStream.use { input ->
                     FileOutputStream(tmpFile).use { output ->
                         val buffer = ByteArray(8192)
@@ -355,6 +358,7 @@ class ModelDownloadManager @Inject constructor(
                                 return@withContext
                             }
                             output.write(buffer, 0, bytesRead)
+                            digest.update(buffer, 0, bytesRead)
                             totalBytes += bytesRead
 
                             if (fileSize > 0) {
@@ -370,6 +374,18 @@ class ModelDownloadManager @Inject constructor(
                     }
                 }
 
+                // Verify checksum if provided
+                val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                if (model.sha256 != null) {
+                    if (!actualSha256.equals(model.sha256, ignoreCase = true)) {
+                        Log.e(TAG, "STT checksum mismatch! Expected: ${model.sha256}, Got: $actualSha256")
+                        tmpFile.delete()
+                        _sttDownloadState.value = DownloadState.Error(model.id, "Checksum verification failed")
+                        return@withContext
+                    }
+                    Log.d(TAG, "STT checksum verified for ${model.name}")
+                }
+
                 // Extract tar.bz2
                 _sttDownloadState.value = DownloadState.Downloading(model.id, 99f)
                 val process = ProcessBuilder("tar", "xjf", tmpFile.absolutePath, "-C", modelsDir.absolutePath)
@@ -383,8 +399,15 @@ class ModelDownloadManager @Inject constructor(
                     return@withContext
                 }
 
-                // Save checksum sidecar
-                val extractedDir = File(modelsDir, model.extractedDirName)
+                // Validate extracted directory is within modelsDir (path traversal protection)
+                val extractedDir = File(modelsDir, model.extractedDirName).canonicalFile
+                if (!extractedDir.path.startsWith(modelsDir.canonicalPath + File.separator)) {
+                    Log.e(TAG, "Path traversal detected in STT archive: ${model.extractedDirName}")
+                    extractedDir.deleteRecursively()
+                    _sttDownloadState.value = DownloadState.Error(model.id, "Security: invalid archive path")
+                    return@withContext
+                }
+
                 if (extractedDir.exists()) {
                     saveSttChecksum(model)
                 }
