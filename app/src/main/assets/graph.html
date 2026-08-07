@@ -277,7 +277,15 @@
                 if (n !== hoveredNode) { hoveredNode = n; render(); }
                 if (n) {
                     tooltip.style.display = 'block';
-                    tooltip.innerHTML = '<div class="tooltip-title">' + n.title + '</div><div class="tooltip-detail">' + n.wordCount + ' words</div>';
+                    tooltip.textContent = '';
+                    var titleEl = document.createElement('div');
+                    titleEl.className = 'tooltip-title';
+                    titleEl.textContent = n.title;
+                    var detailEl = document.createElement('div');
+                    detailEl.className = 'tooltip-detail';
+                    detailEl.textContent = n.wordCount + ' words';
+                    tooltip.appendChild(titleEl);
+                    tooltip.appendChild(detailEl);
                     tooltip.style.left = (ev.clientX + 12) + 'px';
                     tooltip.style.top = (ev.clientY - 12) + 'px';
                 } else {
