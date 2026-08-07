@@ -52,7 +52,7 @@
 
         var nodes = [], edges = [], nodeMap = {};
         var transform = { x: 0, y: 0, k: 1 };
-        var drag = null, pinchDist = null;
+        var drag = null, pinchDist = null, pinchDistK = null;
         var hoveredNode = null;
         var animFrame = null;
 
@@ -245,7 +245,9 @@
         function animate() {
             sim.tick();
             render();
-            animFrame = requestAnimationFrame(animate);
+            if (!sim.isSettled()) {
+                animFrame = requestAnimationFrame(animate);
+            }
         }
 
         // Mouse/touch interactions

@@ -3,7 +3,7 @@ package com.omnidocs.app.ui.screens.voice
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.data.repository.NotesRepository
-import com.omnidocs.app.util.HtmlSanitizer
+import com.omnidocs.app.util.sanitizeForHtml
 import com.omnidocs.app.voice.VoiceCaptureManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -60,11 +60,7 @@ class VoiceCaptureViewModel @Inject constructor(
             } catch (e: Exception) {
                 // If structuring fails, save raw text with HTML-escaped content
                 val title = generateTitle(rawText)
-                val escapedText = rawText
-                    .replace("&", "&amp;")
-                    .replace("<", "&lt;")
-                    .replace(">", "&gt;")
-                    .replace("\n", "<br/>")
+                val escapedText = sanitizeForHtml(rawText).replace("\n", "<br/>")
 
                 val note = repository.createNote(
                     title = title,

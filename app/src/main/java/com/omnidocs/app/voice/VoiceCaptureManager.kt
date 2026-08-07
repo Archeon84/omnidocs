@@ -13,7 +13,9 @@ import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelInfo
 import com.omnidocs.app.ai.ModelPreferences
 import com.omnidocs.app.ai.PromptBuilder
+import com.omnidocs.app.ai.resolveActiveModel
 import com.omnidocs.app.util.HtmlSanitizer
+import com.omnidocs.app.util.sanitizeForHtml
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,10 +47,7 @@ class VoiceCaptureManager @Inject constructor(
     val error: StateFlow<String?> = _error.asStateFlow()
 
     private suspend fun getActiveModel(): ModelInfo? {
-        val selectedId = modelPreferences.selectedModelId.first()
-        val downloaded = modelDownloadManager.getDownloadedModels()
-        return downloaded.find { it.id == selectedId && it.isDownloaded }
-            ?: downloaded.firstOrNull { it.isDownloaded }
+        return resolveActiveModel(modelPreferences, modelDownloadManager)
     }
 
     fun startListening(languageCode: String = "en") {
@@ -167,17 +166,9 @@ class VoiceCaptureManager @Inject constructor(
         }
     }
 
-    /**
-     * Escape HTML special characters for safe embedding in HTML content.
-     */
-    private fun sanitizeForHtml(text: String): String {
-        return text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    }
-
     fun destroy() {
+        recognizer?.stopListening()
+        _isListening.value = false
         recognizer?.destroy()
         recognizer = null
     }

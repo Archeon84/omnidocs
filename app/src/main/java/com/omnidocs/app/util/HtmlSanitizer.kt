@@ -96,3 +96,14 @@ object HtmlSanitizer {
         return Jsoup.parse(html).text()
     }
 }
+
+/**
+ * Escape HTML special characters for safe embedding in HTML content.
+ * Use when building HTML from user-provided plain text.
+ */
+fun sanitizeForHtml(text: String): String {
+    return text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+}

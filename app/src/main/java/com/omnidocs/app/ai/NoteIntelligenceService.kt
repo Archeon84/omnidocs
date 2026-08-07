@@ -3,13 +3,8 @@ package com.omnidocs.app.ai
 import com.omnidocs.app.data.repository.NotesRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
 import org.json.JSONException
-import org.json.JSONObject
-import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,18 +32,14 @@ class NoteIntelligenceService @Inject constructor(
      * Check if any model is downloaded and ready for inference.
      */
     private fun isAnyModelDownloaded(): Boolean {
-        return modelDownloadManager.getDownloadedModels().any { it.isDownloaded }
+        return isAnyModelDownloaded(modelDownloadManager)
     }
 
     /**
      * Get the currently selected model info, or fall back to any downloaded model.
      */
     private suspend fun getActiveModel(): ModelInfo? {
-        val selectedId = modelPreferences.selectedModelId.first()
-        val downloaded = modelDownloadManager.getDownloadedModels()
-        // Try selected model first, fall back to any downloaded model
-        return downloaded.find { it.id == selectedId && it.isDownloaded }
-            ?: downloaded.firstOrNull { it.isDownloaded }
+        return resolveActiveModel(modelPreferences, modelDownloadManager)
     }
 
     /**
@@ -67,7 +58,7 @@ class NoteIntelligenceService @Inject constructor(
      */
     private fun truncateText(text: String, maxChars: Int = 4000): String {
         if (text.length <= maxChars) return text
-        return text.take(maxChars) + "\n\n[Truncated — showing first $maxChars chars]"
+        return text.take(maxChars) + "\n\n[Truncated - showing first $maxChars chars]"
     }
 
     /**
@@ -178,7 +169,6 @@ class NoteIntelligenceService @Inject constructor(
     private suspend fun deduplicateConcepts(concepts: List<ExtractedConcept>): List<ExtractedConcept> {
         if (concepts.isEmpty()) return emptyList()
 
-        val conceptNames = concepts.map { it.name.lowercase(Locale.ROOT) }
         val deduplicated = mutableListOf<ExtractedConcept>()
 
         // Search for each concept in existing notes

@@ -8,6 +8,7 @@ import com.omnidocs.app.ai.ModelInfo
 import com.omnidocs.app.ai.ModelPreferences
 import com.omnidocs.app.ai.PromptBuilder
 import com.omnidocs.app.ai.PromptFormat
+import com.omnidocs.app.ai.resolveActiveModel
 import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.domain.model.Note
 import kotlinx.coroutines.Dispatchers
@@ -28,10 +29,7 @@ class GraphEngine @Inject constructor(
     private val repository: NotesRepository
 ) {
     private suspend fun getActiveModel(): ModelInfo? = withContext(Dispatchers.IO) {
-        val selectedId = modelPreferences.selectedModelId.first()
-        val downloaded = modelDownloadManager.getDownloadedModels()
-        downloaded.find { it.id == selectedId && it.isDownloaded }
-            ?: downloaded.firstOrNull { it.isDownloaded }
+        resolveActiveModel(modelPreferences, modelDownloadManager)
     }
 
     /**
@@ -67,7 +65,8 @@ class GraphEngine @Inject constructor(
             for ((noteA, noteB) in candidates) {
                 val connections = analyzePair(model.promptFormat, noteA.plainText, noteA.title, noteB.plainText, noteB.title)
                 for (conn in connections) {
-                    val targetId = if (conn["targetTitle"] == noteB.title) noteB.id else noteA.id
+                    val targetTitle = conn["targetTitle"] as? String ?: ""
+                    val targetId = if (targetTitle.equals(noteB.title, ignoreCase = true)) noteB.id else noteA.id
                     edges.add(GraphEdge(
                         from = noteA.id,
                         to = targetId,
@@ -123,6 +122,7 @@ class GraphEngine @Inject constructor(
         }
 
         val noteWords = notes.map { it.id to getWords(it.plainText) }.toMap()
+        val notesById = notes.associateBy { it.id }
         val pairs = mutableListOf<Triple<String, String, Float>>()
 
         for (i in notes.indices) {
@@ -140,8 +140,10 @@ class GraphEngine @Inject constructor(
 
         return pairs.sortedByDescending { it.third }
             .take(maxPairs)
-            .map { (idA, idB, _) ->
-                notes.first { it.id == idA } to notes.first { it.id == idB }
+            .mapNotNull { (idA, idB, _) ->
+                val a = notesById[idA]
+                val b = notesById[idB]
+                if (a != null && b != null) a to b else null
             }
     }
 
@@ -205,8 +207,8 @@ class GraphEngine @Inject constructor(
                         put("strength", edge.strength)
                     }
                 }
-            if (related.isNotEmpty()) {
-                val updated = note.copy(relatedNotes = JSONArray(related).toString())
+            val updated = note.copy(relatedNotes = JSONArray(related).toString())
+            if (updated.relatedNotes != note.relatedNotes) {
                 repository.updateNote(updated)
             }
         }

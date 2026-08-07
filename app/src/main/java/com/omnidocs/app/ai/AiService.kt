@@ -27,18 +27,14 @@ class AiService @Inject constructor(
      * Check if any chat-compatible model is downloaded and ready for inference.
      */
     private fun isAnyModelDownloaded(): Boolean {
-        return modelDownloadManager.getDownloadedModels().any { it.isDownloaded }
+        return isAnyModelDownloaded(modelDownloadManager)
     }
 
     /**
      * Get the currently selected model info, or null if none downloaded.
      */
     private suspend fun getActiveModel(): ModelInfo? {
-        val selectedId = modelPreferences.selectedModelId.first()
-        val downloaded = modelDownloadManager.getDownloadedModels()
-        // Try selected model first, fall back to any downloaded model
-        return downloaded.find { it.id == selectedId && it.isDownloaded }
-            ?: downloaded.firstOrNull { it.isDownloaded }
+        return resolveActiveModel(modelPreferences, modelDownloadManager)
     }
 
     /**

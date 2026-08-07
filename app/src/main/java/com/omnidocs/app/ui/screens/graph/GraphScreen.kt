@@ -135,8 +135,7 @@ fun GraphScreen(
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
-                                // Push data after page loads
-                                graphData?.let { data -> pushGraphDataToWebView(data) }
+                                // LaunchedEffect(graphData) handles data push once WebView is ready
                             }
                         }
 

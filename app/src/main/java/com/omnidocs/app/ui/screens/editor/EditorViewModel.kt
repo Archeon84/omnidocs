@@ -9,6 +9,7 @@ import com.omnidocs.app.ai.AutoTagger
 import com.omnidocs.app.ai.ExtractedConcept
 import com.omnidocs.app.ai.NoteIntelligenceService
 import com.omnidocs.app.ui.screens.editor.IntelligenceMessage
+import com.omnidocs.app.util.sanitizeForHtml
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -497,7 +498,7 @@ class EditorViewModel @Inject constructor(
             try {
                 val note = repository.createNote(
                     title = title,
-                    content = "<p>${description.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}</p>",
+                    content = "<p>${sanitizeForHtml(description)}</p>",
                     plainText = description,
                     language = _currentLanguage.value
                 )
