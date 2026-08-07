@@ -34,6 +34,25 @@ class ModelPreferences @Inject constructor(
         }
     }
 
+    // ---- STT model preference ----
+
+    private val selectedSttModelKey = stringPreferencesKey("selected_stt_model_id")
+
+    /** The currently selected STT model ID. Defaults to null (system recognizer). */
+    val selectedSttModelId: Flow<String?> = context.modelDataStore.data.map { prefs ->
+        prefs[selectedSttModelKey]
+    }
+
+    suspend fun setSelectedSttModelId(id: String?) {
+        context.modelDataStore.edit { prefs ->
+            if (id != null) {
+                prefs[selectedSttModelKey] = id
+            } else {
+                prefs.remove(selectedSttModelKey)
+            }
+        }
+    }
+
     companion object {
         const val DEFAULT_MODEL_ID = "qwen3_1.7b"
     }
