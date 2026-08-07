@@ -53,7 +53,10 @@ fun SettingsScreen(
     var accountExpanded by remember { mutableStateOf(true) }
     var syncExpanded by remember { mutableStateOf(true) }
     var modelsExpanded by remember { mutableStateOf(true) }
+    var speechExpanded by remember { mutableStateOf(true) }
     var aboutExpanded by remember { mutableStateOf(true) }
+
+    val selectedSttModelId by viewModel.selectedSttModelId.collectAsState()
 
     // Refresh sign-in status every time the screen resumes
     if (lifecycleOwner != null) {
@@ -235,6 +238,35 @@ fun SettingsScreen(
                         ModelDownloadSection(
                             viewModel = viewModel,
                             selectedModelId = selectedModelId
+                        )
+                    }
+                }
+            }
+
+            // ── Speech Recognition section ──
+            stickyHeader {
+                CollapsibleSectionHeader(
+                    title = "Speech Recognition",
+                    isExpanded = speechExpanded,
+                    onToggle = { speechExpanded = !speechExpanded }
+                )
+            }
+            item {
+                AnimatedVisibility(
+                    visible = speechExpanded,
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    Column {
+                        Text(
+                            text = "Download a model for offline speech-to-text. Works without internet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        SttModelDownloadSection(
+                            viewModel = viewModel,
+                            selectedModelId = selectedSttModelId
                         )
                     }
                 }
@@ -604,6 +636,150 @@ fun ModelDownloadSection(
                                 onClick = { viewModel.downloadModel(model) },
                                 enabled = !isDownloading
                             ) {
+                                Text("Download")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SttModelDownloadSection(
+    viewModel: SettingsViewModel,
+    selectedModelId: String?
+) {
+    val models = viewModel.sttDownloadedModels.collectAsState()
+    val downloadState = viewModel.sttDownloadState.collectAsState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+    ) {
+        // System recognizer option
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (selectedModelId == null)
+                    MaterialTheme.colorScheme.primaryContainer
+                else
+                    MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { viewModel.selectSttModel(null) }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = selectedModelId == null,
+                    onClick = { viewModel.selectSttModel(null) }
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text("System Recognizer", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Uses Google speech services (requires internet)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // Downloaded and available STT models
+        viewModel.modelDownloadManager.sttModels.forEach { model ->
+            val isDownloaded = models.value.any { it.id == model.id && it.isDownloaded }
+            val isSelected = model.id == selectedModelId
+            val isDownloading = when (val state = downloadState.value) {
+                is com.omnidocs.app.ai.DownloadState.Downloading -> state.modelId == model.id
+                else -> false
+            }
+            val progress = when (val state = downloadState.value) {
+                is com.omnidocs.app.ai.DownloadState.Downloading -> state.progress
+                else -> 0f
+            }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isSelected && isDownloaded)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(model.name, style = MaterialTheme.typography.titleMedium)
+                            Text(model.description, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Size: ${model.size}", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Languages: ${model.languages.joinToString(", ")}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (isDownloaded && isSelected) {
+                            Icon(Icons.Default.CheckCircle, "Active",
+                                tint = MaterialTheme.colorScheme.primary)
+                        } else if (isDownloaded) {
+                            Icon(Icons.Default.Check, "Downloaded",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    if (isDownloading) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(progress = { progress / 100f },
+                            modifier = Modifier.fillMaxWidth())
+                        Text("Downloading: ${progress.toInt()}%",
+                            style = MaterialTheme.typography.labelSmall)
+                    }
+
+                    val downloadError = when (val state = downloadState.value) {
+                        is com.omnidocs.app.ai.DownloadState.Error ->
+                            if (state.modelId == model.id) state.message else null
+                        else -> null
+                    }
+                    downloadError?.let { error ->
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Error: $error", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        if (isDownloaded) {
+                            if (!isSelected) {
+                                TextButton(onClick = { viewModel.selectSttModel(model.id) }) {
+                                    Text("Select")
+                                }
+                            }
+                            TextButton(onClick = { viewModel.deleteSttModel(model) }) {
+                                Text("Delete", color = MaterialTheme.colorScheme.error)
+                            }
+                        } else {
+                            TextButton(onClick = { viewModel.downloadSttModel(model) },
+                                enabled = !isDownloading) {
                                 Text("Download")
                             }
                         }

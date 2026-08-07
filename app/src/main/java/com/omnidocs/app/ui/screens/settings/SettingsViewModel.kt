@@ -184,4 +184,50 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun isModelReady(): Boolean = llamaCppService.isReady()
+
+    // ---- STT model management ----
+
+    val sttDownloadedModels: StateFlow<List<com.omnidocs.app.stt.SttModelInfo>> = modelDownloadManager.sttDownloadState
+        .map { modelDownloadManager.getDownloadedSttModels() }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = modelDownloadManager.getDownloadedSttModels()
+        )
+
+    val sttDownloadState: StateFlow<DownloadState> = modelDownloadManager.sttDownloadState
+
+    val selectedSttModelId: StateFlow<String?> = modelPreferences.selectedSttModelId
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = null
+        )
+
+    fun downloadSttModel(model: com.omnidocs.app.stt.SttModelInfo) {
+        viewModelScope.launch {
+            modelDownloadManager.downloadSttModel(model)
+        }
+    }
+
+    fun deleteSttModel(model: com.omnidocs.app.stt.SttModelInfo) {
+        modelDownloadManager.deleteSttModel(model)
+        if (model.id == selectedSttModelId.value) {
+            viewModelScope.launch {
+                modelPreferences.setSelectedSttModelId(null)
+            }
+        }
+        _snackbarEvent.tryEmit("${model.name} deleted")
+    }
+
+    fun selectSttModel(modelId: String?) {
+        viewModelScope.launch {
+            modelPreferences.setSelectedSttModelId(modelId)
+            if (modelId != null) {
+                _snackbarEvent.tryEmit("STT model selected")
+            } else {
+                _snackbarEvent.tryEmit("Using system recognizer")
+            }
+        }
+    }
 }
