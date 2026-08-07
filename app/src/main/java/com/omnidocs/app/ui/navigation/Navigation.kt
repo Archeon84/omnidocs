@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import com.omnidocs.app.ui.screens.auth.AuthScreen
 import com.omnidocs.app.ui.screens.editor.EditorScreen
 import com.omnidocs.app.ui.screens.feed.FeedScreen
+import com.omnidocs.app.ui.screens.graph.GraphScreen
 import com.omnidocs.app.ui.screens.home.HomeScreen
 import com.omnidocs.app.ui.screens.ocr.OcrScreen
 import com.omnidocs.app.ui.screens.settings.SettingsScreen
@@ -40,6 +41,7 @@ sealed class Screen(val route: String) {
     object Feed : Screen("feed")
     object Auth : Screen("auth")
     object Voice : Screen("voice")
+    object Graph : Screen("graph")
 }
 
 @Composable
@@ -72,6 +74,9 @@ fun NotesNavHost(
                 },
                 onVoiceCapture = {
                     navController.navigate(Screen.Voice.route)
+                },
+                onGraphClick = {
+                    navController.navigate(Screen.Graph.route)
                 }
             )
         }
@@ -89,6 +94,20 @@ fun NotesNavHost(
                     navController.navigate(Screen.Editor.createRoute(noteId))
                 },
                 onDismiss = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = Screen.Graph.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            GraphScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onNodeTap = { noteId -> navController.navigate(Screen.Editor.createRoute(noteId)) },
+                navController = navController
             )
         }
 

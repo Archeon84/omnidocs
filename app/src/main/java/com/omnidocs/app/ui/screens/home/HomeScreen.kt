@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.TextSnippet
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -107,7 +108,8 @@ fun HomeScreen(
     onNewNote: () -> Unit,
     onSettingsClick: () -> Unit,
     onFeedClick: () -> Unit = {},
-    onVoiceCapture: () -> Unit = {}, // NEW
+    onVoiceCapture: () -> Unit = {},
+    onGraphClick: () -> Unit = {}, // NEW
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val notes by viewModel.notes.collectAsState()
@@ -230,6 +232,12 @@ fun HomeScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = onGraphClick) {
+                            Icon(
+                                imageVector = Icons.Default.AccountTree,
+                                contentDescription = "Knowledge Graph"
+                            )
+                        }
                         IconButton(onClick = {
                             isSearching = !isSearching
                             if (!isSearching) viewModel.updateSearchQuery("")
