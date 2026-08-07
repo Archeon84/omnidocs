@@ -497,7 +497,7 @@ class EditorViewModel @Inject constructor(
             try {
                 val note = repository.createNote(
                     title = title,
-                    content = "<p>$description</p>",
+                    content = "<p>${description.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}</p>",
                     plainText = description,
                     language = _currentLanguage.value
                 )
