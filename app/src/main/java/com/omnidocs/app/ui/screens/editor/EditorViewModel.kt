@@ -6,6 +6,9 @@ import com.omnidocs.app.domain.model.Note
 import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.ai.AiService
 import com.omnidocs.app.ai.AutoTagger
+import com.omnidocs.app.ai.ExtractedConcept
+import com.omnidocs.app.ai.NoteIntelligenceService
+import com.omnidocs.app.ui.screens.editor.IntelligenceMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,7 +23,8 @@ import javax.inject.Inject
 class EditorViewModel @Inject constructor(
     private val repository: NotesRepository,
     private val aiService: AiService,
-    private val autoTagger: AutoTagger
+    private val autoTagger: AutoTagger,
+    private val noteIntelligenceService: NoteIntelligenceService
 ) : ViewModel() {
 
     private val _currentNote = MutableStateFlow<Note?>(null)
@@ -65,6 +69,19 @@ class EditorViewModel @Inject constructor(
 
     private val _aiPreview = MutableStateFlow<AiPreviewState?>(null)
     val aiPreview: StateFlow<AiPreviewState?> = _aiPreview.asStateFlow()
+
+    // ── Note Intelligence ──────────────────────────────────────────────
+    private val _intelligenceMessages = MutableStateFlow<List<IntelligenceMessage>>(emptyList())
+    val intelligenceMessages: StateFlow<List<IntelligenceMessage>> = _intelligenceMessages.asStateFlow()
+
+    private val _isIntelligenceLoading = MutableStateFlow(false)
+    val isIntelligenceLoading: StateFlow<Boolean> = _isIntelligenceLoading.asStateFlow()
+
+    private val _intelligenceConcepts = MutableStateFlow<List<ExtractedConcept>>(emptyList())
+    val intelligenceConcepts: StateFlow<List<ExtractedConcept>> = _intelligenceConcepts.asStateFlow()
+
+    private val _showConceptDialog = MutableStateFlow(false)
+    val showConceptDialog: StateFlow<Boolean> = _showConceptDialog.asStateFlow()
 
     private var autoSaveJob: Job? = null
     private var noteLoadJob: Job? = null
@@ -399,6 +416,104 @@ class EditorViewModel @Inject constructor(
 
     fun dismissAiPreview() {
         _aiPreview.value = null
+    }
+
+    // ── Note Intelligence Methods ──────────────────────────────────────
+
+    fun askAboutNote(question: String) {
+        val noteContent = _content.value
+        if (noteContent.isBlank() || question.isBlank()) return
+
+        _intelligenceMessages.value = _intelligenceMessages.value + IntelligenceMessage("user", question)
+        _isIntelligenceLoading.value = true
+
+        viewModelScope.launch {
+            try {
+                val answer = noteIntelligenceService.askAboutNote(
+                    noteContent = stripHtml(noteContent),
+                    question = question,
+                    language = _currentLanguage.value
+                )
+                _intelligenceMessages.value = _intelligenceMessages.value +
+                    IntelligenceMessage("assistant", answer)
+            } catch (e: Exception) {
+                _intelligenceMessages.value = _intelligenceMessages.value +
+                    IntelligenceMessage("assistant", "Error: ${e.message ?: "Unknown error"}")
+            } finally {
+                _isIntelligenceLoading.value = false
+            }
+        }
+    }
+
+    fun explainSelectedText(selectedText: String) {
+        val noteContent = _content.value
+        if (noteContent.isBlank() || selectedText.isBlank()) return
+
+        _intelligenceMessages.value = _intelligenceMessages.value +
+            IntelligenceMessage("user", "Explain: \"$selectedText\"")
+        _isIntelligenceLoading.value = true
+
+        viewModelScope.launch {
+            try {
+                val explanation = noteIntelligenceService.explainText(
+                    fullNote = stripHtml(noteContent),
+                    selectedText = selectedText,
+                    language = _currentLanguage.value
+                )
+                _intelligenceMessages.value = _intelligenceMessages.value +
+                    IntelligenceMessage("assistant", explanation)
+            } catch (e: Exception) {
+                _intelligenceMessages.value = _intelligenceMessages.value +
+                    IntelligenceMessage("assistant", "Error: ${e.message ?: "Unknown error"}")
+            } finally {
+                _isIntelligenceLoading.value = false
+            }
+        }
+    }
+
+    fun extractConcepts() {
+        val noteContent = _content.value
+        if (noteContent.isBlank()) return
+
+        _isIntelligenceLoading.value = true
+        viewModelScope.launch {
+            try {
+                val concepts = noteIntelligenceService.extractConcepts(
+                    noteContent = stripHtml(noteContent),
+                    language = _currentLanguage.value
+                )
+                _intelligenceConcepts.value = concepts
+                _showConceptDialog.value = true
+            } catch (e: Exception) {
+                _snackbarEvent.tryEmit("Failed to extract concepts: ${e.message}")
+            } finally {
+                _isIntelligenceLoading.value = false
+            }
+        }
+    }
+
+    fun createNoteFromConcept(title: String, description: String) {
+        viewModelScope.launch {
+            try {
+                val note = repository.createNote(
+                    title = title,
+                    content = "<p>$description</p>",
+                    plainText = description,
+                    language = _currentLanguage.value
+                )
+                _snackbarEvent.tryEmit("Created note: $title")
+            } catch (e: Exception) {
+                _snackbarEvent.tryEmit("Failed to create note: ${e.message}")
+            }
+        }
+    }
+
+    fun dismissConceptDialog() {
+        _showConceptDialog.value = false
+    }
+
+    fun clearIntelligenceChat() {
+        _intelligenceMessages.value = emptyList()
     }
 
     // ---- End AI Preview Dialog ----
