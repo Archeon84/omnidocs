@@ -177,6 +177,9 @@ dependencies {
     // Kotlinx Serialization for model checksums
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
+    // Sherpa-onnx for offline speech recognition (AAR via JitPack)
+    implementation("com.github.k2-fsa:sherpa-onnx:v1.13.4")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
