@@ -14,14 +14,18 @@ import com.omnidocs.app.ai.ModelInfo
 import com.omnidocs.app.ai.ModelPreferences
 import com.omnidocs.app.ai.PromptBuilder
 import com.omnidocs.app.ai.resolveActiveModel
+import com.omnidocs.app.stt.SttEngine
+import com.omnidocs.app.stt.SttEngineFactory
 import com.omnidocs.app.util.HtmlSanitizer
 import com.omnidocs.app.util.sanitizeForHtml
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -33,8 +37,12 @@ class VoiceCaptureManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val llamaCppService: LlamaCppService,
     private val modelDownloadManager: ModelDownloadManager,
-    private val modelPreferences: ModelPreferences
+    private val modelPreferences: ModelPreferences,
+    private val sttEngineFactory: SttEngineFactory
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var activeEngine: SttEngine? = null
+    private var useSystemRecognizer = false
     private var recognizer: SpeechRecognizer? = null
 
     private val _transcript = MutableStateFlow("")
@@ -46,16 +54,59 @@ class VoiceCaptureManager @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _engineType = MutableStateFlow("system")
+    val engineType: StateFlow<String> = _engineType.asStateFlow()
+
     private suspend fun getActiveModel(): ModelInfo? {
         return resolveActiveModel(modelPreferences, modelDownloadManager)
     }
 
-    fun startListening(languageCode: String = "en") {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            _error.value = "Speech recognition not available on this device"
-            return
+    /**
+     * Resolve which engine to use and initialize it.
+     */
+    private suspend fun resolveEngine(): Boolean {
+        val sherpaEngine = sttEngineFactory.getEngine()
+        if (sherpaEngine != null) {
+            activeEngine = sherpaEngine
+            useSystemRecognizer = false
+            _engineType.value = "offline"
+            return true
         }
 
+        // Fall back to system SpeechRecognizer
+        if (SpeechRecognizer.isRecognitionAvailable(context)) {
+            useSystemRecognizer = true
+            _engineType.value = "system"
+            return true
+        }
+
+        _error.value = "No speech recognition available. Download a model in Settings."
+        return false
+    }
+
+    fun startListening(languageCode: String = "en") {
+        _isListening.value = true
+        _error.value = null
+        _transcript.value = ""
+
+        scope.launch {
+            val ready = resolveEngine()
+            if (!ready) {
+                _isListening.value = false
+                return@launch
+            }
+
+            if (!useSystemRecognizer && activeEngine != null) {
+                activeEngine?.startListening(languageCode) { partial ->
+                    // Partial results update the UI preview
+                }
+            } else {
+                startSystemRecognizer(languageCode)
+            }
+        }
+    }
+
+    private fun startSystemRecognizer(languageCode: String) {
         recognizer?.destroy()
         recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
             setRecognitionListener(object : RecognitionListener {
@@ -79,7 +130,7 @@ class VoiceCaptureManager @Inject constructor(
                         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout. Try again."
                         SpeechRecognizer.ERROR_AUDIO -> "Audio recording error."
                         SpeechRecognizer.ERROR_CLIENT -> "Client error. Try again."
-                        SpeechRecognizer.ERROR_NETWORK -> "Network error."
+                        SpeechRecognizer.ERROR_NETWORK -> "Network required for system recognizer. Download an offline model in Settings."
                         SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout."
                         else -> "Recognition error ($error)"
                     }
@@ -89,7 +140,6 @@ class VoiceCaptureManager @Inject constructor(
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     val fullText = matches?.firstOrNull() ?: ""
                     if (fullText.isNotBlank()) {
-                        // Final result: append to accumulated transcript
                         _transcript.value = if (_transcript.value.isEmpty()) {
                             fullText
                         } else {
@@ -98,12 +148,7 @@ class VoiceCaptureManager @Inject constructor(
                     }
                 }
 
-                override fun onPartialResults(partialResults: Bundle?) {
-                    // Partial results are informational only; don't overwrite accumulated transcript.
-                    // The UI can display a preview from the latest partial if needed,
-                    // but the committed transcript only updates on final onResults().
-                }
-
+                override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         }
@@ -119,7 +164,18 @@ class VoiceCaptureManager @Inject constructor(
     }
 
     fun stopListening() {
-        recognizer?.stopListening()
+        if (!useSystemRecognizer && activeEngine != null) {
+            val result = activeEngine?.stopListening()
+            if (result != null && result.text.isNotBlank()) {
+                _transcript.value = if (_transcript.value.isEmpty()) {
+                    result.text
+                } else {
+                    "${_transcript.value} ${result.text}"
+                }
+            }
+        } else {
+            recognizer?.stopListening()
+        }
         _isListening.value = false
     }
 
@@ -167,9 +223,14 @@ class VoiceCaptureManager @Inject constructor(
     }
 
     fun destroy() {
-        recognizer?.stopListening()
-        _isListening.value = false
-        recognizer?.destroy()
-        recognizer = null
+        if (!useSystemRecognizer) {
+            activeEngine?.release()
+            activeEngine = null
+        } else {
+            recognizer?.stopListening()
+            _isListening.value = false
+            recognizer?.destroy()
+            recognizer = null
+        }
     }
 }
