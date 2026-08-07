@@ -11,6 +11,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import com.omnidocs.app.stt.SttModelInfo
+import com.omnidocs.app.stt.SttModelType
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -78,6 +80,73 @@ class ModelDownloadManager @Inject constructor(
             fileName = "Qwen3-0.6B-Q4_K_M.gguf",
             promptFormat = PromptFormat.CHATML,
             addBos = false
+        )
+    )
+
+    /**
+     * Available offline speech recognition models.
+     * These are downloaded as tar.bz2 archives and extracted to the models directory.
+     */
+    val sttModels = listOf(
+        SttModelInfo(
+            id = "whisper_tiny_en",
+            name = "Whisper Tiny (English)",
+            description = "Fastest model. Good for quick voice notes in English.",
+            size = "~75 MB",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.en-2023-09-14.tar.bz2",
+            fileName = "sherpa-onnx-whisper-tiny.en-2023-09-14.tar.bz2",
+            extractedDirName = "sherpa-onnx-whisper-tiny.en-2023-09-14",
+            sha256 = null,
+            languages = listOf("en"),
+            modelType = SttModelType.WHISPER
+        ),
+        SttModelInfo(
+            id = "whisper_base_en",
+            name = "Whisper Base (English)",
+            description = "Better accuracy than Tiny. Good balance of speed and quality.",
+            size = "~140 MB",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en-2023-09-14.tar.bz2",
+            fileName = "sherpa-onnx-whisper-base.en-2023-09-14.tar.bz2",
+            extractedDirName = "sherpa-onnx-whisper-base.en-2023-09-14",
+            sha256 = null,
+            languages = listOf("en"),
+            modelType = SttModelType.WHISPER
+        ),
+        SttModelInfo(
+            id = "whisper_small_en",
+            name = "Whisper Small (English)",
+            description = "High accuracy. Best English-only model for serious transcription.",
+            size = "~460 MB",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.en-2023-09-14.tar.bz2",
+            fileName = "sherpa-onnx-whisper-small.en-2023-09-14.tar.bz2",
+            extractedDirName = "sherpa-onnx-whisper-small.en-2023-09-14",
+            sha256 = null,
+            languages = listOf("en"),
+            modelType = SttModelType.WHISPER
+        ),
+        SttModelInfo(
+            id = "moonshine_tiny_en",
+            name = "Moonshine Tiny (English)",
+            description = "Ultra-fast, lightweight. 6.65% WER, 105x faster than Whisper Large.",
+            size = "~50 MB",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2",
+            fileName = "sherpa-onnx-moonshine-tiny-en-int8.tar.bz2",
+            extractedDirName = "sherpa-onnx-moonshine-tiny-en-int8",
+            sha256 = null,
+            languages = listOf("en"),
+            modelType = SttModelType.MOONSHINE
+        ),
+        SttModelInfo(
+            id = "sense_voice_multilingual",
+            name = "SenseVoice (Multilingual)",
+            description = "Chinese, English, Japanese, Korean, Cantonese. Emotion detection.",
+            size = "~229 MB",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+            fileName = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+            extractedDirName = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+            sha256 = null,
+            languages = listOf("zh", "en", "ja", "ko", "yue"),
+            modelType = SttModelType.SENSE_VOICE
         )
     )
 
@@ -234,6 +303,140 @@ class ModelDownloadManager @Inject constructor(
 
     fun getModelPath(model: ModelInfo): String {
         return File(modelsDir, model.fileName).absolutePath
+    }
+
+    // ---- STT model management ----
+
+    private val _sttDownloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
+    val sttDownloadState: StateFlow<DownloadState> = _sttDownloadState.asStateFlow()
+
+    /**
+     * Download and extract an STT model.
+     * Downloads as tar.bz2, extracts to models directory.
+     */
+    suspend fun downloadSttModel(model: SttModelInfo) {
+        withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Starting STT model download: ${model.name}")
+                _sttDownloadState.value = DownloadState.Downloading(model.id, 0f)
+                downloadCancelled = false
+
+                val tmpFile = File(modelsDir, "${model.fileName}.tmp")
+                if (tmpFile.exists()) tmpFile.delete()
+
+                val url = URL(model.downloadUrl)
+                val connection = url.openConnection() as HttpURLConnection
+                connection.setRequestProperty("User-Agent", "OmniDocs/1.0")
+                connection.connectTimeout = 30000
+                connection.readTimeout = 60000
+                connection.instanceFollowRedirects = true
+                connection.connect()
+
+                val responseCode = connection.responseCode
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    _sttDownloadState.value = DownloadState.Error(model.id, "Server returned $responseCode")
+                    return@withContext
+                }
+
+                val fileSize = connection.contentLength.toLong()
+
+                connection.inputStream.use { input ->
+                    FileOutputStream(tmpFile).use { output ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        var totalBytes = 0L
+                        var lastProgress = -1f
+                        var lastEmitTime = 0L
+
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            if (downloadCancelled) {
+                                tmpFile.delete()
+                                _sttDownloadState.value = DownloadState.Idle
+                                return@withContext
+                            }
+                            output.write(buffer, 0, bytesRead)
+                            totalBytes += bytesRead
+
+                            if (fileSize > 0) {
+                                val progress = (totalBytes.toFloat() / fileSize.toFloat()) * 100
+                                val now = System.currentTimeMillis()
+                                if (progress - lastProgress >= 1f || now - lastEmitTime >= 100L) {
+                                    _sttDownloadState.value = DownloadState.Downloading(model.id, progress)
+                                    lastProgress = progress
+                                    lastEmitTime = now
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Extract tar.bz2
+                _sttDownloadState.value = DownloadState.Downloading(model.id, 99f)
+                val process = ProcessBuilder("tar", "xjf", tmpFile.absolutePath, "-C", modelsDir.absolutePath)
+                    .redirectErrorStream(true)
+                    .start()
+                val exitCode = process.waitFor()
+                tmpFile.delete()
+
+                if (exitCode != 0) {
+                    _sttDownloadState.value = DownloadState.Error(model.id, "Extraction failed")
+                    return@withContext
+                }
+
+                // Save checksum sidecar
+                val extractedDir = File(modelsDir, model.extractedDirName)
+                if (extractedDir.exists()) {
+                    saveSttChecksum(model)
+                }
+
+                _sttDownloadState.value = DownloadState.Completed(model.id)
+            } catch (e: Exception) {
+                Log.e(TAG, "STT model download failed: ${model.name}", e)
+                _sttDownloadState.value = DownloadState.Error(model.id, e.message ?: "Download failed")
+            }
+        }
+    }
+
+    /**
+     * Get the directory path for an extracted STT model.
+     */
+    fun getSttModelPath(model: SttModelInfo): String {
+        return File(modelsDir, model.extractedDirName).absolutePath
+    }
+
+    /**
+     * Check which STT models are downloaded.
+     */
+    fun getDownloadedSttModels(): List<SttModelInfo> {
+        return sttModels.map { model ->
+            val dir = File(modelsDir, model.extractedDirName)
+            model.copy(isDownloaded = dir.exists())
+        }
+    }
+
+    /**
+     * Delete an STT model and its extracted files.
+     */
+    fun deleteSttModel(model: SttModelInfo) {
+        downloadCancelled = true
+        val dir = File(modelsDir, model.extractedDirName)
+        if (dir.exists()) dir.deleteRecursively()
+        val tmpFile = File(modelsDir, "${model.fileName}.tmp")
+        if (tmpFile.exists()) tmpFile.delete()
+        deleteSttChecksum(model)
+        _sttDownloadState.value = DownloadState.Idle
+    }
+
+    private fun getSttChecksumFile(model: SttModelInfo): File {
+        return File(modelsDir, "${model.id}.stt.sha256")
+    }
+
+    private fun saveSttChecksum(model: SttModelInfo) {
+        getSttChecksumFile(model).writeText(model.sha256 ?: "no-checksum")
+    }
+
+    private fun deleteSttChecksum(model: SttModelInfo) {
+        getSttChecksumFile(model).delete()
     }
 
     /**
