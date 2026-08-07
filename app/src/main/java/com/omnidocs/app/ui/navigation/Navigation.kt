@@ -4,6 +4,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
@@ -19,6 +21,7 @@ import com.omnidocs.app.ui.screens.feed.FeedScreen
 import com.omnidocs.app.ui.screens.home.HomeScreen
 import com.omnidocs.app.ui.screens.ocr.OcrScreen
 import com.omnidocs.app.ui.screens.settings.SettingsScreen
+import com.omnidocs.app.ui.screens.voice.VoiceCaptureOverlay
 import com.omnidocs.app.ui.theme.MotionTokens
 import com.omnidocs.app.ui.theme.screenEnterTransition
 import com.omnidocs.app.ui.theme.screenExitTransition
@@ -36,6 +39,7 @@ sealed class Screen(val route: String) {
     object Settings : Screen("settings")
     object Feed : Screen("feed")
     object Auth : Screen("auth")
+    object Voice : Screen("voice")
 }
 
 @Composable
@@ -65,7 +69,26 @@ fun NotesNavHost(
                 },
                 onFeedClick = {
                     navController.navigate(Screen.Feed.route)
+                },
+                onVoiceCapture = {
+                    navController.navigate(Screen.Voice.route)
                 }
+            )
+        }
+
+        composable(
+            route = Screen.Voice.route,
+            enterTransition = { slideInVertically(initialOffsetY = { it }) + fadeIn() },
+            exitTransition = { slideOutVertically(targetOffsetY = { it }) + fadeOut() },
+            popEnterTransition = { slideInVertically(initialOffsetY = { it }) + fadeIn() },
+            popExitTransition = { slideOutVertically(targetOffsetY = { it }) + fadeOut() }
+        ) {
+            VoiceCaptureOverlay(
+                onNoteCreated = { noteId ->
+                    navController.popBackStack()
+                    navController.navigate(Screen.Editor.createRoute(noteId))
+                },
+                onDismiss = { navController.popBackStack() }
             )
         }
 

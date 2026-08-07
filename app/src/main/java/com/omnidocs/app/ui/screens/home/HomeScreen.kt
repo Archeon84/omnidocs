@@ -37,6 +37,7 @@ import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.TextSnippet
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -107,6 +108,7 @@ fun HomeScreen(
     onNewNote: () -> Unit,
     onSettingsClick: () -> Unit,
     onFeedClick: () -> Unit = {},
+    onVoiceCapture: () -> Unit = {}, // NEW
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val notes by viewModel.notes.collectAsState()
@@ -336,14 +338,31 @@ fun HomeScreen(
         },
         floatingActionButton = {
             if (!isSelectionMode) {
-                FloatingActionButton(
-                    onClick = onNewNote,
-                    containerColor = MaterialTheme.colorScheme.primary
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "New note"
-                    )
+                    // Voice capture FAB (smaller, above main FAB)
+                    SmallFloatingActionButton(
+                        onClick = onVoiceCapture,
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "Voice capture"
+                        )
+                    }
+                    // New note FAB (main)
+                    FloatingActionButton(
+                        onClick = onNewNote,
+                        containerColor = MaterialTheme.colorScheme.primary
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "New note"
+                        )
+                    }
                 }
             }
         }
