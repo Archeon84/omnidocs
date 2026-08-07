@@ -13,6 +13,7 @@ import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelInfo
 import com.omnidocs.app.ai.ModelPreferences
 import com.omnidocs.app.ai.PromptBuilder
+import com.omnidocs.app.util.HtmlSanitizer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -89,6 +90,7 @@ class VoiceCaptureManager @Inject constructor(
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     val fullText = matches?.firstOrNull() ?: ""
                     if (fullText.isNotBlank()) {
+                        // Final result: append to accumulated transcript
                         _transcript.value = if (_transcript.value.isEmpty()) {
                             fullText
                         } else {
@@ -98,11 +100,9 @@ class VoiceCaptureManager @Inject constructor(
                 }
 
                 override fun onPartialResults(partialResults: Bundle?) {
-                    val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    val partial = matches?.firstOrNull() ?: ""
-                    if (partial.isNotBlank()) {
-                        _transcript.value = partial
-                    }
+                    // Partial results are informational only; don't overwrite accumulated transcript.
+                    // The UI can display a preview from the latest partial if needed,
+                    // but the committed transcript only updates on final onResults().
                 }
 
                 override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -113,7 +113,7 @@ class VoiceCaptureManager @Inject constructor(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageCode)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
 
         recognizer?.startListening(intent)
@@ -135,18 +135,19 @@ class VoiceCaptureManager @Inject constructor(
 
     /**
      * Send the raw transcript to the LLM for structuring into formatted HTML.
-     * Returns structured HTML with headings, bullets, and action items.
+     * Returns sanitized HTML with headings, bullets, and action items.
      */
     suspend fun structureTranscript(rawText: String, language: String): String = withContext(Dispatchers.IO) {
-        val model = getActiveModel() ?: return@withContext "<p>$rawText</p>"
+        val model = getActiveModel() ?: return@withContext "<p>${sanitizeForHtml(rawText)}</p>"
         val langInstruction = if (language != "en") "\nRespond in $language language." else ""
 
         val systemPrompt = "You are a note structuring assistant. Convert raw speech transcript into " +
             "well-structured HTML notes. Add headings (h2), bullet lists (ul/li), action items with " +
-            "checkboxes (input type=checkbox), and bold key terms (strong). Preserve all meaning. " +
+            "checkboxes (input type=checkbox disabled), and bold key terms (strong). Preserve all meaning. " +
             "Return only HTML, no markdown code blocks.$langInstruction"
 
-        val userPrompt = "Structure this speech transcript into a well-organized HTML note:\n\n$rawText"
+        val userPrompt = "Structure this speech transcript into a well-organized HTML note:\n\n" +
+            "<transcript>\n$rawText\n</transcript>"
 
         val prompt = PromptBuilder.buildPrompt(model.promptFormat, systemPrompt, userPrompt)
         val result = llamaCppService.generate(prompt, maxTokens = 1500)
@@ -154,11 +155,26 @@ class VoiceCaptureManager @Inject constructor(
 
         // If LLM failed or returned empty, return the raw text as a paragraph
         if (processed.isNullOrBlank()) {
-            "<p>${rawText.replace("\n", "<br/>")}</p>"
+            "<p>${sanitizeForHtml(rawText)}</p>"
         } else {
             // Strip any markdown code block wrappers the LLM might have added
-            processed.replace(Regex("```html\\s*"), "").replace(Regex("```\\s*"), "").trim()
+            val stripped = processed
+                .replace(Regex("```html\\s*"), "")
+                .replace(Regex("```\\s*"), "")
+                .trim()
+            // Sanitize HTML to prevent XSS -- allow only safe tags
+            HtmlSanitizer.sanitize(stripped)
         }
+    }
+
+    /**
+     * Escape HTML special characters for safe embedding in HTML content.
+     */
+    private fun sanitizeForHtml(text: String): String {
+        return text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
     }
 
     fun destroy() {
