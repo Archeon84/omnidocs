@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Knowledge Graph</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #1a1a1a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; touch-action: none; }
+        #canvas { width: 100vw; height: 100vh; display: block; }
+        .tooltip {
+            position: absolute; background: rgba(30,30,30,0.92); color: #fff;
+            padding: 8px 12px; border-radius: 8px; font-size: 12px;
+            pointer-events: none; backdrop-filter: blur(4px); display: none;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.4); max-width: 220px; z-index: 10;
+        }
+        .tooltip-title { font-weight: 600; margin-bottom: 2px; }
+        .tooltip-detail { font-size: 11px; opacity: 0.7; }
+        .empty-state {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+            text-align: center; color: #666;
+        }
+        .empty-state-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="tooltip" id="tooltip"></div>
+    <div class="empty-state" id="empty-state" style="display:none;">
+        <div class="empty-state-icon">&#128279;</div>
+        <p style="font-size:18px;margin-bottom:8px;">No connections yet</p>
+        <p style="font-size:14px;">Add more notes to see how they connect</p>
+    </div>
+
+    <script>
+    (function() {
+        var canvas = document.getElementById('canvas');
+        var ctx = canvas.getContext('2d');
+        var tooltip = document.getElementById('tooltip');
+        var emptyState = document.getElementById('empty-state');
+        var dpr = window.devicePixelRatio || 1;
+        var W, H;
+
+        var theme = {
+            primary: '#7C4DFF',
+            surface: '#1a1a1a',
+            onSurface: '#e0e0e0',
+            edge: '#555',
+            edgeLabel: '#888'
+        };
+        var tagColors = ['#7C4DFF','#448AFF','#00BCD4','#00C853','#FF6D00','#FF1744','#AA00FF','#2979FF'];
+
+        var nodes = [], edges = [], nodeMap = {};
+        var transform = { x: 0, y: 0, k: 1 };
+        var drag = null, pinchDist = null;
+        var hoveredNode = null;
+        var animFrame = null;
+
+        function resize() {
+            W = window.innerWidth; H = window.innerHeight;
+            canvas.width = W * dpr; canvas.height = H * dpr;
+            canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        function getTagColor(tags) {
+            if (!tags || !tags.length) return theme.primary;
+            var h = 0, t = tags[0];
+            for (var i = 0; i < t.length; i++) { h = ((h << 5) - h) + t.charCodeAt(i); h = h & h; }
+            return tagColors[Math.abs(h) % tagColors.length];
+        }
+
+        function getRadius(wc) { return 20 + Math.min(wc / 500, 1) * 30; }
+
+        function screenToWorld(sx, sy) {
+            return { x: (sx - transform.x) / transform.k, y: (sy - transform.y) / transform.k };
+        }
+
+        function wordOverlap(a, b) {
+            var stopWords = new Set(['the','a','an','is','are','was','were','be','been','have','has','had',
+                'do','does','did','will','would','could','should','can','to','of','in','for','on','with',
+                'at','by','from','as','and','but','or','not','so','that','this','these','those','it','its']);
+            var wordsA = a.toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/).filter(function(w){return w.length>2&&!stopWords.has(w);});
+            var wordsB = b.toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/).filter(function(w){return w.length>2&&!stopWords.has(w);});
+            var setA = new Set(wordsA), setB = new Set(wordsB);
+            var inter = 0;
+            setA.forEach(function(w){if(setB.has(w))inter++;});
+            return inter / Math.max(1, Math.min(setA.size, setB.size));
+        }
+
+        // Verlet integration force simulation
+        function simulate() {
+            var alpha = 0.3;
+            var charge = -300, linkDist = 100, centerGrav = 0.05;
+
+            function tick() {
+                if (alpha < 0.001) return;
+                alpha *= 0.99;
+
+                // Center gravity
+                nodes.forEach(function(n) {
+                    n.vx += (W/2 - n.x) * centerGrav * alpha;
+                    n.vy += (H/2 - n.y) * centerGrav * alpha;
+                });
+
+                // Charge (repulsion)
+                for (var i = 0; i < nodes.length; i++) {
+                    for (var j = i+1; j < nodes.length; j++) {
+                        var dx = nodes[j].x - nodes[i].x;
+                        var dy = nodes[j].y - nodes[i].y;
+                        var dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                        var force = charge * alpha / (dist * dist);
+                        var fx = dx / dist * force;
+                        var fy = dy / dist * force;
+                        nodes[i].vx -= fx; nodes[i].vy -= fy;
+                        nodes[j].vx += fx; nodes[j].vy += fy;
+                    }
+                }
+
+                // Link attraction
+                edges.forEach(function(e) {
+                    var s = nodeMap[e.from], t = nodeMap[e.to];
+                    if (!s || !t) return;
+                    var dx = t.x - s.x, dy = t.y - s.y;
+                    var dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                    var force = (dist - linkDist) * 0.02 * alpha;
+                    var fx = dx / dist * force;
+                    var fy = dy / dist * force;
+                    s.vx += fx; s.vy += fy;
+                    t.vx -= fx; t.vy -= fy;
+                });
+
+                // Apply velocity with damping
+                nodes.forEach(function(n) {
+                    if (n === drag) return;
+                    n.vx *= 0.85; n.vy *= 0.85;
+                    n.x += n.vx; n.y += n.vy;
+                    // Bounds
+                    n.x = Math.max(50, Math.min(W - 50, n.x));
+                    n.y = Math.max(50, Math.min(H - 50, n.y));
+                });
+            }
+
+            return { tick: tick, isSettled: function() { return alpha < 0.001; } };
+        }
+
+        var sim = simulate();
+
+        function render() {
+            ctx.clearRect(0, 0, W, H);
+            ctx.save();
+            ctx.translate(transform.x, transform.y);
+            ctx.scale(transform.k, transform.k);
+
+            // Draw edges
+            edges.forEach(function(e) {
+                var s = nodeMap[e.from], t = nodeMap[e.to];
+                if (!s || !t) return;
+                var dimmed = hoveredNode && hoveredNode.noteId !== e.from && hoveredNode.noteId !== e.to;
+                ctx.beginPath();
+                var dx = t.x - s.x, dy = t.y - s.y;
+                var dist = Math.sqrt(dx*dx + dy*dy);
+                var mx = (s.x + t.x) / 2 + dy * 0.15;
+                var my = (s.y + t.y) / 2 - dx * 0.15;
+                ctx.moveTo(s.x, s.y);
+                ctx.quadraticCurveTo(mx, my, t.x, t.y);
+                ctx.strokeStyle = dimmed ? 'rgba(85,85,85,0.08)' : theme.edge;
+                ctx.globalAlpha = dimmed ? 0.1 : 0.4;
+                ctx.lineWidth = Math.max(1, e.strength * 3);
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+
+                // Arrow
+                if (!dimmed && dist > 30) {
+                    var angle = Math.atan2(t.y - my, t.x - mx);
+                    var ax = t.x - Math.cos(angle) * getRadius(t.wordCount);
+                    var ay = t.y - Math.sin(angle) * getRadius(t.wordCount);
+                    ctx.save();
+                    ctx.translate(ax, ay);
+                    ctx.rotate(angle);
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(-8, -4);
+                    ctx.lineTo(-8, 4);
+                    ctx.closePath();
+                    ctx.fillStyle = theme.edge;
+                    ctx.globalAlpha = 0.5;
+                    ctx.fill();
+                    ctx.restore();
+                    ctx.globalAlpha = 1;
+                }
+
+                // Edge label
+                if (!dimmed) {
+                    ctx.font = '9px -apple-system, sans-serif';
+                    ctx.fillStyle = theme.edgeLabel;
+                    ctx.textAlign = 'center';
+                    ctx.fillText(e.label, mx, my - 4);
+                }
+            });
+
+            // Draw nodes
+            nodes.forEach(function(n) {
+                var dimmed = hoveredNode && hoveredNode.noteId !== n.noteId &&
+                    !edges.some(function(e){
+                        return (e.from===hoveredNode.noteId&&e.to===n.noteId)||(e.to===hoveredNode.noteId&&e.from===n.noteId);
+                    });
+                var r = getRadius(n.wordCount);
+                var color = getTagColor(n.tags);
+
+                // Glow
+                if (!dimmed) {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2);
+                    ctx.fillStyle = color;
+                    ctx.globalAlpha = 0.15;
+                    ctx.fill();
+                    ctx.globalAlpha = 1;
+                }
+
+                // Circle
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+                ctx.globalAlpha = dimmed ? 0.15 : 0.85;
+                ctx.fillStyle = color;
+                ctx.fill();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = dimmed ? 0.1 : 0.4;
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+
+                // Label
+                ctx.font = '11px -apple-system, sans-serif';
+                ctx.fillStyle = dimmed ? 'rgba(224,224,224,0.15)' : theme.onSurface;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                var label = n.title.length > 20 ? n.title.substring(0, 20) + '...' : n.title;
+                ctx.fillText(label, n.x, n.y + r + 6);
+            });
+
+            ctx.restore();
+        }
+
+        function animate() {
+            sim.tick();
+            render();
+            animFrame = requestAnimationFrame(animate);
+        }
+
+        // Mouse/touch interactions
+        function getNodeAt(sx, sy) {
+            var wp = screenToWorld(sx, sy);
+            for (var i = nodes.length - 1; i >= 0; i--) {
+                var n = nodes[i];
+                var dx = wp.x - n.x, dy = wp.y - n.y;
+                if (dx*dx + dy*dy < getRadius(n.wordCount) * getRadius(n.wordCount)) return n;
+            }
+            return null;
+        }
+
+        canvas.addEventListener('mousedown', function(ev) {
+            var n = getNodeAt(ev.clientX, ev.clientY);
+            if (n) { drag = n; n.fx = ev.clientX; n.fy = ev.clientY; }
+            else { drag = '_pan'; drag.sx = ev.clientX; drag.sy = ev.clientY; drag.tx = transform.x; drag.ty = transform.y; }
+        });
+
+        canvas.addEventListener('mousemove', function(ev) {
+            if (drag && drag !== '_pan') {
+                var wp = screenToWorld(ev.clientX, ev.clientY);
+                drag.x = wp.x; drag.y = wp.y;
+            } else if (drag && drag === '_pan') {
+                transform.x = drag.tx + (ev.clientX - drag.sx);
+                transform.y = drag.ty + (ev.clientY - drag.sy);
+            } else {
+                var n = getNodeAt(ev.clientX, ev.clientY);
+                if (n !== hoveredNode) { hoveredNode = n; render(); }
+                if (n) {
+                    tooltip.style.display = 'block';
+                    tooltip.innerHTML = '<div class="tooltip-title">' + n.title + '</div><div class="tooltip-detail">' + n.wordCount + ' words</div>';
+                    tooltip.style.left = (ev.clientX + 12) + 'px';
+                    tooltip.style.top = (ev.clientY - 12) + 'px';
+                } else {
+                    tooltip.style.display = 'none';
+                }
+            }
+        });
+
+        canvas.addEventListener('mouseup', function(ev) {
+            if (drag && drag !== '_pan' && drag.fx !== undefined) {
+                var dx = ev.clientX - drag.fx, dy = ev.clientY - drag.fy;
+                if (dx*dx + dy*dy < 25) {
+                    try { Android.onNodeTapped(drag.noteId); } catch(e) {}
+                }
+            }
+            drag = null;
+        });
+
+        canvas.addEventListener('wheel', function(ev) {
+            ev.preventDefault();
+            var factor = ev.deltaY > 0 ? 0.9 : 1.1;
+            var newK = Math.max(0.1, Math.min(4, transform.k * factor));
+            var wx = (ev.clientX - transform.x) / transform.k;
+            var wy = (ev.clientY - transform.y) / transform.k;
+            transform.k = newK;
+            transform.x = ev.clientX - wx * newK;
+            transform.y = ev.clientY - wy * newK;
+        }, { passive: false });
+
+        // Touch support
+        canvas.addEventListener('touchstart', function(ev) {
+            if (ev.touches.length === 1) {
+                var t = ev.touches[0];
+                var n = getNodeAt(t.clientX, t.clientY);
+                if (n) { drag = n; n.fx = t.clientX; n.fy = t.clientY; }
+                else { drag = '_pan'; drag.sx = t.clientX; drag.sy = t.clientY; drag.tx = transform.x; drag.ty = transform.y; }
+            } else if (ev.touches.length === 2) {
+                drag = '_pinch';
+                var dx = ev.touches[0].clientX - ev.touches[1].clientX;
+                var dy = ev.touches[0].clientY - ev.touches[1].clientY;
+                pinchDist = Math.sqrt(dx*dx + dy*dy);
+                pinchDistK = transform.k;
+            }
+        }, { passive: true });
+
+        canvas.addEventListener('touchmove', function(ev) {
+            ev.preventDefault();
+            if (drag === '_pinch' && ev.touches.length === 2 && pinchDist) {
+                var dx = ev.touches[0].clientX - ev.touches[1].clientX;
+                var dy = ev.touches[0].clientY - ev.touches[1].clientY;
+                var dist = Math.sqrt(dx*dx + dy*dy);
+                var newK = Math.max(0.1, Math.min(4, pinchDistK * (dist / pinchDist)));
+                var cx = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
+                var cy = (ev.touches[0].clientY + ev.touches[1].clientY) / 2;
+                var wx = (cx - transform.x) / transform.k;
+                var wy = (cy - transform.y) / transform.k;
+                transform.k = newK;
+                transform.x = cx - wx * newK;
+                transform.y = cy - wy * newK;
+            } else if (drag && drag !== '_pan' && drag !== '_pinch') {
+                var t = ev.touches[0];
+                var wp = screenToWorld(t.clientX, t.clientY);
+                drag.x = wp.x; drag.y = wp.y;
+            } else if (drag === '_pan' && ev.touches.length === 1) {
+                var t = ev.touches[0];
+                transform.x = drag.tx + (t.clientX - drag.sx);
+                transform.y = drag.ty + (t.clientY - drag.sy);
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', function(ev) {
+            if (drag && drag !== '_pan' && drag !== '_pinch' && drag.fx !== undefined) {
+                try { Android.onNodeTapped(drag.noteId); } catch(e) {}
+            }
+            drag = null; pinchDist = null;
+        });
+
+        // Public API
+        window.loadGraph = function(json) {
+            try {
+                var data = typeof json === 'string' ? JSON.parse(json) : json;
+                nodes = (data.nodes || []).map(function(n) {
+                    return { noteId: n.noteId, title: n.title, wordCount: n.wordCount || 0, tags: n.tags || [], x: W/2 + (Math.random()-0.5)*200, y: H/2 + (Math.random()-0.5)*200, vx: 0, vy: 0 };
+                });
+                edges = data.edges || [];
+                nodeMap = {};
+                nodes.forEach(function(n) { nodeMap[n.noteId] = n; });
+                transform = { x: 0, y: 0, k: 1 };
+                hoveredNode = null;
+                sim = simulate();
+                if (!nodes.length) { emptyState.style.display = 'block'; } else { emptyState.style.display = 'none'; }
+                if (animFrame) cancelAnimationFrame(animFrame);
+                animate();
+            } catch(e) { console.error('Graph load error:', e); emptyState.style.display = 'block'; }
+        };
+
+        window.setGraphTheme = function(c) {
+            if (typeof c === 'string') c = JSON.parse(c);
+            if (c.primary) theme.primary = c.primary;
+            if (c.surface) { theme.surface = c.surface; document.body.style.background = c.surface; }
+            if (c.onSurface) theme.onSurface = c.onSurface;
+            if (c.edge) theme.edge = c.edge;
+            if (c.edgeLabel) theme.edgeLabel = c.edgeLabel;
+        };
+
+        resize();
+        window.addEventListener('resize', resize);
+    })();
+    </script>
+</body>
+</html>
