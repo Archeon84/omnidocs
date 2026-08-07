@@ -42,7 +42,7 @@ class SherpaOnnxSttEngine @Inject constructor(
             release()
 
             val config = buildConfig(modelDir, model)
-            recognizer = OfflineRecognizer(config)
+            recognizer = OfflineRecognizer(config = config)
             currentModelId = model.id
             Log.d(TAG, "Initialized recognizer with model: ${model.name}")
             return true
@@ -67,8 +67,11 @@ class SherpaOnnxSttEngine @Inject constructor(
             )
             SttModelType.MOONSHINE -> OfflineModelConfig(
                 moonshine = OfflineMoonshineModelConfig(
+                    preprocessor = "$modelDir/preprocessor.onnx",
                     encoder = "$modelDir/encoder.onnx",
-                    decoder = "$modelDir/decoder.onnx",
+                    uncachedDecoder = "$modelDir/uncached_decoder.onnx",
+                    cachedDecoder = "$modelDir/cached_decoder.onnx",
+                    mergedDecoder = "$modelDir/merged_decoder.onnx",
                 ),
                 tokens = "$modelDir/tokens.txt",
                 numThreads = 2,
