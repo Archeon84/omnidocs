@@ -72,9 +72,8 @@ fun GraphScreen(
 
     fun pushGraphDataToWebView(data: GraphData) {
         val json = buildGraphJson(data)
-        // Escape for JS string literal using proper encoding
-        val escaped = json.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
-        webView?.evaluateJavascript("loadGraph('$escaped')", null)
+        // Pass JSON directly to JS -- evaluateJavascript handles it safely
+        webView?.evaluateJavascript("loadGraph($json)", null)
     }
 
     // Push graph data to WebView when it changes
