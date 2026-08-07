@@ -1,6 +1,7 @@
 package com.omnidocs.app.ui.screens.graph
 
 import android.annotation.SuppressLint
+import android.graphics.Color as AndroidColor
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -12,12 +13,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.omnidocs.app.ui.navigation.Screen
+import com.omnidocs.app.graph.GraphData
+import org.json.JSONArray
 import org.json.JSONObject
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -33,45 +34,61 @@ fun GraphScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
     var webView by remember { mutableStateOf<WebView?>(null) }
-    val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
+
+    fun buildGraphJson(data: GraphData): String {
+        return JSONObject().apply {
+            put("nodes", JSONArray().apply {
+                data.nodes.forEach { node ->
+                    put(JSONObject().apply {
+                        put("noteId", node.noteId)
+                        put("title", node.title)
+                        put("wordCount", node.wordCount)
+                    })
+                }
+            })
+            put("edges", JSONArray().apply {
+                data.edges.forEach { edge ->
+                    put(JSONObject().apply {
+                        put("from", edge.from)
+                        put("to", edge.to)
+                        put("label", edge.label)
+                        put("strength", edge.strength.toDouble())
+                    })
+                }
+            })
+        }.toString()
+    }
+
+    fun colorToHex(color: androidx.compose.ui.graphics.Color): String {
+        val argb = android.graphics.Color.argb(
+            (color.alpha * 255).toInt(),
+            (color.red * 255).toInt(),
+            (color.green * 255).toInt(),
+            (color.blue * 255).toInt()
+        )
+        return "#%06X".format(argb and 0xFFFFFF)
+    }
+
+    fun pushGraphDataToWebView(data: GraphData) {
+        val json = buildGraphJson(data)
+        // Escape for JS string literal using proper encoding
+        val escaped = json.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
+        webView?.evaluateJavascript("loadGraph('$escaped')", null)
+    }
 
     // Push graph data to WebView when it changes
     LaunchedEffect(graphData) {
-        graphData?.let { data ->
-            val json = JSONObject().apply {
-                put("nodes", org.json.JSONArray().apply {
-                    data.nodes.forEach { node ->
-                        put(org.json.JSONObject().apply {
-                            put("id", node.noteId)
-                            put("title", node.title)
-                            put("wordCount", node.wordCount)
-                        })
-                    }
-                })
-                put("edges", org.json.JSONArray().apply {
-                    data.edges.forEach { edge ->
-                        put(org.json.JSONObject().apply {
-                            put("source", edge.from)
-                            put("target", edge.to)
-                            put("label", edge.label)
-                            put("strength", edge.strength)
-                        })
-                    }
-                })
-            }
-            webView?.evaluateJavascript("loadGraph('${json.toString().replace("'", "\\'")}')", null)
-        }
+        graphData?.let { data -> pushGraphDataToWebView(data) }
     }
 
     // Push theme colors
     LaunchedEffect(webView, colorScheme) {
         webView?.let { wv ->
             val themeJson = JSONObject().apply {
-                put("primary", "#%06X".format(colorScheme.primary.hashCode() and 0xFFFFFF))
-                put("surface", "#%06X".format(colorScheme.surface.hashCode() and 0xFFFFFF))
-                put("onSurface", "#%06X".format(colorScheme.onSurface.hashCode() and 0xFFFFFF))
-                put("primaryContainer", "#%06X".format(colorScheme.primaryContainer.hashCode() and 0xFFFFFF))
+                put("primary", colorToHex(colorScheme.primary))
+                put("surface", colorToHex(colorScheme.surface))
+                put("onSurface", colorToHex(colorScheme.onSurface))
             }
             wv.evaluateJavascript("setGraphTheme($themeJson)", null)
         }
@@ -120,30 +137,7 @@ fun GraphScreen(
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
                                 // Push data after page loads
-                                graphData?.let { data ->
-                                    val json = JSONObject().apply {
-                                        put("nodes", org.json.JSONArray().apply {
-                                            data.nodes.forEach { node ->
-                                                put(org.json.JSONObject().apply {
-                                                    put("id", node.noteId)
-                                                    put("title", node.title)
-                                                    put("wordCount", node.wordCount)
-                                                })
-                                            }
-                                        })
-                                        put("edges", org.json.JSONArray().apply {
-                                            data.edges.forEach { edge ->
-                                                put(org.json.JSONObject().apply {
-                                                    put("source", edge.from)
-                                                    put("target", edge.to)
-                                                    put("label", edge.label)
-                                                    put("strength", edge.strength)
-                                                })
-                                            }
-                                        })
-                                    }
-                                    view?.evaluateJavascript("loadGraph('${json.toString().replace("'", "\\'")}')", null)
-                                }
+                                graphData?.let { data -> pushGraphDataToWebView(data) }
                             }
                         }
 
@@ -153,21 +147,20 @@ fun GraphScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
-            error?.let { msg ->
-                if (graphData?.edges?.isEmpty() == true) {
-                    // Show empty state overlay
-                    Surface(
-                        modifier = Modifier.align(Alignment.Center),
-                        shape = MaterialTheme.shapes.medium,
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
-                    ) {
-                        Text(
-                            text = msg,
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.padding(24.dp),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
+            // Show error/empty state overlay
+            val showOverlay = isLoading == false && (error != null || graphData?.edges?.isEmpty() == true)
+            if (showOverlay) {
+                Surface(
+                    modifier = Modifier.align(Alignment.Center),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
+                ) {
+                    Text(
+                        text = error ?: "No connections yet. Add more notes to see how they connect.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(24.dp),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
         }
