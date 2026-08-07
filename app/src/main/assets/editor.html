@@ -352,6 +352,25 @@
                 }
             }
         }
+
+        // Get currently selected text
+        function getSelectedText() {
+            var sel = window.getSelection();
+            return sel ? sel.toString() : "";
+        }
+
+        // Notify Android when text selection changes
+        var lastSelectedText = "";
+        document.addEventListener('selectionchange', function() {
+            var sel = window.getSelection();
+            var text = sel ? sel.toString() : "";
+            if (text !== lastSelectedText) {
+                lastSelectedText = text;
+                try {
+                    Android.onTextSelectionChanged(text);
+                } catch(e) {}
+            }
+        });
     </script>
 </body>
 </html>

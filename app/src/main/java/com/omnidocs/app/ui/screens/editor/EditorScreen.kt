@@ -24,6 +24,13 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.Alignment
@@ -159,6 +166,15 @@ fun EditorScreen(
     var isEditorFocused by remember { mutableStateOf(false) }
     var contentReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { contentReady = true }
+
+    // Intelligence state
+    val intelligenceMessages by viewModel.intelligenceMessages.collectAsState()
+    val isIntelligenceLoading by viewModel.isIntelligenceLoading.collectAsState()
+    val intelligenceConcepts by viewModel.intelligenceConcepts.collectAsState()
+    val showConceptDialog by viewModel.showConceptDialog.collectAsState()
+    var showIntelligencePanel by remember { mutableStateOf(false) }
+    var selectedText by remember { mutableStateOf("") }
+
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
     val snackbarHostState = remember { SnackbarHostState() }
@@ -475,7 +491,9 @@ fun EditorScreen(
                     onCodeClick = { webViewRef?.evaluateJavascript("formatCode()", null) },
                     onImageClick = { imageLauncher.launch("image/*") },
                     onAudioClick = { audioLauncher.launch("audio/*") },
-                    onToggleSections = { webViewRef?.evaluateJavascript("toggleAllCollapse()", null) }
+                    onToggleSections = { webViewRef?.evaluateJavascript("toggleAllCollapse()", null) },
+                    onIntelligenceClick = { showIntelligencePanel = !showIntelligencePanel },
+                    onConceptExtract = { viewModel.extractConcepts() }
                 )
             }
 
@@ -505,8 +523,52 @@ fun EditorScreen(
                     onFormatStateChange = { formatState = it },
                     onWebViewCreated = { webViewRef = it },
                     onEditorFocusChanged = { isEditorFocused = it },
+                    onTextSelectionChanged = { text ->
+                        selectedText = text
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
+            }
+
+            // Explain chip (appears when text is selected)
+            AnimatedVisibility(
+                visible = selectedText.isNotBlank() && !showIntelligencePanel,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Surface(
+                        onClick = {
+                            viewModel.explainSelectedText(selectedText)
+                            showIntelligencePanel = true
+                            selectedText = ""
+                        },
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "Explain selected text",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -624,6 +686,29 @@ fun EditorScreen(
             }
         )
     }
+
+    // Intelligence panel - slides up from bottom
+    AnimatedVisibility(
+        visible = showIntelligencePanel,
+        enter = slideInVertically(initialOffsetY = { it }),
+        exit = slideOutVertically(targetOffsetY = { it })
+    ) {
+        IntelligencePanel(
+            messages = intelligenceMessages,
+            isLoading = isIntelligenceLoading,
+            onAsk = { viewModel.askAboutNote(it) },
+            onDismiss = { showIntelligencePanel = false }
+        )
+    }
+
+    // Concept extraction dialog
+    if (showConceptDialog) {
+        ConceptDialog(
+            concepts = intelligenceConcepts,
+            onCreateNote = { name, desc -> viewModel.createNoteFromConcept(name, desc) },
+            onDismiss = { viewModel.dismissConceptDialog() }
+        )
+    }
 }
 
 @Composable
@@ -640,7 +725,9 @@ fun FormattingToolbar(
     onCodeClick: () -> Unit,
     onImageClick: () -> Unit = {},
     onAudioClick: () -> Unit = {},
-    onToggleSections: () -> Unit = {}
+    onToggleSections: () -> Unit = {},
+    onIntelligenceClick: () -> Unit = {},
+    onConceptExtract: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -742,6 +829,22 @@ fun FormattingToolbar(
                 contentDescription = "Toggle Sections",
                 isActive = false,
                 onClick = onToggleSections
+            )
+
+            ToolbarDivider()
+
+            // Group 6: AI Intelligence
+            FormatIconButton(
+                icon = Icons.Default.AutoAwesome,
+                contentDescription = "Ask AI",
+                isActive = false,
+                onClick = onIntelligenceClick
+            )
+            FormatIconButton(
+                icon = Icons.Default.Lightbulb,
+                contentDescription = "Extract Concepts",
+                isActive = false,
+                onClick = onConceptExtract
             )
         }
     }
@@ -954,6 +1057,7 @@ fun RichTextEditor(
     onFormatStateChange: (FormatState) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit = {},
     onEditorFocusChanged: (Boolean) -> Unit = {},
+    onTextSelectionChanged: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var lastContent by remember { mutableStateOf("") }
@@ -1052,6 +1156,11 @@ fun RichTextEditor(
                     @JavascriptInterface
                     fun onEditorFocusChanged(focused: Boolean) {
                         onEditorFocusChanged(focused)
+                    }
+
+                    @JavascriptInterface
+                    fun onTextSelectionChanged(selectedText: String) {
+                        onTextSelectionChanged(selectedText)
                     }
                 }, "Android")
 
