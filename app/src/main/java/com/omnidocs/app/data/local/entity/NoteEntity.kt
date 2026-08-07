@@ -25,5 +25,6 @@ data class NoteEntity(
     val attachments: String = "[]", // JSON array of attachment paths
     val isSynced: Boolean = false,
     val isDeleted: Boolean = false,
-    val tags: String = "[]"
+    val tags: String = "[]",
+    val relatedNotes: String = "[]"
 )

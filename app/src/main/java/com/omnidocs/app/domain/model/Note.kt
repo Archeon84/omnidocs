@@ -12,5 +12,6 @@ data class Note(
     val imageUrl: String? = null,
     val attachments: String = "[]", // JSON array of attachment paths
     val isDeleted: Boolean = false,
-    val tags: String = "[]"
+    val tags: String = "[]",
+    val relatedNotes: String = "[]"
 )

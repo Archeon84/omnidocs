@@ -120,7 +120,8 @@ class NotesRepository @Inject constructor(
         updatedAt = updatedAt,
         imageUrl = imageUrl,
         attachments = attachments,
-        isDeleted = isDeleted
+        isDeleted = isDeleted,
+        relatedNotes = relatedNotes
     )
 
     private fun Note.toEntity() = NoteEntity(
@@ -134,6 +135,7 @@ class NotesRepository @Inject constructor(
         updatedAt = updatedAt,
         imageUrl = imageUrl,
         attachments = attachments,
-        isDeleted = isDeleted
+        isDeleted = isDeleted,
+        relatedNotes = relatedNotes
     )
 }
