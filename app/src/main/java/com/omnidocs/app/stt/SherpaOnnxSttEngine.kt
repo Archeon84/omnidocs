@@ -13,6 +13,8 @@ import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.getFeatureConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,6 +23,7 @@ private const val TAG = "SherpaOnnxSttEngine"
 private const val SAMPLE_RATE = 16000
 private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
 private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+private const val DECODE_INTERVAL_MS = 500L  // Decode at most every 500ms
 
 @Singleton
 class SherpaOnnxSttEngine @Inject constructor(
@@ -30,9 +33,18 @@ class SherpaOnnxSttEngine @Inject constructor(
     private var recognizer: OfflineRecognizer? = null
     private var audioRecord: AudioRecord? = null
     private var recordingThread: Thread? = null
+    private var decodeThread: Thread? = null
     private val isRecording = AtomicBoolean(false)
     private var currentModelId: String? = null
-    private var activeStream: com.k2fsa.sherpa.onnx.OfflineStream? = null
+
+    // Stream synchronization - both threads lock on this object
+    private val streamLock = Any()
+    @Volatile private var activeStream: com.k2fsa.sherpa.onnx.OfflineStream? = null
+    @Volatile private var newAudioAvailable = false
+
+    // Final result signaling
+    private var finalResultLatch: CountDownLatch? = null
+    @Volatile private var lastPartialResult = ""
 
     /**
      * Initialize the recognizer with a downloaded STT model.
@@ -54,6 +66,8 @@ class SherpaOnnxSttEngine @Inject constructor(
     }
 
     private fun buildConfig(modelDir: String, model: SttModelInfo): OfflineRecognizerConfig {
+        val numThreads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+
         val modelConfig = when (model.modelType) {
             SttModelType.WHISPER -> OfflineModelConfig(
                 whisper = OfflineWhisperModelConfig(
@@ -63,7 +77,7 @@ class SherpaOnnxSttEngine @Inject constructor(
                     task = "transcribe",
                 ),
                 tokens = "$modelDir/tokens.txt",
-                numThreads = 2,
+                numThreads = numThreads,
                 debug = false,
             )
             SttModelType.MOONSHINE -> OfflineModelConfig(
@@ -75,7 +89,7 @@ class SherpaOnnxSttEngine @Inject constructor(
                     mergedDecoder = "",  // Not available in this model variant
                 ),
                 tokens = "$modelDir/tokens.txt",
-                numThreads = 2,
+                numThreads = numThreads,
                 debug = false,
             )
             SttModelType.SENSE_VOICE -> OfflineModelConfig(
@@ -83,7 +97,7 @@ class SherpaOnnxSttEngine @Inject constructor(
                     model = "$modelDir/model.int8.onnx",
                 ),
                 tokens = "$modelDir/tokens.txt",
-                numThreads = 2,
+                numThreads = numThreads,
                 debug = false,
             )
         }
@@ -128,16 +142,23 @@ class SherpaOnnxSttEngine @Inject constructor(
                 return
             }
 
+            // Reset state
+            lastPartialResult = ""
+            newAudioAvailable = false
+            finalResultLatch = null
+
+            // Create stream under lock
+            val stream = synchronized(streamLock) {
+                recognizer?.createStream().also { activeStream = it }
+            }
+
             isRecording.set(true)
             audioRecord?.startRecording()
 
-            val stream = recognizer?.createStream()
-            activeStream = stream
-
+            // --- Recording thread: only reads mic and feeds audio ---
             recordingThread = Thread({
                 val buffer = ShortArray(1024)
                 val floatBuffer = FloatArray(1024)
-                var chunkCount = 0
 
                 while (isRecording.get()) {
                     val shortsRead = audioRecord?.read(buffer, 0, buffer.size) ?: 0
@@ -145,20 +166,54 @@ class SherpaOnnxSttEngine @Inject constructor(
                         for (i in 0 until shortsRead) {
                             floatBuffer[i] = buffer[i].toFloat() / 32768f
                         }
-                        stream?.acceptWaveform(floatBuffer.copyOf(shortsRead), sampleRate = SAMPLE_RATE)
-
-                        // Decode every ~160ms (16 chunks of 1024 samples at 16kHz) for partial results
-                        chunkCount++
-                        if (chunkCount % 16 == 0 && stream != null) {
-                            recognizer?.decode(stream)
-                            val partial = recognizer?.getResult(stream)?.text?.trim() ?: ""
-                            if (partial.isNotEmpty()) {
-                                partialCallback?.onPartialResult(partial)
-                            }
+                        synchronized(streamLock) {
+                            activeStream?.acceptWaveform(
+                                floatBuffer.copyOf(shortsRead),
+                                sampleRate = SAMPLE_RATE
+                            )
+                            newAudioAvailable = true
+                            (streamLock as Object).notifyAll()
                         }
                     }
                 }
+                Log.d(TAG, "Recording thread finished")
             }, "STT-Recording").also { it.start() }
+
+            // --- Decode thread: periodic decode, never blocks mic reads ---
+            decodeThread = Thread({
+                var lastDecodeTime = System.currentTimeMillis()
+
+                while (isRecording.get()) {
+                    // Wait for new audio or timeout
+                    synchronized(streamLock) {
+                        while (!newAudioAvailable && isRecording.get()) {
+                            (streamLock as Object).wait(200)
+                        }
+                    }
+
+                    val now = System.currentTimeMillis()
+                    val elapsed = now - lastDecodeTime
+
+                    // Only decode if enough time has passed since last decode
+                    if (elapsed >= DECODE_INTERVAL_MS) {
+                        synchronized(streamLock) {
+                            val s = activeStream ?: return@synchronized
+                            try {
+                                recognizer?.decode(s)
+                                val text = recognizer?.getResult(s)?.text?.trim() ?: ""
+                                if (text.isNotEmpty() && text != lastPartialResult) {
+                                    lastPartialResult = text
+                                    partialCallback?.onPartialResult(text)
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Decode error: ${e.message}")
+                            }
+                        }
+                        lastDecodeTime = now
+                    }
+                }
+                Log.d(TAG, "Decode thread finished")
+            }, "STT-Decode").also { it.start() }
 
             Log.d(TAG, "Started listening")
         } catch (e: SecurityException) {
@@ -171,38 +226,69 @@ class SherpaOnnxSttEngine @Inject constructor(
     override fun stopListening(): SttResult? {
         if (!isRecording.get()) return null
 
+        // Signal threads to stop
         isRecording.set(false)
-        recordingThread?.join(5000)
-        recordingThread = null
 
+        // Stop mic
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
 
-        val stream = activeStream ?: return null
-        activeStream = null
+        // Wake up decode thread so it can do final decode and exit
+        synchronized(streamLock) {
+            (streamLock as Object).notifyAll()
+        }
 
-        recognizer?.decode(stream)
-        val result = recognizer?.getResult(stream)
-        stream.release()
+        // Wait for both threads to finish
+        recordingThread?.join(3000)
+        recordingThread = null
+        decodeThread?.join(5000)
+        decodeThread = null
 
-        val text = result?.text?.trim() ?: ""
-        Log.d(TAG, "Stopped listening. Result: $text")
+        // Final decode of accumulated audio
+        val result = synchronized(streamLock) {
+            val stream = activeStream ?: return@synchronized null
+            try {
+                recognizer?.decode(stream)
+                val text = recognizer?.getResult(stream)?.text?.trim() ?: ""
+                if (text.isNotEmpty()) SttResult(text = text) else null
+            } catch (e: Exception) {
+                Log.e(TAG, "Final decode error: ${e.message}")
+                null
+            }
+        }
 
-        return if (text.isNotEmpty()) SttResult(text = text) else null
+        // Release stream
+        synchronized(streamLock) {
+            activeStream?.release()
+            activeStream = null
+        }
+
+        Log.d(TAG, "Stopped listening. Result: ${result?.text ?: "(empty)"}")
+        return result
     }
 
     override fun cancelListening() {
         isRecording.set(false)
+
+        // Wake up decode thread
+        synchronized(streamLock) {
+            (streamLock as Object).notifyAll()
+        }
+
         recordingThread?.join(2000)
         recordingThread = null
+        decodeThread?.join(3000)
+        decodeThread = null
 
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
 
-        activeStream?.release()
-        activeStream = null
+        synchronized(streamLock) {
+            activeStream?.release()
+            activeStream = null
+        }
     }
 
     override fun isListening(): Boolean = isRecording.get()
@@ -211,7 +297,6 @@ class SherpaOnnxSttEngine @Inject constructor(
         cancelListening()
         recognizer?.release()
         recognizer = null
-        activeStream = null
         currentModelId = null
     }
 }

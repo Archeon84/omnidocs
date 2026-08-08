@@ -177,11 +177,8 @@ class VoiceCaptureManager @Inject constructor(
         if (!useSystemRecognizer && activeEngine != null) {
             val result = activeEngine?.stopListening()
             if (result != null && result.text.isNotBlank()) {
-                _transcript.value = if (_transcript.value.isEmpty()) {
-                    result.text
-                } else {
-                    "${_transcript.value} ${result.text}"
-                }
+                // Replace partial with final result (partial is just a preview)
+                _transcript.value = result.text
             }
         } else {
             recognizer?.stopListening()
