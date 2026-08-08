@@ -1,5 +1,9 @@
 package com.omnidocs.app.ui.screens.voice
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -14,12 +18,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.omnidocs.app.ui.theme.isReducedMotionEnabled
 
@@ -35,6 +41,23 @@ fun VoiceCaptureOverlay(
     val isStructuring by viewModel.isStructuring.collectAsState()
     val savedNoteId by viewModel.savedNoteId.collectAsState()
     val reducedMotion = isReducedMotionEnabled()
+    val context = LocalContext.current
+
+    // Permission handling
+    var hasAudioPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasAudioPermission = granted
+        if (granted) {
+            viewModel.startListening()
+        }
+    }
 
     // Navigate when note is saved
     LaunchedEffect(savedNoteId) {
@@ -114,7 +137,11 @@ fun VoiceCaptureOverlay(
                         if (isListening) {
                             viewModel.stopListening()
                         } else if (transcript.isEmpty()) {
-                            viewModel.startListening()
+                            if (hasAudioPermission) {
+                                viewModel.startListening()
+                            } else {
+                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
                         }
                     },
                     modifier = Modifier.size(72.dp),
@@ -202,7 +229,13 @@ fun VoiceCaptureOverlay(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     OutlinedButton(
-                        onClick = { viewModel.startListening() },
+                        onClick = {
+                            if (hasAudioPermission) {
+                                viewModel.startListening()
+                            } else {
+                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Record More")

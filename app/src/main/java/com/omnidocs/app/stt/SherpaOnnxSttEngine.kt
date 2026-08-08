@@ -68,11 +68,11 @@ class SherpaOnnxSttEngine @Inject constructor(
             )
             SttModelType.MOONSHINE -> OfflineModelConfig(
                 moonshine = OfflineMoonshineModelConfig(
-                    preprocessor = "$modelDir/preprocessor.onnx",
-                    encoder = "$modelDir/encoder.onnx",
-                    uncachedDecoder = "$modelDir/uncached_decoder.onnx",
-                    cachedDecoder = "$modelDir/cached_decoder.onnx",
-                    mergedDecoder = "$modelDir/merged_decoder.onnx",
+                    preprocessor = "$modelDir/preprocess.onnx",
+                    encoder = "$modelDir/encode.int8.onnx",
+                    uncachedDecoder = "$modelDir/uncached_decode.int8.onnx",
+                    cachedDecoder = "$modelDir/cached_decode.int8.onnx",
+                    mergedDecoder = "",  // Not available in this model variant
                 ),
                 tokens = "$modelDir/tokens.txt",
                 numThreads = 2,
