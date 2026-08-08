@@ -21,6 +21,15 @@ import javax.inject.Singleton
 
 private const val TAG = "ModelDownloadManager"
 
+/** Allowed hostnames for model downloads (SSRF protection). */
+private val ALLOWED_DOWNLOAD_HOSTS = setOf(
+    "github.com",
+    "objects.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+    "huggingface.co",
+    "hf.co",
+)
+
 data class ModelInfo(
     val id: String,
     val name: String,
@@ -48,6 +57,17 @@ class ModelDownloadManager @Inject constructor(
 
     init {
         modelsDir.mkdirs()
+    }
+
+    /**
+     * Validate that a URL's hostname is in the allowed list.
+     * Prevents SSRF attacks via malicious redirects.
+     */
+    private fun validateDownloadUrl(url: URL): Boolean {
+        val host = url.host?.lowercase() ?: return false
+        return ALLOWED_DOWNLOAD_HOSTS.any { allowed ->
+            host == allowed || host.endsWith(".$allowed")
+        }
     }
 
     val availableModels = listOf(
@@ -86,6 +106,8 @@ class ModelDownloadManager @Inject constructor(
     /**
      * Available offline speech recognition models.
      * These are downloaded as tar.bz2 archives and extracted to the models directory.
+     * Note: sha256 is null because upstream (k2-fsa/sherpa-onnx) does not publish checksums.
+     * The download code computes and saves the hash on first download for future integrity checks.
      */
     val sttModels = listOf(
         SttModelInfo(
@@ -172,6 +194,12 @@ class ModelDownloadManager @Inject constructor(
                 if (tmpFile.exists()) tmpFile.delete()
 
                 val url = URL(model.downloadUrl)
+
+                // Validate URL hostname before connecting (SSRF protection)
+                if (!validateDownloadUrl(url)) {
+                    _downloadState.value = DownloadState.Error(model.id, "Download URL not from trusted source")
+                    return@withContext
+                }
 
                 val connection = url.openConnection() as HttpURLConnection
                 connection.setRequestProperty("User-Agent", "OmniDocs/1.0")
@@ -325,6 +353,13 @@ class ModelDownloadManager @Inject constructor(
                 if (tmpFile.exists()) tmpFile.delete()
 
                 val url = URL(model.downloadUrl)
+
+                // Validate URL hostname before connecting (SSRF protection)
+                if (!validateDownloadUrl(url)) {
+                    _sttDownloadState.value = DownloadState.Error(model.id, "Download URL not from trusted source")
+                    return@withContext
+                }
+
                 val connection = url.openConnection() as HttpURLConnection
                 connection.setRequestProperty("User-Agent", "OmniDocs/1.0")
                 connection.connectTimeout = 30000
