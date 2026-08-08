@@ -22,7 +22,10 @@ private const val TAG = "SherpaOnnxSttEngine"
 private const val SAMPLE_RATE = 16000
 private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
 private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-private const val DECODE_INTERVAL_MS = 1500L  // Decode every 1.5s to limit CPU
+private const val DECODE_INTERVAL_MS = 1500L
+// Flush stream every ~30s to prevent ONNX crash from oversized internal state
+private const val STREAM_MAX_SECONDS = 30
+private const val STREAM_MAX_SAMPLES = SAMPLE_RATE * STREAM_MAX_SECONDS
 
 @Singleton
 class SherpaOnnxSttEngine @Inject constructor(
@@ -36,7 +39,6 @@ class SherpaOnnxSttEngine @Inject constructor(
     private val isRecording = AtomicBoolean(false)
     private var currentModelId: String? = null
 
-    // Audio queue: recording thread puts, decode thread takes
     private val audioQueue = LinkedBlockingQueue<FloatArray>()
 
     fun initialize(modelDir: String, model: SttModelInfo): Boolean {
@@ -152,23 +154,42 @@ class SherpaOnnxSttEngine @Inject constructor(
                 Log.d(TAG, "Recording thread finished")
             }, "STT-Recording").also { it.start() }
 
-            // Decode thread: owns the stream, drains queue periodically, decodes.
-            // The stream is NEVER touched by any other thread.
+            // Decode thread: owns the stream, drains queue, decodes, flushes when full.
             decodeThread = Thread({
-                val stream = recognizer?.createStream() ?: run {
+                val initStream = recognizer?.createStream()
+                if (initStream == null) {
                     Log.e(TAG, "Failed to create stream")
                     isRecording.set(false)
                     return@Thread
                 }
 
+                var stream: com.k2fsa.sherpa.onnx.OfflineStream = initStream
                 var lastDecodeTime = System.currentTimeMillis()
+                var samplesInStream = 0
+                var lastPartialText = ""
 
                 try {
                     while (isRecording.get()) {
-                        // Drain all available audio into the stream
                         val chunk = audioQueue.poll()
                         if (chunk != null) {
                             stream.acceptWaveform(chunk, sampleRate = SAMPLE_RATE)
+                            samplesInStream += chunk.size
+
+                            // Flush stream if it's getting too large (prevents ONNX crash)
+                            if (samplesInStream >= STREAM_MAX_SAMPLES) {
+                                recognizer?.decode(stream)
+                                val text = recognizer?.getResult(stream)?.text?.trim() ?: ""
+                                if (text.isNotEmpty()) {
+                                    lastPartialText = text
+                                    partialCallback?.onPartialResult(text)
+                                }
+                                stream.release()
+                                val newStream = recognizer?.createStream() ?: break
+                                stream = newStream
+                                samplesInStream = 0
+                                lastDecodeTime = System.currentTimeMillis()
+                                Log.d(TAG, "Stream flushed, started new segment")
+                            }
                         }
 
                         val now = System.currentTimeMillis()
@@ -176,33 +197,36 @@ class SherpaOnnxSttEngine @Inject constructor(
                             lastDecodeTime = now
                             recognizer?.decode(stream)
                             val text = recognizer?.getResult(stream)?.text?.trim() ?: ""
-                            if (text.isNotEmpty()) {
+                            if (text.isNotEmpty() && text != lastPartialText) {
+                                lastPartialText = text
                                 partialCallback?.onPartialResult(text)
                             }
                         }
 
-                        // If no audio arrived, sleep briefly to avoid busy-wait
                         if (chunk == null) {
                             Thread.sleep(50)
                         }
                     }
 
-                    // Drain any remaining audio
+                    // Drain remaining audio
                     while (true) {
                         val chunk = audioQueue.poll() ?: break
                         stream.acceptWaveform(chunk, sampleRate = SAMPLE_RATE)
+                        samplesInStream += chunk.size
                     }
 
                     // Final decode
-                    recognizer?.decode(stream)
-                    val finalText = recognizer?.getResult(stream)?.text?.trim() ?: ""
-                    if (finalText.isNotEmpty()) {
-                        partialCallback?.onPartialResult(finalText)
+                    if (samplesInStream > 0) {
+                        recognizer?.decode(stream)
+                        val finalText = recognizer?.getResult(stream)?.text?.trim() ?: ""
+                        if (finalText.isNotEmpty()) {
+                            partialCallback?.onPartialResult(finalText)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Decode thread error: ${e.message}", e)
                 } finally {
-                    stream.release()
+                    try { stream.release() } catch (_: Exception) {}
                 }
 
                 Log.d(TAG, "Decode thread finished")
@@ -231,19 +255,17 @@ class SherpaOnnxSttEngine @Inject constructor(
         recordingThread?.join(3000)
         recordingThread = null
 
-        // The decode thread already did the final decode and called the callback.
-        // Return empty here since the final result was already delivered via callback.
-        // But also return it for the stopListening callers that use the return value.
-        val snapshot = mutableListOf<FloatArray>()
-        audioQueue.drainTo(snapshot)
+        // The decode thread already did the final decode via callback.
+        // Drain any remaining audio for a fallback decode.
+        val remaining = mutableListOf<FloatArray>()
+        audioQueue.drainTo(remaining)
         audioQueue.clear()
 
-        if (snapshot.isEmpty()) return null
+        if (remaining.isEmpty()) return null
 
-        // One last decode if there's remaining audio
         return try {
             val stream = recognizer?.createStream() ?: return null
-            for (chunk in snapshot) {
+            for (chunk in remaining) {
                 stream.acceptWaveform(chunk, sampleRate = SAMPLE_RATE)
             }
             recognizer?.decode(stream)
