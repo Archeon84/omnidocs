@@ -166,7 +166,8 @@ class SherpaOnnxSttEngine @Inject constructor(
                 var stream: com.k2fsa.sherpa.onnx.OfflineStream = initStream
                 var lastDecodeTime = System.currentTimeMillis()
                 var samplesInStream = 0
-                var lastPartialText = ""
+                var accumulatedText = ""  // Persists across stream flushes
+                var lastSegmentText = ""
 
                 try {
                     while (isRecording.get()) {
@@ -178,17 +179,19 @@ class SherpaOnnxSttEngine @Inject constructor(
                             // Flush stream if it's getting too large (prevents ONNX crash)
                             if (samplesInStream >= STREAM_MAX_SAMPLES) {
                                 recognizer?.decode(stream)
-                                val text = recognizer?.getResult(stream)?.text?.trim() ?: ""
-                                if (text.isNotEmpty()) {
-                                    lastPartialText = text
-                                    partialCallback?.onPartialResult(text)
+                                val segmentText = recognizer?.getResult(stream)?.text?.trim() ?: ""
+                                if (segmentText.isNotEmpty()) {
+                                    accumulatedText = if (accumulatedText.isEmpty()) segmentText
+                                        else "$accumulatedText $segmentText"
+                                    lastSegmentText = ""
+                                    partialCallback?.onPartialResult(accumulatedText)
                                 }
                                 stream.release()
                                 val newStream = recognizer?.createStream() ?: break
                                 stream = newStream
                                 samplesInStream = 0
                                 lastDecodeTime = System.currentTimeMillis()
-                                Log.d(TAG, "Stream flushed, started new segment")
+                                Log.d(TAG, "Stream flushed, accumulated: ${accumulatedText.take(50)}")
                             }
                         }
 
@@ -196,10 +199,12 @@ class SherpaOnnxSttEngine @Inject constructor(
                         if (now - lastDecodeTime >= DECODE_INTERVAL_MS) {
                             lastDecodeTime = now
                             recognizer?.decode(stream)
-                            val text = recognizer?.getResult(stream)?.text?.trim() ?: ""
-                            if (text.isNotEmpty() && text != lastPartialText) {
-                                lastPartialText = text
-                                partialCallback?.onPartialResult(text)
+                            val segmentText = recognizer?.getResult(stream)?.text?.trim() ?: ""
+                            if (segmentText.isNotEmpty() && segmentText != lastSegmentText) {
+                                lastSegmentText = segmentText
+                                val display = if (accumulatedText.isEmpty()) segmentText
+                                    else "$accumulatedText $segmentText"
+                                partialCallback?.onPartialResult(display)
                             }
                         }
 
@@ -218,8 +223,10 @@ class SherpaOnnxSttEngine @Inject constructor(
                     // Final decode
                     if (samplesInStream > 0) {
                         recognizer?.decode(stream)
-                        val finalText = recognizer?.getResult(stream)?.text?.trim() ?: ""
-                        if (finalText.isNotEmpty()) {
+                        val segmentText = recognizer?.getResult(stream)?.text?.trim() ?: ""
+                        if (segmentText.isNotEmpty()) {
+                            val finalText = if (accumulatedText.isEmpty()) segmentText
+                                else "$accumulatedText $segmentText"
                             partialCallback?.onPartialResult(finalText)
                         }
                     }
