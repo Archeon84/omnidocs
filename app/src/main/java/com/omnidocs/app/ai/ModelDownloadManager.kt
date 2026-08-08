@@ -70,6 +70,41 @@ class ModelDownloadManager @Inject constructor(
         }
     }
 
+    /**
+     * Open a connection with manual redirect handling.
+     * Re-validates hostname at each redirect hop against ALLOWED_DOWNLOAD_HOSTS.
+     * Max 5 hops to prevent infinite redirect loops.
+     */
+    private fun openConnectionWithRedirectValidation(initialUrl: URL): HttpURLConnection {
+        var currentUrl = initialUrl
+        val maxRedirects = 5
+
+        for (hop in 0..maxRedirects) {
+            if (!validateDownloadUrl(currentUrl)) {
+                throw SecurityException("Redirect to disallowed host: ${currentUrl.host}")
+            }
+
+            val conn = currentUrl.openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = false
+            conn.setRequestProperty("User-Agent", "OmniDocs/1.0")
+            conn.connectTimeout = 30000
+            conn.readTimeout = 60000
+            conn.connect()
+
+            val code = conn.responseCode
+            if (code in 301..308) {
+                val location = conn.getHeaderField("Location") ?: throw SecurityException("Redirect without Location header")
+                conn.disconnect()
+                currentUrl = URL(currentUrl, location)
+                continue
+            }
+
+            return conn
+        }
+
+        throw SecurityException("Too many redirects (>$maxRedirects)")
+    }
+
     val availableModels = listOf(
         ModelInfo(
             id = "qwen3_1.7b",
@@ -195,20 +230,13 @@ class ModelDownloadManager @Inject constructor(
 
                 val url = URL(model.downloadUrl)
 
-                // Validate URL hostname before connecting (SSRF protection)
-                if (!validateDownloadUrl(url)) {
-                    _downloadState.value = DownloadState.Error(model.id, "Download URL not from trusted source")
+                Log.d(TAG, "Connecting to ${model.downloadUrl}")
+                val connection = try {
+                    openConnectionWithRedirectValidation(url)
+                } catch (e: SecurityException) {
+                    _downloadState.value = DownloadState.Error(model.id, e.message ?: "URL validation failed")
                     return@withContext
                 }
-
-                val connection = url.openConnection() as HttpURLConnection
-                connection.setRequestProperty("User-Agent", "OmniDocs/1.0")
-                connection.connectTimeout = 30000
-                connection.readTimeout = 60000
-                connection.instanceFollowRedirects = true
-
-                Log.d(TAG, "Connecting to ${model.downloadUrl}")
-                connection.connect()
 
                 val responseCode = connection.responseCode
                 Log.d(TAG, "Response code: $responseCode")
@@ -354,18 +382,12 @@ class ModelDownloadManager @Inject constructor(
 
                 val url = URL(model.downloadUrl)
 
-                // Validate URL hostname before connecting (SSRF protection)
-                if (!validateDownloadUrl(url)) {
-                    _sttDownloadState.value = DownloadState.Error(model.id, "Download URL not from trusted source")
+                val connection = try {
+                    openConnectionWithRedirectValidation(url)
+                } catch (e: SecurityException) {
+                    _sttDownloadState.value = DownloadState.Error(model.id, e.message ?: "URL validation failed")
                     return@withContext
                 }
-
-                val connection = url.openConnection() as HttpURLConnection
-                connection.setRequestProperty("User-Agent", "OmniDocs/1.0")
-                connection.connectTimeout = 30000
-                connection.readTimeout = 60000
-                connection.instanceFollowRedirects = true
-                connection.connect()
 
                 val responseCode = connection.responseCode
                 if (responseCode != HttpURLConnection.HTTP_OK) {
