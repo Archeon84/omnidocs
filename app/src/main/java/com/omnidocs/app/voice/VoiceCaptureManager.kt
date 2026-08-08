@@ -85,7 +85,6 @@ class VoiceCaptureManager @Inject constructor(
     }
 
     fun startListening(languageCode: String = "en") {
-        _isListening.value = true
         _error.value = null
         _transcript.value = ""
 
@@ -96,9 +95,14 @@ class VoiceCaptureManager @Inject constructor(
                 return@launch
             }
 
+            _isListening.value = true
+
             if (!useSystemRecognizer && activeEngine != null) {
                 activeEngine?.startListening(languageCode) { partial ->
-                    // Partial results update the UI preview
+                    // Update transcript on main thread with partial results
+                    scope.launch(Dispatchers.Main) {
+                        _transcript.value = partial
+                    }
                 }
             } else {
                 startSystemRecognizer(languageCode)
@@ -148,7 +152,13 @@ class VoiceCaptureManager @Inject constructor(
                     }
                 }
 
-                override fun onPartialResults(partialResults: Bundle?) {}
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    val partial = matches?.firstOrNull() ?: ""
+                    if (partial.isNotBlank()) {
+                        _transcript.value = partial
+                    }
+                }
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         }

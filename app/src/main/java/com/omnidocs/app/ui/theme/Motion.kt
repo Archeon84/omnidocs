@@ -4,6 +4,7 @@ import android.content.Context
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import androidx.compose.animation.*
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -11,8 +12,15 @@ import androidx.compose.ui.platform.LocalContext
 
 /** Shared motion tokens — single source of truth for all screen transitions. */
 object MotionTokens {
-    const val DURATION_MS = 300
+    const val DURATION_MS = 400
+    const val STAGGER_MS = 50L
     const val SLIDE_FRACTION = 3 // slide by 1/3 of screen width
+
+    // Spring presets
+    val ListEntrance = spring<Float>(dampingRatio = 0.7f, stiffness = 300f)
+    val ScreenTransition = spring<Float>(dampingRatio = 0.85f, stiffness = 200f)
+    val ButtonPress = spring<Float>(dampingRatio = 0.6f, stiffness = 500f)
+    val CardPress = spring<Float>(dampingRatio = 0.7f, stiffness = 400f)
 }
 
 /**

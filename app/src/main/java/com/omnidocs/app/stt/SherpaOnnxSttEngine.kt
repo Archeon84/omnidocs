@@ -32,6 +32,7 @@ class SherpaOnnxSttEngine @Inject constructor(
     private var recordingThread: Thread? = null
     private val isRecording = AtomicBoolean(false)
     private var currentModelId: String? = null
+    private var activeStream: com.k2fsa.sherpa.onnx.OfflineStream? = null
 
     /**
      * Initialize the recognizer with a downloaded STT model.
@@ -131,10 +132,12 @@ class SherpaOnnxSttEngine @Inject constructor(
             audioRecord?.startRecording()
 
             val stream = recognizer?.createStream()
+            activeStream = stream
 
             recordingThread = Thread({
                 val buffer = ShortArray(1024)
                 val floatBuffer = FloatArray(1024)
+                var chunkCount = 0
 
                 while (isRecording.get()) {
                     val shortsRead = audioRecord?.read(buffer, 0, buffer.size) ?: 0
@@ -143,12 +146,17 @@ class SherpaOnnxSttEngine @Inject constructor(
                             floatBuffer[i] = buffer[i].toFloat() / 32768f
                         }
                         stream?.acceptWaveform(floatBuffer.copyOf(shortsRead), sampleRate = SAMPLE_RATE)
-                    }
-                }
 
-                stream?.let {
-                    recognizer?.decode(it)
-                    it.release()
+                        // Decode every ~160ms (16 chunks of 1024 samples at 16kHz) for partial results
+                        chunkCount++
+                        if (chunkCount % 16 == 0 && stream != null) {
+                            recognizer?.decode(stream)
+                            val partial = recognizer?.getResult(stream)?.text?.trim() ?: ""
+                            if (partial.isNotEmpty()) {
+                                partialCallback?.onPartialResult(partial)
+                            }
+                        }
+                    }
                 }
             }, "STT-Recording").also { it.start() }
 
@@ -171,7 +179,9 @@ class SherpaOnnxSttEngine @Inject constructor(
         audioRecord?.release()
         audioRecord = null
 
-        val stream = recognizer?.createStream() ?: return null
+        val stream = activeStream ?: return null
+        activeStream = null
+
         recognizer?.decode(stream)
         val result = recognizer?.getResult(stream)
         stream.release()
@@ -190,6 +200,9 @@ class SherpaOnnxSttEngine @Inject constructor(
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+
+        activeStream?.release()
+        activeStream = null
     }
 
     override fun isListening(): Boolean = isRecording.get()
@@ -198,6 +211,7 @@ class SherpaOnnxSttEngine @Inject constructor(
         cancelListening()
         recognizer?.release()
         recognizer = null
+        activeStream = null
         currentModelId = null
     }
 }

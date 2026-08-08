@@ -92,6 +92,10 @@ class NotesRepository @Inject constructor(
         noteDao.updateNote(note.copy(isPinned = !note.isPinned).toEntity())
     }
 
+    suspend fun getAllNotesSync(): List<Note> {
+        return noteDao.getAllNotesSync().map { it.toDomain() }
+    }
+
     suspend fun getUnsyncedNotes(): List<Note> {
         return noteDao.getUnsyncedNotes().map { it.toDomain() }
     }
