@@ -3,29 +3,47 @@ package com.omnidocs.app.ui.screens.editor
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.data.local.RecordingDao
+import com.omnidocs.app.data.local.entity.RecordingEntity
 import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.ai.AiService
 import com.omnidocs.app.ai.AutoTagger
+import com.omnidocs.app.ai.EvidenceExtractor
 import com.omnidocs.app.ai.ExtractedConcept
 import com.omnidocs.app.ai.NoteIntelligenceService
 import com.omnidocs.app.ui.screens.editor.IntelligenceMessage
+import com.omnidocs.app.util.MarkdownCodec
 import com.omnidocs.app.util.sanitizeForHtml
+import com.omnidocs.app.voice.AudioPlaybackController
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
+
+/** Where a content change originated. WEBVIEW = the user typed/edited in the
+ * rich editor; PROGRAMMATIC = the app set content (load note, OCR, AI result,
+ * template, image/audio attach). RichTextEditor only pushes PROGRAMMATIC
+ * changes back into the WebView, so WebView-sourced edits never get their
+ * caret/focus reset by a redundant innerHTML write. */
+enum class ContentSource { WEBVIEW, PROGRAMMATIC }
+
+/** Which editor the user is currently viewing. RICH is the default WebView
+ *  contenteditable editor; MARKDOWN is a plain-text source view; PREVIEW is a
+ *  read-only rendered view. */
+enum class EditorMode { RICH, MARKDOWN, PREVIEW }
 
 @HiltViewModel
 class EditorViewModel @Inject constructor(
     private val repository: NotesRepository,
     private val aiService: AiService,
     private val autoTagger: AutoTagger,
-    private val noteIntelligenceService: NoteIntelligenceService
+    private val noteIntelligenceService: NoteIntelligenceService,
+    private val evidenceExtractor: EvidenceExtractor,
+    private val recordingDao: RecordingDao,
+    private val audioPlaybackController: AudioPlaybackController
 ) : ViewModel() {
 
     private val _currentNote = MutableStateFlow<Note?>(null)
@@ -36,6 +54,24 @@ class EditorViewModel @Inject constructor(
 
     private val _content = MutableStateFlow("")
     val content: StateFlow<String> = _content.asStateFlow()
+
+    // Tracks whether the latest content update came from the WebView editor
+    // (typing/formatting) or from the app (load/OCR/AI/template). RichTextEditor
+    // uses this to avoid pushing WebView-originated content back into the WebView.
+    private val _contentSource = MutableStateFlow(ContentSource.PROGRAMMATIC)
+    val contentSource: StateFlow<ContentSource> = _contentSource.asStateFlow()
+
+    private val _editorMode = MutableStateFlow(EditorMode.RICH)
+    val editorMode: StateFlow<EditorMode> = _editorMode.asStateFlow()
+
+    private val _markdownText = MutableStateFlow("")
+    val markdownText: StateFlow<String> = _markdownText.asStateFlow()
+
+    // Snapshot of the HTML as it was when markdown mode was entered. If the user
+    // edits nothing and returns to Rich, this exact HTML is restored (fidelity).
+    private var richHtmlSnapshot: String = ""
+    // True once the markdown text has diverged from htmlToMarkdown(richHtmlSnapshot).
+    private var markdownDirty = false
 
     val wordCount: StateFlow<Int> = _content.map { html ->
         val text = stripHtml(html)
@@ -87,19 +123,25 @@ class EditorViewModel @Inject constructor(
     private var autoSaveJob: Job? = null
     private var noteLoadJob: Job? = null
     private var loadedNoteId: String? = null
+    // True once the user edits title/content and until the next successful save.
+    // loadNote's Room flow re-emits on every DB write; this guard prevents those
+    // emissions from overwriting unsaved in-editor state.
+    private var isDirty = false
     private var lastHtmlContent: String = ""
     private var lastPlainText: String = ""
     private val AUTO_SAVE_DELAY = 3000L // 3 seconds - debounce rapid edits
 
     // ── Undo / Redo (20 steps) ──────────────────────────────────────────
     private val undoStack = ArrayDeque<String>(20)
-    private val redoStack = ArrayDeque<String>(10)
-    private var lastContentBeforeTyping: String = ""
+    private val redoStack = ArrayDeque<String>(20)
     private var typingDebounceJob: Job? = null
     private val TYPING_DEBOUNCE_MS = 1500L
 
     private val _canUndo = MutableStateFlow(false)
     val canUndo: StateFlow<Boolean> = _canUndo.asStateFlow()
+
+    private val _canRedo = MutableStateFlow(false)
+    val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
     private fun pushUndo() {
         val current = _content.value
@@ -108,17 +150,67 @@ class EditorViewModel @Inject constructor(
             if (undoStack.size > 20) undoStack.removeFirst()
             redoStack.clear()
             _canUndo.value = undoStack.isNotEmpty()
+            _canRedo.value = false
         }
     }
 
     fun undo() {
         if (undoStack.isEmpty()) return
+        // Cancel any pending typing session so that the first keystroke after undo
+        // correctly starts a fresh session and saves the restored state for re-undo.
+        typingDebounceJob?.cancel()
+        typingDebounceJob = null
         val current = _content.value
         val previous = undoStack.removeLast()
         redoStack.addLast(current)
+        if (redoStack.size > 20) redoStack.removeFirst()
+        _contentSource.value = ContentSource.PROGRAMMATIC
         _content.value = previous
         _canUndo.value = undoStack.isNotEmpty()
+        _canRedo.value = redoStack.isNotEmpty()
+        isDirty = true
         scheduleAutoSave()
+    }
+
+    fun redo() {
+        if (redoStack.isEmpty()) return
+        // Cancel any pending typing session (same reason as undo).
+        typingDebounceJob?.cancel()
+        typingDebounceJob = null
+        val current = _content.value
+        val next = redoStack.removeLast()
+        // Push the current state back so the redo is itself undoable. Done inline
+        // rather than via pushUndo(), which would wipe the redo stack.
+        if (undoStack.isEmpty() || undoStack.last() != current) {
+            undoStack.addLast(current)
+            if (undoStack.size > 20) undoStack.removeFirst()
+        }
+        _contentSource.value = ContentSource.PROGRAMMATIC
+        _content.value = next
+        _canUndo.value = undoStack.isNotEmpty()
+        _canRedo.value = redoStack.isNotEmpty()
+        isDirty = true
+        scheduleAutoSave()
+    }
+
+    /** Capture the current content before an attachment insert so image/audio
+     *  additions can be undone like any other change. */
+    fun pushUndoBeforeChange() {
+        pushUndo()
+    }
+
+    // ── Note Recordings (voice notes attached to this note) ─────────────
+    private val _recordings = MutableStateFlow<List<RecordingEntity>>(emptyList())
+    val recordings: StateFlow<List<RecordingEntity>> = _recordings.asStateFlow()
+
+    val playingRecordingKey: StateFlow<String?> = audioPlaybackController.currentPlayingKey
+
+    fun togglePlayback(recording: RecordingEntity) {
+        audioPlaybackController.toggle(recording.storageKey)
+    }
+
+    fun stopPlayback() {
+        audioPlaybackController.stop()
     }
 
     fun loadNote(noteId: String) {
@@ -131,54 +223,135 @@ class EditorViewModel @Inject constructor(
         noteLoadJob = viewModelScope.launch {
             repository.getNoteByIdFlow(noteId).collect { note ->
                 note?.let {
-                    _currentNote.value = it
-                    _title.value = it.title
-                    _content.value = it.content
-                    _currentLanguage.value = it.language
+                    // The Room flow re-emits on every write (autosave, togglePin).
+                    // Only push DB state into the editor when there are no unsaved
+                    // edits; otherwise the emission overwrites in-progress typing
+                    // with stale database content.
+                    if (!isDirty) {
+                        _currentNote.value = it
+                        if (it.title != _title.value) _title.value = it.title
+                        if (it.content != _content.value) {
+                            _contentSource.value = ContentSource.PROGRAMMATIC
+                            _content.value = it.content
+                        }
+                        if (it.language != _currentLanguage.value) _currentLanguage.value = it.language
+                    } else {
+                        // Unsaved edits in progress: keep the editor state, only
+                        // refresh cheap metadata that can't clobber content.
+                        _currentNote.value = _currentNote.value?.copy(
+                            isPinned = it.isPinned,
+                            isDeleted = it.isDeleted
+                        )
+                    }
                 }
+            }
+        }
+
+        // Load the recordings belonging to this note.
+        viewModelScope.launch {
+            recordingDao.getRecordingsByNoteId(noteId).collect { recordings ->
+                _recordings.value = recordings
             }
         }
     }
 
     fun updateTitle(title: String) {
         _title.value = title
+        isDirty = true
         scheduleAutoSave()
     }
 
-    fun updateContent(content: String) {
-        // Capture the state BEFORE this edit for undo.
-        // On the first keystroke of a typing session, save the pre-edit state.
-        // Then debounce so we don't push every keystroke — only the state
-        // before the user started typing.
-        if (lastContentBeforeTyping.isEmpty() || content == lastContentBeforeTyping) {
-            // First call or unchanged — skip
-        } else if (typingDebounceJob == null) {
-            // First real edit in a new typing session — push the pre-edit state
-            val preEdit = lastContentBeforeTyping
-            if (undoStack.isEmpty() || undoStack.last() != preEdit) {
-                undoStack.addLast(preEdit)
-                if (undoStack.size > 20) undoStack.removeFirst()
-                redoStack.clear()
-                _canUndo.value = true
+    fun updateContent(content: String, fromWebView: Boolean = false) {
+        _contentSource.value = if (fromWebView) ContentSource.WEBVIEW else ContentSource.PROGRAMMATIC
+        if (fromWebView) {
+            // On the FIRST keystroke of each typing session, push the content that
+            // existed before typing started so the user can undo back to it.
+            // typingDebounceJob == null means we are not currently in an active session.
+            // _content.value at this point is still the pre-edit state (we haven't
+            // assigned it yet), so this correctly captures the snapshot to restore.
+            if (typingDebounceJob == null) {
+                val preEdit = _content.value
+                if (undoStack.isEmpty() || undoStack.last() != preEdit) {
+                    undoStack.addLast(preEdit)
+                    if (undoStack.size > 20) undoStack.removeFirst()
+                    redoStack.clear()
+                    _canUndo.value = true
+                    _canRedo.value = false
+                }
+            }
+            // Reset the inactivity window. When the timer fires the session is over
+            // and the next keystroke will start a new session (and push a new undo point).
+            typingDebounceJob?.cancel()
+            typingDebounceJob = viewModelScope.launch {
+                delay(TYPING_DEBOUNCE_MS)
+                typingDebounceJob = null
             }
         }
-        lastContentBeforeTyping = content
-        typingDebounceJob?.cancel()
-        typingDebounceJob = viewModelScope.launch {
-            delay(TYPING_DEBOUNCE_MS)
-            typingDebounceJob = null
-            lastContentBeforeTyping = ""
-        }
-
         _content.value = content
+        isDirty = true
         scheduleAutoSave()
     }
 
     fun appendToContent(text: String) {
         pushUndo()
         val current = _content.value
+        _contentSource.value = ContentSource.PROGRAMMATIC
         _content.value = if (current.isEmpty()) text else "$current\n$text"
+        isDirty = true
         scheduleAutoSave()
+    }
+
+    fun setEditorMode(mode: EditorMode) {
+        val previous = _editorMode.value
+        if (previous == mode) return
+
+        when (mode) {
+            EditorMode.RICH -> {
+                if (previous == EditorMode.MARKDOWN && markdownDirty) {
+                    // A real markdown edit happened; convert source -> HTML and push
+                    // it into content. RichTextEditor reacts to the PROGRAMMATIC
+                    // source change and refreshes the WebView.
+                    val html = MarkdownCodec.markdownToHtml(_markdownText.value)
+                    if (html.isNotBlank()) {
+                        pushUndo()
+                        _contentSource.value = ContentSource.PROGRAMMATIC
+                        _content.value = html
+                        isDirty = true
+                    }
+                } else if (previous == EditorMode.MARKDOWN) {
+                    // No edit: restore the exact original HTML, preserving embeds.
+                    if (richHtmlSnapshot != _content.value) {
+                        _contentSource.value = ContentSource.PROGRAMMATIC
+                        _content.value = richHtmlSnapshot
+                    }
+                }
+                // In RICH, current content (possibly converted or restored) is the
+                // source of truth; markdownText is stale until next markdown entry.
+                markdownDirty = false
+            }
+            EditorMode.MARKDOWN -> {
+                // Seed markdown from the current HTML, snapshotting it for fidelity.
+                richHtmlSnapshot = _content.value
+                _markdownText.value = MarkdownCodec.htmlToMarkdown(richHtmlSnapshot)
+                markdownDirty = false
+            }
+            EditorMode.PREVIEW -> {
+                // No state mutation; Preview merely renders currentMarkdown().
+            }
+        }
+        _editorMode.value = mode
+    }
+
+    fun updateMarkdown(text: String) {
+        _markdownText.value = text
+        markdownDirty = true
+    }
+
+    /** Markdown source shown in Preview mode. From RICH it re-derives from HTML so
+     *  unstaged HTML edits are reflected; from MARKDOWN it is the live edited text. */
+    fun currentMarkdown(): String = when (_editorMode.value) {
+        EditorMode.RICH, EditorMode.PREVIEW -> MarkdownCodec.htmlToMarkdown(_content.value)
+        EditorMode.MARKDOWN -> _markdownText.value
     }
 
     fun updateLanguage(language: String) {
@@ -188,6 +361,9 @@ class EditorViewModel @Inject constructor(
     fun togglePin() {
         viewModelScope.launch {
             _currentNote.value?.let { note ->
+                // Optimistically flip the in-memory pin state. The DAO toggles only
+                // the pinned flag (never content), so unsaved edits are preserved.
+                _currentNote.value = note.copy(isPinned = !note.isPinned)
                 repository.togglePin(note)
             }
         }
@@ -214,6 +390,19 @@ class EditorViewModel @Inject constructor(
     fun saveAndNavigate(onNavigated: () -> Unit) {
         viewModelScope.launch {
             saveNoteInternal()
+            // Trigger evidence extraction exactly once per deliberate save, not on
+            // every 3-second auto-save. The EvidenceExtractor's isExtracting guard
+            // and content-hash check ensure only one GGML call runs at a time and
+            // only when the content has actually changed.
+            val note = _currentNote.value
+            val plainText = stripHtml(_content.value)
+            if (note != null && plainText.length > 200) {
+                evidenceExtractor.extractFromNoteAsync(
+                    noteId = note.id,
+                    text = plainText,
+                    language = _currentLanguage.value
+                )
+            }
             onNavigated()
         }
     }
@@ -244,15 +433,16 @@ class EditorViewModel @Inject constructor(
         try {
             val note = _currentNote.value
             if (note != null) {
-                repository.updateNote(
-                    note.copy(
-                        title = _title.value,
-                        content = _content.value,
-                        plainText = stripHtml(_content.value),
-                        language = _currentLanguage.value,
-                        updatedAt = System.currentTimeMillis()
-                    )
+                val updatedNote = note.copy(
+                    title = _title.value,
+                    content = _content.value,
+                    plainText = stripHtml(_content.value),
+                    language = _currentLanguage.value,
+                    updatedAt = System.currentTimeMillis()
                 )
+                repository.updateNote(updatedNote)
+                // DB now matches the editor; allow the Room flow to re-sync.
+                isDirty = false
             } else {
                 val newNote = repository.createNote(
                     title = _title.value,
@@ -261,15 +451,15 @@ class EditorViewModel @Inject constructor(
                     language = _currentLanguage.value
                 )
                 _currentNote.value = newNote
-                // Auto-tag new notes with sufficient content
+                // DB now matches the editor; allow the Room flow to re-sync.
+                isDirty = false
+                // Auto-tag new notes with sufficient content. Fire-and-forget so
+                // the slow offline-LLM call never blocks save.
                 if (_content.value.length > 100) {
-                    try {
-                        val tags = autoTagger.generateTags(_title.value, _content.value)
-                        repository.updateNote(newNote.copy(tags = tags))
-                    } catch (e: Exception) {
-                        // Tagging failure shouldn't block save
-                    }
+                    autoTagger.tagNoteAsync(newNote)
                 }
+                // Evidence extraction for new notes happens in saveAndNavigate(), not
+                // here, to avoid repeated GGML invocations on every auto-save.
             }
             _snackbarEvent.tryEmit("Note saved")
         } catch (e: Exception) {
@@ -281,7 +471,10 @@ class EditorViewModel @Inject constructor(
 
     fun insertFormatting(before: String, after: String) {
         pushUndo()
+        _contentSource.value = ContentSource.PROGRAMMATIC
         _content.value = "$before${_content.value}$after"
+        isDirty = true
+        scheduleAutoSave()
     }
 
     fun setLanguage(language: String) {
@@ -387,6 +580,7 @@ class EditorViewModel @Inject constructor(
 
         pushUndo()
         val safeResult = com.omnidocs.app.util.HtmlSanitizer.toPlainText(preview.result)
+        _contentSource.value = ContentSource.PROGRAMMATIC
         when (preview.operation) {
             AiOperation.SUMMARIZE -> {
                 // Convert bullet-point lines to HTML list items for rich rendering
@@ -411,6 +605,7 @@ class EditorViewModel @Inject constructor(
                 _content.value = "${preview.originalContent}<hr><p><strong>Rewritten:</strong></p><p>${safeResult}</p>"
             }
         }
+        isDirty = true
         _aiPreview.value = null
         scheduleAutoSave()
     }
@@ -527,6 +722,11 @@ class EditorViewModel @Inject constructor(
         lastHtmlContent = html
         lastPlainText = plain
         return plain
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        audioPlaybackController.stop()
     }
 }
 
