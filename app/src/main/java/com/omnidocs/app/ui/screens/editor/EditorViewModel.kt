@@ -307,26 +307,17 @@ class EditorViewModel @Inject constructor(
 
         when (mode) {
             EditorMode.RICH -> {
-                if (previous == EditorMode.MARKDOWN && markdownDirty) {
-                    // A real markdown edit happened; convert source -> HTML and push
-                    // it into content. RichTextEditor reacts to the PROGRAMMATIC
-                    // source change and refreshes the WebView.
-                    val html = MarkdownCodec.markdownToHtml(_markdownText.value)
-                    if (html.isNotBlank()) {
-                        pushUndo()
-                        _contentSource.value = ContentSource.PROGRAMMATIC
-                        _content.value = html
-                        isDirty = true
-                    }
-                } else if (previous == EditorMode.MARKDOWN) {
-                    // No edit: restore the exact original HTML, preserving embeds.
+                // updateMarkdown keeps _content in sync with the markdown source, so
+                // a dirty markdown session already has the converted HTML in _content.
+                // Only an untouched session needs the exact original HTML restored.
+                if (previous == EditorMode.MARKDOWN && !markdownDirty) {
                     if (richHtmlSnapshot != _content.value) {
                         _contentSource.value = ContentSource.PROGRAMMATIC
                         _content.value = richHtmlSnapshot
                     }
                 }
-                // In RICH, current content (possibly converted or restored) is the
-                // source of truth; markdownText is stale until next markdown entry.
+                // In RICH, current content (converted or restored) is the source of
+                // truth; markdownText is stale until the next markdown entry.
                 markdownDirty = false
             }
             EditorMode.MARKDOWN -> {
@@ -345,6 +336,17 @@ class EditorViewModel @Inject constructor(
     fun updateMarkdown(text: String) {
         _markdownText.value = text
         markdownDirty = true
+        // Keep _content (the HTML source of truth that saveNoteInternal persists)
+        // in sync as the user types, and autosave like the rich editor does.
+        // Converting on every keystroke is debounced by the 3s autosave timer and
+        // never replaces richHtmlSnapshot, so the fidelity guard is preserved.
+        val html = MarkdownCodec.markdownToHtml(text)
+        if (html.isNotBlank()) {
+            _contentSource.value = ContentSource.PROGRAMMATIC
+            _content.value = html
+        }
+        isDirty = true
+        scheduleAutoSave()
     }
 
     /** Markdown source shown in Preview mode. From RICH it re-derives from HTML so
