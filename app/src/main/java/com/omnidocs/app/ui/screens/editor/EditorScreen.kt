@@ -4,6 +4,7 @@ import android.net.Uri
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -12,10 +13,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -60,7 +63,9 @@ import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.ui.screens.recordings.RecordingPlaybackChip
 import com.omnidocs.app.util.HtmlSanitizer
+import com.omnidocs.app.util.MarkdownCodec
 import java.io.File
 import java.util.UUID
 
@@ -153,10 +158,16 @@ fun EditorScreen(
     val currentNote by viewModel.currentNote.collectAsState()
     val title by viewModel.title.collectAsState()
     val content by viewModel.content.collectAsState()
+    val contentSource by viewModel.contentSource.collectAsState()
+    val editorMode by viewModel.editorMode.collectAsState()
+    val markdownText by viewModel.markdownText.collectAsState()
     val isSaving by viewModel.isSaving.collectAsState()
+    val noteRecordings by viewModel.recordings.collectAsState()
+    val playingRecordingKey by viewModel.playingRecordingKey.collectAsState()
     val wordCount by viewModel.wordCount.collectAsState()
     val readingTime by viewModel.readingTimeMinutes.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
+    val canRedo by viewModel.canRedo.collectAsState()
     val aiPreviewState by viewModel.aiPreview.collectAsState()
     val aiModelName by viewModel.aiModelName.collectAsState()
     var showAiMenu by remember { mutableStateOf(false) }
@@ -180,6 +191,42 @@ fun EditorScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val titleFocusRequester = remember { FocusRequester() }
     var showTemplateDialog by remember { mutableStateOf(noteId == null) }
+
+    // Pull the latest DOM content out of the WebView, push it to the ViewModel,
+    // and save before leaving. Shared by the top-bar back arrow and the system
+    // back button so both paths save instead of dropping unsaved edits.
+    val handleBack = {
+        // A brand-new note with no title or content has nothing to persist.
+        // Navigating back should discard it rather than create an empty note.
+        if (noteId == null && title.isBlank() && content.isBlank()) {
+            onNavigateBack()
+        } else {
+            // In markdown mode, commit the markdown source back to rich HTML (or
+            // restore the unedited snapshot) before reading/saving the DOM.
+            if (viewModel.editorMode.value == EditorMode.MARKDOWN) {
+                viewModel.setEditorMode(EditorMode.RICH)
+            }
+            webViewRef?.evaluateJavascript("getContent()") { result ->
+                val content = if (result != null && result.length >= 2) {
+                    try {
+                        org.json.JSONObject("{\"value\":$result}").getString("value")
+                    } catch (_: Exception) {
+                        viewModel.content.value
+                    }
+                } else {
+                    viewModel.content.value
+                }
+                viewModel.updateContent(content)
+                viewModel.saveAndNavigate(onNavigateBack)
+            } ?: run {
+                viewModel.saveAndNavigate(onNavigateBack)
+            }
+        }
+    }
+
+    // System back must save too (the WebView is a full-screen editor, so the OS
+    // back gesture otherwise pops the screen and drops unsaved changes).
+    BackHandler(onBack = handleBack)
 
     // Auto-focus title field on new note creation
     LaunchedEffect(noteId) {
@@ -230,6 +277,7 @@ fun EditorScreen(
 <br/>
 <button class='delete-btn' onclick='document.getElementById("$imageId").remove(); Android.onContentChanged(document.getElementById("editor").innerHTML);'>Delete</button>
 </div><p></p>"""
+            viewModel.pushUndoBeforeChange()
             viewModel.updateContent(viewModel.content.value + imageHtml)
         }
     }
@@ -263,6 +311,7 @@ fun EditorScreen(
 <br/>
 <button class='delete-btn' onclick='document.getElementById("$audioId").remove(); Android.onContentChanged(document.getElementById("editor").innerHTML);'>Delete</button>
 </div><p></p>"""
+                viewModel.pushUndoBeforeChange()
                 viewModel.updateContent(viewModel.content.value + audioHtml)
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "Audio attachment failed", e)
@@ -297,19 +346,6 @@ fun EditorScreen(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            // Title entrance animation — slides up + fades in with spring
-            val titleAlpha by animateFloatAsState(
-                targetValue = if (contentReady) 1f else 0f,
-                animationSpec = tween(300, delayMillis = 100),
-                label = "titleAlpha"
-            )
-            val titleOffset by animateDpAsState(
-                targetValue = if (contentReady) 0.dp else 10.dp,
-                animationSpec = spring(dampingRatio = 0.7f, stiffness = 300f),
-                label = "titleOffset"
-            )
-            val editorDensity = LocalDensity.current
-
             TopAppBar(
                 title = {
                     OutlinedTextField(
@@ -318,42 +354,18 @@ fun EditorScreen(
                         placeholder = { Text("Title") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .graphicsLayer {
-                                alpha = titleAlpha
-                                translationY = editorDensity.run { titleOffset.toPx() }
-                            }
                             .focusRequester(titleFocusRequester),
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                        keyboardActions = KeyboardActions(
-                            onNext = { /* Focus will move to editor via WebView */ }
-                        ),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.surface
+                            unfocusedBorderColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedContainerColor = MaterialTheme.colorScheme.surface
                         )
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        webViewRef?.evaluateJavascript("getContent()") { result ->
-                            // decode JSON-escaped JS string return value
-                            val content = if (result != null && result.length >= 2) {
-                                try {
-                                    org.json.JSONObject("{\"value\":$result}").getString("value")
-                                } catch (_: Exception) {
-                                    viewModel.content.value
-                                }
-                            } else {
-                                viewModel.content.value
-                            }
-                            viewModel.updateContent(content)
-                            viewModel.saveAndNavigate(onNavigateBack)
-                        } ?: run {
-                            // WebView not available — save directly from ViewModel (e.g. pending OCR)
-                            viewModel.saveAndNavigate(onNavigateBack)
-                        }
-                    }) {
+                    IconButton(onClick = handleBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back"
@@ -361,93 +373,74 @@ fun EditorScreen(
                     }
                 },
                 actions = {
-                    // Language indicator
-                    TextButton(onClick = { showLanguageMenu = true }) {
-                        Text(
-                            text = if (viewModel.currentLanguage.value == "ms") "BM" else "EN",
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
-
-                    // Pin button
-                    IconButton(
-                        onClick = { viewModel.togglePin() },
-                        modifier = Modifier.semantics {
-                            selected = currentNote?.isPinned == true
-                            stateDescription = if (currentNote?.isPinned == true) "Pinned" else "Not pinned"
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PushPin,
-                            contentDescription = null,
-                            tint = if (currentNote?.isPinned == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
                     // AI Assistant — prominent with accent background
                     Surface(
                         onClick = { showAiMenu = true },
                         shape = MaterialTheme.shapes.small,
                         color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.padding(horizontal = 4.dp).requiredSize(48.dp)
+                        modifier = Modifier.padding(horizontal = 4.dp).requiredSize(40.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.AutoAwesome,
                             contentDescription = "AI Assistant",
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(8.dp).size(20.dp)
+                            modifier = Modifier.padding(8.dp).size(18.dp)
                         )
                     }
-
-                    // OCR
-                    IconButton(onClick = onOcrClick) {
-                        Icon(
-                            imageVector = Icons.Default.DocumentScanner,
-                            contentDescription = "OCR"
-                        )
-                    }
-
-                    // Export as Markdown
-                    IconButton(onClick = { viewModel.exportAsMarkdown(context) }) {
-                        Icon(
-                            imageVector = Icons.Default.FileDownload,
-                            contentDescription = "Export as Markdown"
-                        )
-                    }
-
-                    // Undo
-                    IconButton(
-                        onClick = { viewModel.undo() },
-                        enabled = canUndo
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Undo,
-                            contentDescription = "Undo",
-                            tint = if (canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                        )
-                    }
-
-                    // Word count + reading time
-                    if (wordCount > 0) {
-                        Surface(
-                            shape = MaterialTheme.shapes.small,
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.padding(horizontal = 4.dp)
-                        ) {
-                            Text(
-                                text = "$wordCount" + if (readingTime > 0) " · ${readingTime}m" else "",
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
                     // Save indicator
                     if (isSaving) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
+                            modifier = Modifier.size(20.dp).padding(end = 4.dp),
                             strokeWidth = 2.dp
                         )
+                    }
+                    // Overflow menu
+                    var showOverflowMenu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { showOverflowMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More options"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Language (${if (viewModel.currentLanguage.value == "ms") "BM" else "EN"})") },
+                                onClick = { showOverflowMenu = false; showLanguageMenu = true },
+                                leadingIcon = { Icon(Icons.Default.Language, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (currentNote?.isPinned == true) "Unpin" else "Pin") },
+                                onClick = { showOverflowMenu = false; viewModel.togglePin() },
+                                leadingIcon = { Icon(Icons.Default.PushPin, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("OCR") },
+                                onClick = { showOverflowMenu = false; onOcrClick() },
+                                leadingIcon = { Icon(Icons.Default.DocumentScanner, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export markdown") },
+                                onClick = { showOverflowMenu = false; viewModel.exportAsMarkdown(context) },
+                                leadingIcon = { Icon(Icons.Default.FileDownload, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Undo") },
+                                onClick = { showOverflowMenu = false; viewModel.undo() },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Undo, null) },
+                                enabled = canUndo
+                            )
+                            if (wordCount > 0) {
+                                DropdownMenuItem(
+                                    text = { Text("$wordCount words" + if (readingTime > 0) " · ${readingTime}m read" else "") },
+                                    onClick = { showOverflowMenu = false },
+                                    leadingIcon = { Icon(Icons.Default.Info, null) }
+                                )
+                            }
+                        }
                     }
                 }
             )
@@ -459,6 +452,25 @@ fun EditorScreen(
                 .padding(paddingValues)
                 .imePadding()
         ) {
+            // Mode selector: Rich / Markdown / Preview
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    EditorMode.entries.forEachIndexed { index, mode ->
+                        SegmentedButton(
+                            selected = editorMode == mode,
+                            onClick = { viewModel.setEditorMode(mode) },
+                            shape = SegmentedButtonDefaults.itemShape(index = index, count = EditorMode.entries.size)
+                        ) {
+                            Text(mode.name, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+
             // Formatting toolbar - spring slide-in from top with stagger
             val toolbarAlpha by animateFloatAsState(
                 targetValue = if (contentReady) 1f else 0f,
@@ -471,6 +483,8 @@ fun EditorScreen(
                 label = "toolbarOffset"
             )
             val bodyDensity = LocalDensity.current
+            // Formatting toolbar (rich editor only)
+            if (editorMode == EditorMode.RICH) {
             Box(
                 modifier = Modifier
                     .graphicsLayer {
@@ -480,6 +494,10 @@ fun EditorScreen(
             ) {
                 FormattingToolbar(
                     formatState = formatState,
+                    canUndo = canUndo,
+                    onUndoClick = { viewModel.undo() },
+                    canRedo = canRedo,
+                    onRedoClick = { viewModel.redo() },
                     onBoldClick = { webViewRef?.evaluateJavascript("formatText('bold')", null) },
                     onItalicClick = { webViewRef?.evaluateJavascript("formatText('italic')", null) },
                     onUnderlineClick = { webViewRef?.evaluateJavascript("formatText('underline')", null) },
@@ -495,6 +513,26 @@ fun EditorScreen(
                     onIntelligenceClick = { showIntelligencePanel = !showIntelligencePanel },
                     onConceptExtract = { viewModel.extractConcepts() }
                 )
+            }
+            }
+
+            // Voice-note recordings attached to this note (playback chips).
+            // Hidden when the note has no recordings.
+            if (noteRecordings.isNotEmpty()) {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(noteRecordings, key = { it.id }) { recording ->
+                        RecordingPlaybackChip(
+                            recording = recording,
+                            isPlaying = playingRecordingKey == recording.storageKey,
+                            onTogglePlay = { viewModel.togglePlayback(recording) },
+                            modifier = Modifier.width(220.dp)
+                        )
+                    }
+                }
             }
 
             // Rich text editor - spring slide-in from bottom with stagger
@@ -517,17 +555,31 @@ fun EditorScreen(
                         translationY = bodyDensity.run { editorOffset.toPx() }
                     }
             ) {
-                RichTextEditor(
-                    content = content,
-                    onContentChange = { viewModel.updateContent(it) },
-                    onFormatStateChange = { formatState = it },
-                    onWebViewCreated = { webViewRef = it },
-                    onEditorFocusChanged = { isEditorFocused = it },
-                    onTextSelectionChanged = { text ->
-                        selectedText = text
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
+                when (editorMode) {
+                    EditorMode.RICH -> RichTextEditor(
+                        content = content,
+                        contentSource = contentSource,
+                        onContentChange = { newContent, fromWebView ->
+                            viewModel.updateContent(newContent, fromWebView)
+                        },
+                        onFormatStateChange = { formatState = it },
+                        onWebViewCreated = { webViewRef = it },
+                        onEditorFocusChanged = { isEditorFocused = it },
+                        onTextSelectionChanged = { text ->
+                            selectedText = text
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    EditorMode.MARKDOWN -> MarkdownEditor(
+                        text = markdownText,
+                        onTextChange = { viewModel.updateMarkdown(it) },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    EditorMode.PREVIEW -> MarkdownPreview(
+                        markdown = viewModel.currentMarkdown(),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
 
             // Explain chip (appears when text is selected)
@@ -680,7 +732,10 @@ fun EditorScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showTemplateDialog = false }) {
+                TextButton(onClick = {
+                    showTemplateDialog = false
+                    onNavigateBack()
+                }) {
                     Text("Cancel")
                 }
             }
@@ -714,6 +769,10 @@ fun EditorScreen(
 @Composable
 fun FormattingToolbar(
     formatState: FormatState = FormatState(),
+    canUndo: Boolean = false,
+    onUndoClick: () -> Unit = {},
+    canRedo: Boolean = false,
+    onRedoClick: () -> Unit = {},
     onBoldClick: () -> Unit,
     onItalicClick: () -> Unit,
     onUnderlineClick: () -> Unit,
@@ -741,6 +800,24 @@ fun FormattingToolbar(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Undo / Redo — always first so history edits are one tap away
+            FormatIconButton(
+                icon = Icons.AutoMirrored.Filled.Undo,
+                contentDescription = "Undo",
+                isActive = false,
+                enabled = canUndo,
+                onClick = onUndoClick
+            )
+            FormatIconButton(
+                icon = Icons.AutoMirrored.Filled.Redo,
+                contentDescription = "Redo",
+                isActive = false,
+                enabled = canRedo,
+                onClick = onRedoClick
+            )
+
+            ToolbarDivider()
+
             // Group 1: Text Style
             FormatIconButton(
                 icon = Icons.Default.FormatBold,
@@ -865,6 +942,7 @@ private fun FormatIconButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
     isActive: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val containerColor = if (isActive) {
@@ -872,10 +950,10 @@ private fun FormatIconButton(
     } else {
         MaterialTheme.colorScheme.surface
     }
-    val contentColor = if (isActive) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
+    val contentColor = when {
+        !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+        isActive -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -887,6 +965,7 @@ private fun FormatIconButton(
 
     Surface(
         onClick = onClick,
+        enabled = enabled,
         shape = MaterialTheme.shapes.small,
         color = containerColor,
         interactionSource = interactionSource,
@@ -898,7 +977,11 @@ private fun FormatIconButton(
             }
             .semantics {
                 selected = isActive
-                stateDescription = if (isActive) "$contentDescription active" else contentDescription
+                stateDescription = when {
+                    isActive -> "$contentDescription active"
+                    !enabled -> "$contentDescription disabled"
+                    else -> contentDescription
+                }
             }
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -1053,7 +1136,8 @@ fun AiPreviewDialog(
 @Composable
 fun RichTextEditor(
     content: String,
-    onContentChange: (String) -> Unit,
+    contentSource: ContentSource,
+    onContentChange: (String, Boolean) -> Unit,
     onFormatStateChange: (FormatState) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit = {},
     onEditorFocusChanged: (Boolean) -> Unit = {},
@@ -1067,19 +1151,30 @@ fun RichTextEditor(
     val colorScheme = MaterialTheme.colorScheme
     val fontScale = LocalDensity.current.fontScale
 
-    // Buffer content changes until WebView is ready; push immediately if ready
+    // Buffer content changes until WebView is ready; push immediately if ready.
+    // Only push PROGRAMMATIC changes (load/OCR/AI/template) back into the WebView.
+    // WebView-originated edits already live in the DOM, so pushing them would
+    // replace innerHTML and reset the caret/focus on every keystroke.
     LaunchedEffect(content) {
-        if (content != lastContent) {
-            if (isPageReady) {
-                webView?.let { wv ->
-                    val safeContent = HtmlSanitizer.sanitize(content)
-                    val escaped = org.json.JSONObject.quote(safeContent)
-                    wv.evaluateJavascript("updateContent($escaped)", null)
-                    lastContent = content
+        if (contentSource != ContentSource.WEBVIEW) {
+            if (content != lastContent) {
+                if (isPageReady) {
+                    webView?.let { wv ->
+                        val safeContent = HtmlSanitizer.sanitize(content)
+                        val escaped = org.json.JSONObject.quote(safeContent)
+                        wv.evaluateJavascript("updateContent($escaped)", null)
+                        lastContent = content
+                    }
+                } else {
+                    pendingContent = content
                 }
-            } else {
-                pendingContent = content
             }
+        } else {
+            // WebView-sourced change: keep lastContent in sync with what the WebView
+            // is actually showing. Without this, an undo that restores content back
+            // to a previously-seen value would be silently skipped by the
+            // content != lastContent guard above.
+            lastContent = content
         }
     }
 
@@ -1132,9 +1227,15 @@ fun RichTextEditor(
                 addJavascriptInterface(object {
                     @JavascriptInterface
                     fun onContentChanged(newContent: String) {
-                        // Sanitize HTML from WebView before passing to ViewModel
+                        // Sanitize on the JS thread (cheap, no UI access needed), then
+                        // dispatch to the main thread. @JavascriptInterface callbacks run
+                        // on the WebView JS thread, so touching ViewModel state here
+                        // (undoStack, redoStack, etc.) from the JS thread would race
+                        // against undo/redo calls on the main thread and crash.
                         val sanitized = HtmlSanitizer.sanitize(newContent)
-                        onContentChange(sanitized)
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            onContentChange(sanitized, true)
+                        }
                     }
 
                     @JavascriptInterface
@@ -1187,6 +1288,54 @@ fun RichTextEditor(
         },
         modifier = modifier.semantics {
             contentDescription = "Rich text editor"
+        }
+    )
+}
+
+/** Monospace plain-text markdown source editor used in MARKDOWN mode. */
+@Composable
+private fun MarkdownEditor(
+    text: String,
+    onTextChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+    OutlinedTextField(
+        value = text,
+        onValueChange = onTextChange,
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = fontFamily),
+        placeholder = { Text("Write in markdown...") },
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = MaterialTheme.colorScheme.outline,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+        )
+    )
+}
+
+/** Read-only rendered markdown preview used in PREVIEW mode. Reuses the
+ *  editor.html WebView styling by rendering flexmark HTML into the same
+ *  contenteditable container, made non-editable. */
+@Composable
+private fun MarkdownPreview(
+    markdown: String,
+    modifier: Modifier = Modifier
+) {
+    AndroidView(
+        factory = { context ->
+            WebView(context).apply {
+                settings.javaScriptEnabled = true
+                val htmlTemplate = context.assets.open("editor.html").bufferedReader().use { it.readText() }
+                val rendered = MarkdownCodec.markdownToHtml(markdown)
+                val html = htmlTemplate.replace("<!-- CONTENT_PLACEHOLDER -->", rendered)
+                    .replace("contenteditable=\"true\"", "contenteditable=\"false\"")
+                loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        modifier = modifier.semantics {
+            contentDescription = "Markdown preview"
         }
     )
 }
