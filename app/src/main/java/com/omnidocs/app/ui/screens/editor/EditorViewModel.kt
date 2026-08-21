@@ -336,17 +336,20 @@ class EditorViewModel @Inject constructor(
     fun updateMarkdown(text: String) {
         _markdownText.value = text
         markdownDirty = true
-        // Keep _content (the HTML source of truth that saveNoteInternal persists)
-        // in sync as the user types, and autosave like the rich editor does.
-        // Converting on every keystroke is debounced by the 3s autosave timer and
-        // never replaces richHtmlSnapshot, so the fidelity guard is preserved.
+        // Keep _content (the HTML source of truth saveNoteInternal persists) in
+        // sync as the user types, so every exit path (back from any mode, mode
+        // toggle) saves the current markdown. We deliberately do NOT schedule an
+        // autosave here: typing would otherwise fire the save -> on-device model
+        // re-index pipeline repeatedly and amplify a pre-existing native GGML
+        // lifecycle crash. Markdown is a distinct editing session that commits
+        // on exit. Converting never replaces richHtmlSnapshot, so the fidelity
+        // guard is preserved.
         val html = MarkdownCodec.markdownToHtml(text)
         if (html.isNotBlank()) {
             _contentSource.value = ContentSource.PROGRAMMATIC
             _content.value = html
         }
         isDirty = true
-        scheduleAutoSave()
     }
 
     /** Markdown source shown in Preview mode. From RICH it re-derives from HTML so
