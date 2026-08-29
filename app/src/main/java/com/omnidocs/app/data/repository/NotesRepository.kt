@@ -1,18 +1,41 @@
 package com.omnidocs.app.data.repository
 
+import androidx.room.withTransaction
+import com.omnidocs.app.ai.ModelDownloadManager
+import com.omnidocs.app.ai.isAnyEmbeddingModelDownloaded
+import com.omnidocs.app.data.local.EmbeddingDao
 import com.omnidocs.app.data.local.NoteDao
+import com.omnidocs.app.data.local.NotesDatabase
+import com.omnidocs.app.data.local.RecordingDao
 import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.search.EmbeddingService
+import com.omnidocs.app.voice.RecordingStorage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import android.util.Log
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class NotesRepository @Inject constructor(
-    private val noteDao: NoteDao
+    private val noteDao: NoteDao,
+    private val recordingDao: RecordingDao,
+    private val recordingStorage: RecordingStorage,
+    private val notesDatabase: NotesDatabase,
+    private val embeddingService: EmbeddingService,
+    private val embeddingDao: EmbeddingDao,
+    private val modelDownloadManager: ModelDownloadManager
 ) {
+    // Fire-and-forget scope for post-save re-indexing. SupervisorJob so a single
+    // failed embed doesn't kill the scope for later saves.
+    private val reindexScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     fun getAllNotes(): Flow<List<Note>> {
         return noteDao.getAllNotes().map { entities ->
             entities.map { it.toDomain() }
@@ -66,21 +89,73 @@ class NotesRepository @Inject constructor(
             imageUrl = null
         )
         noteDao.insertNote(note)
+        reindexOnSave(note)
         return note.toDomain()
     }
 
     suspend fun updateNote(note: Note) {
         noteDao.updateNote(note.toEntity())
+        reindexOnSave(note.toEntity())
     }
 
-    /** Soft-delete a note (marks as deleted, keeps in database for sync) */
+    /**
+     * Refresh a note's semantic embedding after a save so search stays current.
+     * Fire-and-forget and only when a real embedding model is downloaded (the
+     * n-gram path is handled by the lazy first-search reindex in VectorSearch).
+     * Idempotent upsert in EmbeddingService prevents duplicate rows.
+     */
+    private fun reindexOnSave(note: NoteEntity) {
+        val modelDownloaded = isAnyEmbeddingModelDownloaded(modelDownloadManager)
+        Log.d("NotesRepository", "reindexOnSave: note=${note.id}, modelDownloaded=$modelDownloaded")
+        if (!modelDownloaded) return
+        reindexScope.launch {
+            try {
+                Log.d("NotesRepository", "reindexOnSave: starting embed for note ${note.id}")
+                embeddingService.embedAndStore("note", note.id, "${note.title} ${note.plainText}")
+                Log.d("NotesRepository", "reindexOnSave: completed embed for note ${note.id}")
+            } catch (e: Exception) {
+                Log.e("NotesRepository", "reindexOnSave failed for note ${note.id}", e)
+            }
+        }
+    }
+
+    /** Soft-delete a note (marks as deleted, keeps in database for sync). Its
+     *  recordings are soft-deleted and their audio files removed too, so the
+     *  Recordings screen never orphans a deleted note's audio. */
     suspend fun deleteNote(note: Note) {
-        noteDao.deleteNoteById(note.id)
+        deleteNotesWithRecordings(listOf(note.id))
     }
 
-    /** Soft-delete multiple notes by ID */
+    /** Soft-delete multiple notes by ID (recordings handled as in deleteNote) */
     suspend fun deleteNotesByIds(ids: List<String>) {
-        ids.forEach { noteDao.deleteNoteById(it) }
+        deleteNotesWithRecordings(ids)
+    }
+
+    private suspend fun deleteNotesWithRecordings(ids: List<String>) {
+        if (ids.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val keysToDelete = mutableListOf<String>()
+        // Note + its recordings soft-delete atomically; the audio file cleanup is
+        // deferred until after the transaction so disk I/O doesn't hold the DB lock.
+        notesDatabase.withTransaction {
+            for (id in ids) {
+                noteDao.deleteNoteById(id, now)
+                val recordings = recordingDao.getRecordingsByNoteId(id).first()
+                if (recordings.isNotEmpty()) {
+                    recordingDao.softDeleteRecordingsByNoteId(id, now)
+                    keysToDelete += recordings.map { it.storageKey }
+                }
+            }
+        }
+        keysToDelete.forEach { recordingStorage.deleteRecording(it) }
+        // Clean up orphaned embeddings so they don't suppress lazy reindex
+        try {
+            for (id in ids) {
+                embeddingDao.deleteEmbeddingsBySource("note", id)
+            }
+        } catch (e: Exception) {
+            Log.e("NotesRepository", "Failed to clean up embeddings for deleted notes", e)
+        }
     }
 
     /** Permanently remove a note from the database */
@@ -89,7 +164,9 @@ class NotesRepository @Inject constructor(
     }
 
     suspend fun togglePin(note: Note) {
-        noteDao.updateNote(note.copy(isPinned = !note.isPinned).toEntity())
+        // Flip only the pinned flag. Passing the full note here would write back
+        // the caller's (possibly stale) content snapshot, discarding unsaved edits.
+        noteDao.togglePinById(note.id)
     }
 
     suspend fun getAllNotesSync(): List<Note> {
@@ -125,6 +202,7 @@ class NotesRepository @Inject constructor(
         imageUrl = imageUrl,
         attachments = attachments,
         isDeleted = isDeleted,
+        tags = tags,
         relatedNotes = relatedNotes
     )
 
@@ -140,6 +218,7 @@ class NotesRepository @Inject constructor(
         imageUrl = imageUrl,
         attachments = attachments,
         isDeleted = isDeleted,
+        tags = tags,
         relatedNotes = relatedNotes
     )
 }

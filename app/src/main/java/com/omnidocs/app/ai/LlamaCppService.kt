@@ -19,7 +19,8 @@ private const val GENERATE_TIMEOUT_MS = 240_000L
 @Singleton
 class LlamaCppService @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val modelDownloadManager: ModelDownloadManager
+    private val modelDownloadManager: ModelDownloadManager,
+    private val modelPreferences: ModelPreferences
 ) {
     @Volatile
     private var modelLoaded = false
@@ -29,14 +30,21 @@ class LlamaCppService @Inject constructor(
 
     private val modelMutex = Mutex()
 
+    @Volatile
+    private var nativeLibLoaded = false
+
     init {
         try {
             System.loadLibrary("llama-android")
+            nativeLibLoaded = true
             Log.d(TAG, "Native library loaded")
         } catch (e: UnsatisfiedLinkError) {
             Log.e(TAG, "Failed to load native library", e)
         }
     }
+
+    /** Returns true if the native library was loaded successfully. */
+    fun isNativeLibLoaded(): Boolean = nativeLibLoaded
 
     suspend fun loadModel(modelId: String? = null): Boolean {
         // Prevent re-entrant loads: if a previous loadModel() call is still in
@@ -54,14 +62,17 @@ class LlamaCppService @Inject constructor(
                     return@withLock true
                 }
 
-                // If a specific modelId is requested, find that one.
-                // Otherwise find the first downloaded chat model.
+                // If a specific modelId is requested, find that one. Otherwise load
+                // the user's SELECTED model -- the same resolver the prompt builders
+                // use -- so the template format and the executed model always agree.
+                // Loading the first downloaded model here diverged from what
+                // resolveActiveModel() picked for prompt building.
                 val model = if (modelId != null) {
                     modelDownloadManager.getDownloadedModels().find {
                         it.id == modelId && it.isDownloaded
                     }
                 } else {
-                    modelDownloadManager.getDownloadedModels().firstOrNull { it.isDownloaded }
+                    resolveActiveModel(modelPreferences, modelDownloadManager)
                 } ?: run {
                     Log.e(TAG, "No downloadable model found (requested: $modelId)")
                     return@withLock false
@@ -96,7 +107,7 @@ class LlamaCppService @Inject constructor(
                 Log.d(TAG, "Model load result: $result")
                 result
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error loading model", e)
             false
         } finally {
@@ -138,7 +149,7 @@ class LlamaCppService @Inject constructor(
                 val result = withTimeoutOrNull(GENERATE_TIMEOUT_MS) {
                     try {
                         nativeGenerate(prompt, maxTokens)
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         Log.e(TAG, "Native generate error", e)
                         null
                     }

@@ -15,13 +15,19 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.compose.ui.Alignment
+import com.omnidocs.app.ui.agent.AgentJobsScreen
 import com.omnidocs.app.ui.screens.auth.AuthScreen
+import com.omnidocs.app.ui.screens.ask.AskNotesScreen
 import com.omnidocs.app.ui.screens.editor.EditorScreen
 import com.omnidocs.app.ui.screens.feed.FeedScreen
 import com.omnidocs.app.ui.screens.graph.GraphScreen
 import com.omnidocs.app.ui.screens.home.HomeScreen
 import com.omnidocs.app.ui.screens.ocr.OcrScreen
+import com.omnidocs.app.ui.screens.privacy.PrivacyDashboardScreen
+import com.omnidocs.app.ui.screens.recordings.RecordingsScreen
 import com.omnidocs.app.ui.screens.settings.SettingsScreen
+import com.omnidocs.app.ui.screens.settings.PrivacySettingsScreen
+import com.omnidocs.app.ui.screens.tasks.TaskListScreen
 import com.omnidocs.app.ui.screens.voice.VoiceCaptureOverlay
 import com.omnidocs.app.ui.theme.MotionTokens
 import com.omnidocs.app.ui.theme.screenEnterTransition
@@ -42,6 +48,12 @@ sealed class Screen(val route: String) {
     object Auth : Screen("auth")
     object Voice : Screen("voice")
     object Graph : Screen("graph")
+    object Tasks : Screen("tasks")
+    object Privacy : Screen("privacy")
+    object Recordings : Screen("recordings")
+    object Ask : Screen("ask")
+    object AgentJobs : Screen("agent_jobs")
+    object PrivacyDashboard : Screen("privacy_dashboard")
 }
 
 @Composable
@@ -77,6 +89,15 @@ fun NotesNavHost(
                 },
                 onGraphClick = {
                     navController.navigate(Screen.Graph.route)
+                },
+                onTasksClick = {
+                    navController.navigate(Screen.Tasks.route)
+                },
+                onRecordingsClick = {
+                    navController.navigate(Screen.Recordings.route)
+                },
+                onAskNotesClick = {
+                    navController.navigate(Screen.Ask.route)
                 }
             )
         }
@@ -200,6 +221,12 @@ fun NotesNavHost(
                 onAuthClick = {
                     navController.navigate(Screen.Auth.route)
                 },
+                onPrivacyClick = {
+                    navController.navigate(Screen.Privacy.route)
+                },
+                onAgentJobsClick = {
+                    navController.navigate(Screen.AgentJobs.route)
+                },
                 lifecycleOwner = backStackEntry
             )
         }
@@ -232,6 +259,82 @@ fun NotesNavHost(
                 onNavigateBack = {
                     navController.popBackStack()
                 }
+            )
+        }
+
+        composable(
+            route = Screen.Tasks.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            TaskListScreen(
+                onNoteClick = { noteId -> navController.navigate(Screen.Editor.createRoute(noteId)) },
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = Screen.Privacy.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            PrivacySettingsScreen(
+                onBack = { navController.popBackStack() },
+                onDashboardClick = { navController.navigate(Screen.PrivacyDashboard.route) }
+            )
+        }
+
+        composable(
+            route = Screen.Recordings.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            RecordingsScreen(
+                onBack = { navController.popBackStack() },
+                onNoteClick = { noteId -> navController.navigate(Screen.Editor.createRoute(noteId)) }
+            )
+        }
+
+        composable(
+            route = Screen.Ask.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            AskNotesScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onSourceClick = { noteId -> navController.navigate(Screen.Editor.createRoute(noteId)) }
+            )
+        }
+
+        composable(
+            route = Screen.AgentJobs.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            AgentJobsScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = Screen.PrivacyDashboard.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            PrivacyDashboardScreen(
+                onBack = { navController.popBackStack() }
             )
         }
     }

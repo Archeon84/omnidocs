@@ -44,10 +44,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -61,6 +64,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.ui.components.OmniBottomNavBar
+import com.omnidocs.app.ui.components.BottomNavItem
 import com.omnidocs.app.ui.components.ShimmerGrid
 import com.omnidocs.app.ui.theme.AppTheme
 import com.omnidocs.app.ui.theme.MotionTokens
@@ -74,6 +79,8 @@ private val IMPORT_MIME_TYPES = arrayOf(
     "text/html",
     "text/markdown",
     "text/x-markdown",
+    // Generic binary — covers .md files that providers report as octet-stream
+    "application/octet-stream",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.ms-excel",
@@ -110,22 +117,37 @@ fun HomeScreen(
     onFeedClick: () -> Unit = {},
     onVoiceCapture: () -> Unit = {},
     onGraphClick: () -> Unit = {}, // NEW
+    onTasksClick: () -> Unit = {},
+    onRecordingsClick: () -> Unit = {},
+    onAskNotesClick: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val notes by viewModel.notes.collectAsState()
+    val matchDetails by viewModel.matchDetails.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isGridView by viewModel.isGridView.collectAsState()
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedNoteIds by viewModel.selectedNoteIds.collectAsState()
     val currentTheme by viewModel.currentTheme.collectAsState()
+    val loadError by viewModel.loadError.collectAsState()
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
     var showImportMenu by remember { mutableStateOf(false) }
     var showThemeSubmenu by remember { mutableStateOf(false) }
     var isSearching by remember { mutableStateOf(false) }
+    var selectedNavItem by remember { mutableStateOf(BottomNavItem.Notes) }
+    val searchFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
     val hapticFeedback = LocalHapticFeedback.current
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Focus search field when Search tab is tapped
+    LaunchedEffect(isSearching) {
+        if (isSearching) {
+            searchFocusRequester.requestFocus()
+        }
+    }
 
     // Brief shimmer shown while Room Flow first emits
     var isInitialLoading by remember { mutableStateOf(true) }
@@ -189,81 +211,39 @@ fun HomeScreen(
                     onExitSelection = { viewModel.toggleSelectionMode() }
                 )
             } else {
-                TopAppBar(
-                    title = {
-                        if (isSearching) {
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { viewModel.updateSearchQuery(it) },
-                                modifier = Modifier.fillMaxWidth(),
-                                placeholder = { Text("Search notes...") },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Search,
-                                        contentDescription = "Search"
-                                    )
-                                },
-                                trailingIcon = {
-                                    if (searchQuery.isNotEmpty()) {
-                                        IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                                            Icon(
-                                                imageVector = Icons.Default.Clear,
-                                                contentDescription = "Clear"
-                                            )
-                                        }
-                                    }
-                                },
-                                singleLine = true
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .statusBarsPadding()
+                        .padding(horizontal = 20.dp, vertical = 8.dp)
+                ) {
+                    // Header row with title and overflow menu
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "OmniDocs",
+                                style = MaterialTheme.typography.headlineLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.graphicsLayer {
+                                    translationY = breathOffset * 0.5f
+                                }
                             )
-                        } else {
-                            Column {
-                                Text(
-                                    text = "OmniDocs",
-                                    modifier = Modifier.graphicsLayer {
-                                        translationY = if (isSearching) 0f else breathOffset * 0.5f
-                                    }
-                                )
-                                Text(
-                                    text = "v1.0.0",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onGraphClick) {
-                            Icon(
-                                imageVector = Icons.Default.AccountTree,
-                                contentDescription = "Knowledge Graph"
-                            )
-                        }
-                        IconButton(onClick = {
-                            isSearching = !isSearching
-                            if (!isSearching) viewModel.updateSearchQuery("")
-                        }) {
-                            Icon(
-                                imageVector = if (isSearching) Icons.Default.Close else Icons.Default.Search,
-                                contentDescription = if (isSearching) "Close search" else "Search"
-                            )
-                        }
-                        IconButton(onClick = onFeedClick) {
-                            Icon(
-                                imageVector = Icons.Default.Update,
-                                contentDescription = "What's New"
-                            )
-                        }
-                        IconButton(onClick = { viewModel.toggleViewMode() }) {
-                            Icon(
-                                imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
-                                contentDescription = if (isGridView) "Switch to list view" else "Switch to grid view"
+                            Text(
+                                text = "Your knowledge, always",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Box {
                             IconButton(onClick = { showImportMenu = true }) {
                                 Icon(
                                     imageVector = Icons.Default.MoreVert,
-                                    contentDescription = "More"
+                                    contentDescription = "More options"
                                 )
                             }
                             DropdownMenu(
@@ -306,6 +286,58 @@ fun HomeScreen(
                                         )
                                     }
                                 )
+                                DropdownMenuItem(
+                                    text = { Text(if (isGridView) "List view" else "Grid view") },
+                                    onClick = {
+                                        viewModel.toggleViewMode()
+                                        showImportMenu = false
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
+                                            contentDescription = null
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Knowledge graph") },
+                                    onClick = {
+                                        showImportMenu = false
+                                        onGraphClick()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.AccountTree,
+                                            contentDescription = null
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Recordings") },
+                                    onClick = {
+                                        showImportMenu = false
+                                        onRecordingsClick()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.GraphicEq,
+                                            contentDescription = null
+                                        )
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Ask your notes") },
+                                    onClick = {
+                                        showImportMenu = false
+                                        onAskNotesClick()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.MenuBook,
+                                            contentDescription = null
+                                        )
+                                    }
+                                )
                             }
                             // Nested theme submenu
                             DropdownMenu(
@@ -333,14 +365,57 @@ fun HomeScreen(
                                 }
                             }
                         }
-                        IconButton(onClick = onSettingsClick) {
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // Search bar — always visible
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { viewModel.updateSearchQuery(it) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(searchFocusRequester),
+                        placeholder = { Text("Search notes...") },
+                        leadingIcon = {
                             Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "Settings"
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = "Clear"
+                                    )
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.extraLarge,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // Filter chips row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("Recent", "All", "Pinned").forEach { label ->
+                            FilterChip(
+                                selected = false,
+                                onClick = { /* TODO: filter logic */ },
+                                label = { Text(label) }
                             )
                         }
                     }
-                )
+                }
             }
         },
         floatingActionButton = {
@@ -372,6 +447,23 @@ fun HomeScreen(
                     }
                 }
             }
+        },
+        bottomBar = {
+            if (!isSelectionMode) {
+                OmniBottomNavBar(
+                    selectedTab = selectedNavItem,
+                    onTabSelected = { item ->
+                        selectedNavItem = item
+                        when (item) {
+                            BottomNavItem.Notes -> { isSearching = false; focusManager.clearFocus(); viewModel.updateSearchQuery("") }
+                            BottomNavItem.Search -> { isSearching = true }
+                            BottomNavItem.AI -> onFeedClick()
+                            BottomNavItem.Tasks -> onTasksClick()
+                            BottomNavItem.Settings -> onSettingsClick()
+                        }
+                    }
+                )
+            }
         }
     ) { paddingValues ->
         Column(
@@ -388,6 +480,53 @@ fun HomeScreen(
                         .semantics { liveRegion = LiveRegionMode.Polite }
                 ) {
                     ShimmerGrid(modifier = Modifier.fillMaxSize())
+                }
+            } else if (loadError != null && notes.isEmpty() && searchQuery.isEmpty()) {
+                // Error state with retry
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(72.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Text(
+                            text = "Could not load notes",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = loadError ?: "An unknown error occurred",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = { viewModel.retryLoad() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        ) {
+                            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Retry")
+                        }
+                    }
                 }
             } else if (notes.isEmpty()) {
                 // Empty state
@@ -489,6 +628,7 @@ fun HomeScreen(
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
                                         entranceDelay = index * MotionTokens.STAGGER_MS,
+                                        matchNote = matchDetails[note.id],
                                         onClick = {
                                             if (isSelectionMode) {
                                                 viewModel.toggleNoteSelection(note.id)
@@ -541,6 +681,7 @@ fun HomeScreen(
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
                                         entranceDelay = index * MotionTokens.STAGGER_MS,
+                                        matchNote = matchDetails[note.id],
                                         onClick = {
                                             if (isSelectionMode) {
                                                 viewModel.toggleNoteSelection(note.id)
@@ -589,6 +730,7 @@ fun HomeScreen(
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
                                         entranceDelay = (pinnedCount + index) * MotionTokens.STAGGER_MS,
+                                        matchNote = matchDetails[note.id],
                                         onClick = {
                                             if (isSelectionMode) {
                                                 viewModel.toggleNoteSelection(note.id)
@@ -713,7 +855,8 @@ fun SelectableNoteCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onImport: (() -> Unit)? = null,
-    entranceDelay: Long = 0L
+    entranceDelay: Long = 0L,
+    matchNote: String? = null
 ) {
     val wordCount = remember(note.plainText) {
         if (note.plainText.isBlank()) 0
@@ -882,6 +1025,23 @@ fun SelectableNoteCard(
                                 text = "$wordCount words",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // Search-match explanation (present only during a hybrid search).
+                    if (matchNote != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Text(
+                                text = matchNote,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                maxLines = 2
                             )
                         }
                     }

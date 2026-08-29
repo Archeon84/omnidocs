@@ -4,6 +4,7 @@
 #include <mutex>
 #include <chrono>
 #include <thread>
+#include <cmath>
 #include <android/log.h>
 #include "llama.h"
 
@@ -17,6 +18,18 @@ static const llama_vocab* vocab = nullptr;
 static bool is_initialized = false;
 static bool backend_initialized = false;
 static bool g_add_bos = false; // Set per model: Qwen3=false, Llama3=true
+
+// Embedding model/context — a SEPARATE GGUF from the generative model above.
+// Both share the process-wide llama backend (llama_backend_init once), so the
+// backend is only freed when BOTH contexts are gone (see nativeFree and
+// nativeEmbeddingFree). All four embedding natives also take g_llama_mutex so
+// embedding and generation serialize (embedding decode is fast, so the cost is
+// negligible and avoids oversubscribing CPU threads).
+static llama_model* embedding_model = nullptr;
+static llama_context* embedding_ctx = nullptr;
+static const llama_vocab* embedding_vocab = nullptr;
+static bool embedding_initialized = false;
+static int32_t embedding_n_embd = 0;
 
 // Timed mutex protecting all access to the shared model/context/vocab globals.
 // llama.cpp is NOT thread-safe for concurrent inference on the same context,
@@ -414,9 +427,14 @@ extern "C" {
                 model = nullptr;
             }
             vocab = nullptr;
-            llama_backend_free();
-            backend_initialized = false;
             is_initialized = false;
+            // The llama backend is process-wide and shared with the embedding
+            // context. Only free it when the embedding context is also gone,
+            // otherwise freeing would invalidate a live embedding model.
+            if (embedding_ctx == nullptr) {
+                llama_backend_free();
+                backend_initialized = false;
+            }
             LOGI("Model freed");
         } catch (const std::exception& e) {
             LOGE("Exception freeing model: %s", e.what());
@@ -435,6 +453,280 @@ extern "C" {
         }
         if (!model) return 0;
         return llama_model_size(model);
+    }
+
+    // ── Embedding natives (class com.omnidocs.app.ai.EmbeddingEngine) ─────────
+    // A separate GGUF embedding model (e.g. multilingual-e5-small) loaded into
+    // its own context. Uses mean pooling to produce one L2-normalized vector per
+    // text. Mirrors the official llama.cpp examples/embedding/embedding.cpp.
+
+    JNIEXPORT jboolean JNICALL
+    Java_com_omnidocs_app_ai_EmbeddingEngine_nativeEmbeddingInit(
+        JNIEnv* env,
+        jobject thiz,
+        jstring modelPath
+    ) {
+        const char* path = env->GetStringUTFChars(modelPath, nullptr);
+        LOGI("Loading embedding model from: %s", path);
+
+        try {
+            std::unique_lock<std::timed_mutex> lock(g_llama_mutex, std::defer_lock);
+            if (!acquire_mutex(lock, std::chrono::seconds(30))) {
+                LOGE("nativeEmbeddingInit: mutex timeout, previous call stuck");
+                env->ReleaseStringUTFChars(modelPath, path);
+                return JNI_FALSE;
+            }
+
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+
+            // Initialize the backend once per process (shared with generative model).
+            if (!backend_initialized) {
+                llama_backend_init();
+                backend_initialized = true;
+            }
+
+            // Clean up any stale embedding state from a previous partial init.
+            // Do NOT touch the generative model/ctx globals — they are separate.
+            if (embedding_ctx) {
+                llama_free(embedding_ctx);
+                embedding_ctx = nullptr;
+            }
+            if (embedding_model) {
+                llama_model_free(embedding_model);
+                embedding_model = nullptr;
+            }
+            embedding_vocab = nullptr;
+            embedding_initialized = false;
+            embedding_n_embd = 0;
+
+            auto model_params = llama_model_default_params();
+            model_params.n_gpu_layers = 0; // CPU only
+
+            embedding_model = llama_model_load_from_file(path, model_params);
+            if (!embedding_model) {
+                LOGE("Failed to load embedding model");
+                env->ReleaseStringUTFChars(modelPath, path);
+                return JNI_FALSE;
+            }
+
+            embedding_vocab = llama_model_get_vocab(embedding_model);
+
+            auto ctx_params = llama_context_default_params();
+            ctx_params.n_ctx = 512;   // e5-small max context; notes are far shorter
+            ctx_params.n_batch = 512;
+            ctx_params.n_ubatch = 512;
+            // Mean pooling over the sequence produces the sentence embedding.
+            ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+            ctx_params.embeddings = true;
+            unsigned int hw_threads = std::thread::hardware_concurrency();
+            int n_threads = hw_threads > 2 ? hw_threads - 2 : (hw_threads > 0 ? hw_threads : 4);
+            ctx_params.n_threads = n_threads;
+
+            embedding_ctx = llama_init_from_model(embedding_model, ctx_params);
+            if (!embedding_ctx) {
+                LOGE("Failed to create embedding context");
+                llama_model_free(embedding_model);
+                embedding_model = nullptr;
+                env->ReleaseStringUTFChars(modelPath, path);
+                return JNI_FALSE;
+            }
+
+            embedding_n_embd = llama_model_n_embd_out(embedding_model);
+            embedding_initialized = true;
+            LOGI("Embedding model loaded (dim=%d)", embedding_n_embd);
+            env->ReleaseStringUTFChars(modelPath, path);
+            return JNI_TRUE;
+
+        } catch (const std::exception& e) {
+            LOGE("Exception loading embedding model: %s", e.what());
+            env->ReleaseStringUTFChars(modelPath, path);
+            return JNI_FALSE;
+        }
+    }
+
+    JNIEXPORT jint JNICALL
+    Java_com_omnidocs_app_ai_EmbeddingEngine_nativeEmbeddingDim(
+        JNIEnv* env,
+        jobject thiz
+    ) {
+        return embedding_n_embd;
+    }
+
+    JNIEXPORT jfloatArray JNICALL
+    Java_com_omnidocs_app_ai_EmbeddingEngine_nativeEmbed(
+        JNIEnv* env,
+        jobject thiz,
+        jstring text
+    ) {
+        LOGI("nativeEmbed: called");
+        std::unique_lock<std::timed_mutex> lock(g_llama_mutex, std::defer_lock);
+        if (!acquire_mutex(lock, std::chrono::seconds(10))) {
+            LOGE("nativeEmbed: mutex timeout, previous call stuck");
+            return env->NewFloatArray(0);
+        }
+        LOGI("nativeEmbed: mutex acquired");
+
+        if (!embedding_initialized || !embedding_model || !embedding_ctx || !embedding_vocab) {
+            LOGE("Embedding model not initialized (init=%d model=%p ctx=%p vocab=%p)",
+                 embedding_initialized, embedding_model, embedding_ctx, embedding_vocab);
+            return env->NewFloatArray(0);
+        }
+        LOGI("nativeEmbed: model initialized OK");
+
+        const char* textStr = env->GetStringUTFChars(text, nullptr);
+        const int textLen = static_cast<int>(strlen(textStr));
+        LOGI("nativeEmbed: input text length=%d", textLen);
+
+        try {
+            // Tokenize with add_special=true (adds BOS + EOS as configured in the
+            // GGUF tokenizer) — the canonical embedding.cpp recipe. Two-pass:
+            // first with nullptr to get the required token count.
+            int n_tokens = llama_tokenize(
+                embedding_vocab, textStr, textLen, nullptr, 0, true, true);
+            if (n_tokens < 0) {
+                n_tokens = -n_tokens;
+            }
+            if (n_tokens == 0) {
+                LOGE("Failed to tokenize embedding input (first pass returned 0)");
+                env->ReleaseStringUTFChars(text, textStr);
+                return env->NewFloatArray(0);
+            }
+            LOGI("nativeEmbed: tokenize first pass n_tokens=%d", n_tokens);
+
+            // Guard against context overflow: truncate to n_ctx - 1 tokens.
+            const int max_tokens = 512 - 1;
+            if (n_tokens > max_tokens) {
+                n_tokens = max_tokens;
+            }
+
+            auto tokens = std::vector<llama_token>(n_tokens + 1); // +1 for possible EOS append
+            int n_tokenized = llama_tokenize(
+                embedding_vocab, textStr, textLen,
+                tokens.data(), n_tokens, true, true);
+            if (n_tokenized < 0) {
+                LOGE("Failed to tokenize embedding input (second pass): %d", n_tokenized);
+                env->ReleaseStringUTFChars(text, textStr);
+                return env->NewFloatArray(0);
+            }
+            LOGI("nativeEmbed: tokenize second pass n_tokenized=%d", n_tokenized);
+
+            // Ensure the last token is EOS/SEP (embedding.cpp warns if not).
+            if (n_tokenized > 0 && !llama_vocab_is_eog(embedding_vocab, tokens[n_tokenized - 1])) {
+                llama_token eos = llama_vocab_eos(embedding_vocab);
+                if (eos != LLAMA_TOKEN_NULL) {
+                    tokens[n_tokenized] = eos;
+                    n_tokenized++;
+                }
+            }
+
+            // Build the batch with logits=1 on every token so embeddings are
+            // extracted for the whole sequence.
+            auto batch = llama_batch_init(n_tokenized, 0, 1);
+            if (!batch.token || !batch.pos || !batch.n_seq_id || !batch.seq_id || !batch.logits) {
+                LOGE("Failed to allocate embedding batch for %d tokens", n_tokenized);
+                llama_batch_free(batch);
+                env->ReleaseStringUTFChars(text, textStr);
+                return env->NewFloatArray(0);
+            }
+            LOGI("nativeEmbed: batch allocated OK for %d tokens", n_tokenized);
+            batch.n_tokens = n_tokenized;
+            for (int i = 0; i < n_tokenized; i++) {
+                batch.token[i] = tokens[i];
+                batch.pos[i] = i;
+                batch.n_seq_id[i] = 1;
+                batch.seq_id[i][0] = 0;
+                batch.logits[i] = 1;
+            }
+
+            // Clear KV cache (irrelevant for embeddings but prevents residue).
+            llama_memory_clear(llama_get_memory(embedding_ctx), true);
+
+            int ret = llama_decode(embedding_ctx, batch);
+            if (ret != 0) {
+                LOGE("Failed to decode embedding batch (ret=%d)", ret);
+                llama_batch_free(batch);
+                env->ReleaseStringUTFChars(text, textStr);
+                return env->NewFloatArray(0);
+            }
+            LOGI("nativeEmbed: decode OK (ret=%d)", ret);
+
+            const float* embd = llama_get_embeddings_seq(embedding_ctx, 0);
+            if (!embd) {
+                LOGE("llama_get_embeddings_seq returned NULL (pooling type NONE?)");
+                llama_batch_free(batch);
+                env->ReleaseStringUTFChars(text, textStr);
+                return env->NewFloatArray(0);
+            }
+            LOGI("nativeEmbed: embeddings extracted OK, dim=%d", embedding_n_embd);
+
+            // L2-normalize into the output jfloatArray.
+            const int dim = embedding_n_embd;
+            float norm = 0.0f;
+            for (int i = 0; i < dim; i++) {
+                norm += embd[i] * embd[i];
+            }
+            norm = sqrtf(norm);
+            if (norm < 1e-8f) norm = 1.0f;
+
+            jfloatArray result = env->NewFloatArray(dim);
+            if (result == nullptr) {
+                llama_batch_free(batch);
+                env->ReleaseStringUTFChars(text, textStr);
+                return nullptr;
+            }
+            std::vector<float> normalized(dim);
+            for (int i = 0; i < dim; i++) {
+                normalized[i] = embd[i] / norm;
+            }
+            env->SetFloatArrayRegion(result, 0, dim, normalized.data());
+
+            llama_batch_free(batch);
+            env->ReleaseStringUTFChars(text, textStr);
+            LOGI("nativeEmbed: success, returned %d-dim embedding (norm=%.4f)", dim, norm);
+            return result;
+
+        } catch (const std::exception& e) {
+            LOGE("Exception embedding text: %s", e.what());
+            env->ReleaseStringUTFChars(text, textStr);
+            return env->NewFloatArray(0);
+        }
+    }
+
+    JNIEXPORT void JNICALL
+    Java_com_omnidocs_app_ai_EmbeddingEngine_nativeEmbeddingFree(
+        JNIEnv* env,
+        jobject thiz
+    ) {
+        std::unique_lock<std::timed_mutex> lock(g_llama_mutex, std::defer_lock);
+        if (!acquire_mutex(lock, std::chrono::seconds(5))) {
+            LOGE("nativeEmbeddingFree: mutex timeout, cannot free");
+            return;
+        }
+
+        try {
+            if (embedding_ctx) {
+                llama_free(embedding_ctx);
+                embedding_ctx = nullptr;
+            }
+            if (embedding_model) {
+                llama_model_free(embedding_model);
+                embedding_model = nullptr;
+            }
+            embedding_vocab = nullptr;
+            embedding_initialized = false;
+            embedding_n_embd = 0;
+            // Only free the process-wide backend when the generative context is
+            // also gone (mirrors the guard in nativeFree).
+            if (ctx == nullptr) {
+                llama_backend_free();
+                backend_initialized = false;
+            }
+            LOGI("Embedding model freed");
+        } catch (const std::exception& e) {
+            LOGE("Exception freeing embedding model: %s", e.what());
+        }
     }
 
 } // extern "C"

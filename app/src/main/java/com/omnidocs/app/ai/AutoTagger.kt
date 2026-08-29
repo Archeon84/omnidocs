@@ -1,6 +1,12 @@
 package com.omnidocs.app.ai
 
 import android.util.Log
+import com.omnidocs.app.data.repository.NotesRepository
+import com.omnidocs.app.domain.model.Note
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -8,8 +14,29 @@ private const val TAG = "AutoTagger"
 
 @Singleton
 class AutoTagger @Inject constructor(
-    private val llamaCppService: LlamaCppService
+    private val llamaCppService: LlamaCppService,
+    private val repository: NotesRepository
 ) {
+    // Fire-and-forget scope for post-save auto-tagging. Outlives the ViewModel so
+    // navigation doesn't cancel the slow offline-LLM call.
+    private val taggingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Fire-and-forget tagging for a newly created note. Runs off the ViewModel
+     * scope so a back-navigation never cancels it, and the slow offline-LLM call
+     * never blocks save/navigation.
+     */
+    fun tagNoteAsync(note: Note) {
+        taggingScope.launch {
+            try {
+                val tags = generateTags(note.title, note.content)
+                repository.updateNote(note.copy(tags = tags))
+            } catch (e: Exception) {
+                Log.e(TAG, "Tag generation failed", e)
+            }
+        }
+    }
+
     suspend fun generateTags(title: String, content: String): String {
         if (content.length < 50) return "[]"
 

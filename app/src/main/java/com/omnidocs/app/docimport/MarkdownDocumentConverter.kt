@@ -18,24 +18,27 @@ class MarkdownDocumentConverter : DocumentConverter {
     private val parser = Parser.builder().build()
     private val renderer = HtmlRenderer.builder().build()
 
-    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionResult? {
+    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome {
         return try {
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
             val markdown = inputStream.bufferedReader().use { it.readText() }
 
-            if (markdown.isBlank()) return null
+            if (markdown.isBlank()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
             val title = extractTitle(markdown, fileName)
             val document = parser.parse(markdown)
             val html = renderer.render(document)
 
-            ConversionResult(
-                title = title,
-                htmlContent = html,
-                plainText = markdown.trim()
+            ConversionOutcome.Success(
+                ConversionResult(
+                    title = title,
+                    htmlContent = html,
+                    plainText = markdown.trim()
+                )
             )
         } catch (e: Exception) {
-            null
+            ConversionOutcome.Failure("Couldn't import \"$fileName\": ${e.message ?: e.javaClass.simpleName}")
         }
     }
 

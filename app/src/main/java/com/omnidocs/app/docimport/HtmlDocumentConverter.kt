@@ -15,12 +15,13 @@ class HtmlDocumentConverter : DocumentConverter {
         "application/xhtml+xml"
     )
 
-    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionResult? {
+    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome {
         return try {
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
             val rawHtml = inputStream.bufferedReader().use { it.readText() }
 
-            if (rawHtml.isBlank()) return null
+            if (rawHtml.isBlank()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
             val doc = Jsoup.parse(rawHtml)
 
@@ -34,13 +35,15 @@ class HtmlDocumentConverter : DocumentConverter {
             val bodyHtml = doc.body()?.html() ?: rawHtml
             val plainText = doc.body()?.text() ?: ""
 
-            ConversionResult(
-                title = title,
-                htmlContent = bodyHtml,
-                plainText = plainText
+            ConversionOutcome.Success(
+                ConversionResult(
+                    title = title,
+                    htmlContent = bodyHtml,
+                    plainText = plainText
+                )
             )
         } catch (e: Exception) {
-            null
+            ConversionOutcome.Failure("Couldn't import \"$fileName\": ${e.message ?: e.javaClass.simpleName}")
         }
     }
 }

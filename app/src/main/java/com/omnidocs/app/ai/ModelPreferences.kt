@@ -34,6 +34,25 @@ class ModelPreferences @Inject constructor(
         }
     }
 
+    // ---- Embedding model preference ----
+
+    private val selectedEmbeddingModelKey = stringPreferencesKey("selected_embedding_model_id")
+
+    /** The currently selected embedding model ID. Defaults to null (n-gram fallback). */
+    val selectedEmbeddingModelId: Flow<String?> = context.modelDataStore.data.map { prefs ->
+        prefs[selectedEmbeddingModelKey]
+    }
+
+    suspend fun setSelectedEmbeddingModelId(id: String?) {
+        context.modelDataStore.edit { prefs ->
+            if (id != null) {
+                prefs[selectedEmbeddingModelKey] = id
+            } else {
+                prefs.remove(selectedEmbeddingModelKey)
+            }
+        }
+    }
+
     // ---- STT model preference ----
 
     private val selectedSttModelKey = stringPreferencesKey("selected_stt_model_id")
@@ -50,6 +69,36 @@ class ModelPreferences @Inject constructor(
             } else {
                 prefs.remove(selectedSttModelKey)
             }
+        }
+    }
+
+    // ---- STT language preference ----
+
+    private val sttLanguageKey = stringPreferencesKey("stt_language")
+
+    /** ISO 639-1 language code for Whisper multilingual models. Empty = auto-detect. */
+    val sttLanguage: Flow<String> = context.modelDataStore.data.map { prefs ->
+        prefs[sttLanguageKey] ?: ""
+    }
+
+    suspend fun setSttLanguage(lang: String) {
+        context.modelDataStore.edit { prefs ->
+            prefs[sttLanguageKey] = lang
+        }
+    }
+
+    // ---- STT accuracy mode preference ----
+
+    private val sttAccuracyModeKey = stringPreferencesKey("stt_accuracy_mode")
+
+    /** "fast" (default, 3s segments) or "accurate" (5s segments). Controls Whisper decode context. */
+    val sttAccuracyMode: Flow<String> = context.modelDataStore.data.map { prefs ->
+        prefs[sttAccuracyModeKey] ?: "fast"
+    }
+
+    suspend fun setSttAccuracyMode(mode: String) {
+        context.modelDataStore.edit { prefs ->
+            prefs[sttAccuracyModeKey] = mode
         }
     }
 

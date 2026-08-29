@@ -1,5 +1,8 @@
 package com.omnidocs.app.ui.screens.settings
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -8,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -16,6 +20,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -29,6 +34,8 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onFeedClick: () -> Unit = {},
     onAuthClick: () -> Unit = {},
+    onPrivacyClick: () -> Unit = {},
+    onAgentJobsClick: () -> Unit = {},
     lifecycleOwner: LifecycleOwner? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
@@ -40,6 +47,21 @@ fun SettingsScreen(
     var showThemeDialog by remember { mutableStateOf(false) }
     var showModelDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Local device backup: folder picker for Backup to Device, file picker for Restore.
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.setBackupFolder(uri)
+            viewModel.backupToDevice(uri)
+        }
+    }
+    val backupFilePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) viewModel.restoreFromDevice(uri)
+    }
 
     // Collect snackbar events from ViewModel
     LaunchedEffect(Unit) {
@@ -54,9 +76,15 @@ fun SettingsScreen(
     var syncExpanded by remember { mutableStateOf(true) }
     var modelsExpanded by remember { mutableStateOf(true) }
     var speechExpanded by remember { mutableStateOf(true) }
+    var semanticExpanded by remember { mutableStateOf(true) }
+    var privacyExpanded by remember { mutableStateOf(true) }
     var aboutExpanded by remember { mutableStateOf(true) }
 
     val selectedSttModelId by viewModel.selectedSttModelId.collectAsState()
+    val selectedEmbeddingModelId by viewModel.selectedEmbeddingModelId.collectAsState()
+    val sttLanguage by viewModel.sttLanguage.collectAsState()
+    val sttAccuracyMode by viewModel.sttAccuracyMode.collectAsState()
+    val backupFolderUri by viewModel.backupFolderUri.collectAsState()
 
     // Refresh sign-in status every time the screen resumes
     if (lifecycleOwner != null) {
@@ -186,6 +214,25 @@ fun SettingsScreen(
                             },
                             onClick = if (isSignedIn && !isSyncing) {{ viewModel.syncFromCloud() }} else null
                         )
+                        SettingsItem(
+                            icon = Icons.Default.SdStorage,
+                            title = "Backup to Device",
+                            subtitle = if (isSyncing) "Syncing..." else "Save notes & recordings to phone storage",
+                            onClick = if (!isSyncing) {{
+                                if (backupFolderUri != null) viewModel.backupToDevice()
+                                else folderPickerLauncher.launch(null)
+                            }} else null
+                        )
+                        SettingsItem(
+                            icon = Icons.Default.FolderOpen,
+                            title = "Restore from Device",
+                            subtitle = if (isSyncing) "Syncing..." else "Pick a backup ZIP to restore",
+                            onClick = if (!isSyncing) {{
+                                backupFilePickerLauncher.launch(
+                                    arrayOf("application/zip", "application/octet-stream")
+                                )
+                            }} else null
+                        )
                         syncMessage?.let { message ->
                             Card(
                                 modifier = Modifier
@@ -235,6 +282,12 @@ fun SettingsScreen(
                             subtitle = activeModelName,
                             onClick = { showModelDialog = true }
                         )
+                        SettingsItem(
+                            icon = Icons.Default.History,
+                            title = "Agent Jobs & Audit Trail",
+                            subtitle = "View background agent operations and provenance logs",
+                            onClick = onAgentJobsClick
+                        )
                         ModelDownloadSection(
                             viewModel = viewModel,
                             selectedModelId = selectedModelId
@@ -264,9 +317,72 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp)
                         )
+                        SttLanguageSelector(
+                            selectedLanguage = sttLanguage,
+                            onLanguageSelected = { viewModel.setSttLanguage(it) },
+                            hasMultilingualModel = selectedSttModelId != null && selectedSttModelId != "moonshine_tiny_en"
+                        )
+                        SttAccuracyModeSelector(
+                            selectedMode = sttAccuracyMode,
+                            onModeSelected = { viewModel.setSttAccuracyMode(it) }
+                        )
                         SttModelDownloadSection(
                             viewModel = viewModel,
                             selectedModelId = selectedSttModelId
+                        )
+                    }
+                }
+            }
+
+            // ── Semantic Search section ──
+            stickyHeader {
+                CollapsibleSectionHeader(
+                    title = "Semantic Search",
+                    isExpanded = semanticExpanded,
+                    onToggle = { semanticExpanded = !semanticExpanded }
+                )
+            }
+            item {
+                AnimatedVisibility(
+                    visible = semanticExpanded,
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    Column {
+                        Text(
+                            text = "Download an embedding model to find notes by meaning, not just keywords. Without one, search and Q&A fall back to keyword matching.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        EmbeddingModelDownloadSection(
+                            viewModel = viewModel,
+                            selectedModelId = selectedEmbeddingModelId
+                        )
+                    }
+                }
+            }
+
+            // ── Privacy & Security section ──
+            stickyHeader {
+                CollapsibleSectionHeader(
+                    title = "Privacy & Security",
+                    isExpanded = privacyExpanded,
+                    onToggle = { privacyExpanded = !privacyExpanded }
+                )
+            }
+            item {
+                AnimatedVisibility(
+                    visible = privacyExpanded,
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    Column {
+                        SettingsItem(
+                            icon = Icons.Default.Security,
+                            title = "Privacy Controls",
+                            subtitle = "Local processing, data retention, export & delete",
+                            onClick = onPrivacyClick
                         )
                     }
                 }
@@ -337,18 +453,18 @@ fun CollapsibleSectionHeader(
     isExpanded: Boolean,
     onToggle: () -> Unit
 ) {
-    Box(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
+    Box(modifier = Modifier.background(MaterialTheme.colorScheme.background)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onToggle)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
             Icon(
@@ -368,18 +484,28 @@ fun SettingsItem(
     subtitle: String,
     onClick: (() -> Unit)? = null
 ) {
-    ListItem(
-        headlineContent = { Text(title) },
-        supportingContent = { Text(subtitle) },
-        leadingContent = {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        },
-        modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
-    )
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        shape = MaterialTheme.shapes.medium
+    ) {
+        ListItem(
+            headlineContent = { Text(title) },
+            supportingContent = { Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            leadingContent = {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+        )
+    }
 }
 
 @Composable
@@ -785,6 +911,270 @@ fun SttModelDownloadSection(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun EmbeddingModelDownloadSection(
+    viewModel: SettingsViewModel,
+    selectedModelId: String?
+) {
+    val models = viewModel.embeddingDownloadedModels.collectAsState()
+    val downloadState = viewModel.embeddingDownloadState.collectAsState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+    ) {
+        viewModel.modelDownloadManager.embeddingModels.forEach { model ->
+            val isDownloaded = models.value.any { it.id == model.id && it.isDownloaded }
+            val isSelected = model.id == selectedModelId
+            val isDownloading = when (val state = downloadState.value) {
+                is com.omnidocs.app.ai.DownloadState.Downloading -> state.modelId == model.id
+                else -> false
+            }
+            val progress = when (val state = downloadState.value) {
+                is com.omnidocs.app.ai.DownloadState.Downloading -> state.progress
+                else -> 0f
+            }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isSelected && isDownloaded)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(model.name, style = MaterialTheme.typography.titleMedium)
+                            Text(model.description, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Size: ${model.size}", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (isDownloaded && isSelected) {
+                            Icon(Icons.Default.CheckCircle, "Active",
+                                tint = MaterialTheme.colorScheme.primary)
+                        } else if (isDownloaded) {
+                            Icon(Icons.Default.Check, "Downloaded",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    if (isDownloading) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(progress = { progress / 100f },
+                            modifier = Modifier.fillMaxWidth())
+                        Text("Downloading: ${progress.toInt()}%",
+                            style = MaterialTheme.typography.labelSmall)
+                    }
+
+                    val downloadError = when (val state = downloadState.value) {
+                        is com.omnidocs.app.ai.DownloadState.Error ->
+                            if (state.modelId == model.id) state.message else null
+                        else -> null
+                    }
+                    downloadError?.let { error ->
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Error: $error", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        if (isDownloaded) {
+                            if (!isSelected) {
+                                TextButton(onClick = { viewModel.selectEmbeddingModel(model.id) }) {
+                                    Text("Select")
+                                }
+                            }
+                            TextButton(onClick = { viewModel.deleteEmbeddingModel(model) }) {
+                                Text("Delete", color = MaterialTheme.colorScheme.error)
+                            }
+                        } else {
+                            TextButton(onClick = { viewModel.downloadEmbeddingModel(model) },
+                                enabled = !isDownloading) {
+                                Text("Download")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Supported language options for Whisper multilingual models. */
+private val STT_LANGUAGES = listOf(
+    "" to "Auto-detect",
+    "en" to "English",
+    "ms" to "Malay",
+    "zh" to "Chinese",
+    "ja" to "Japanese",
+    "ko" to "Korean",
+    "es" to "Spanish",
+    "ar" to "Arabic",
+    "vi" to "Vietnamese",
+    "uk" to "Ukrainian",
+)
+
+@Composable
+fun SttLanguageSelector(
+    selectedLanguage: String,
+    onLanguageSelected: (String) -> Unit,
+    hasMultilingualModel: Boolean,
+    modifier: Modifier = Modifier
+) {
+    if (!hasMultilingualModel) return
+
+    var expanded by remember { mutableStateOf(false) }
+    val displayLabel = STT_LANGUAGES.find { it.first == selectedLanguage }?.second ?: "Auto-detect"
+
+    Column(modifier = modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(
+            text = "Transcription language",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Box {
+            OutlinedTextField(
+                value = displayLabel,
+                onValueChange = {},
+                readOnly = true,
+                trailingIcon = {
+                    Icon(
+                        if (expanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                        contentDescription = null
+                    )
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = true },
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true
+            )
+            // Invisible overlay to capture clicks on the entire field
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clickable { expanded = true }
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            STT_LANGUAGES.forEach { (code, name) ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = name,
+                            fontWeight = if (code == selectedLanguage) FontWeight.Bold else FontWeight.Normal
+                        )
+                    },
+                    onClick = {
+                        onLanguageSelected(code)
+                        expanded = false
+                    },
+                    leadingIcon = {
+                        if (code == selectedLanguage) {
+                            Icon(Icons.Default.Check, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+/** Recognition mode options for offline STT. */
+private val STT_ACCURACY_MODES = listOf(
+    "fast" to "Fast",
+    "accurate" to "Higher accuracy",
+)
+
+@Composable
+fun SttAccuracyModeSelector(
+    selectedMode: String,
+    onModeSelected: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val displayLabel = STT_ACCURACY_MODES.find { it.first == selectedMode }?.second ?: "Fast"
+
+    Column(modifier = modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(
+            text = "Recognition mode",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Box {
+            OutlinedTextField(
+                value = displayLabel,
+                onValueChange = {},
+                readOnly = true,
+                trailingIcon = {
+                    Icon(
+                        if (expanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                        contentDescription = null
+                    )
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = true },
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true
+            )
+            // Invisible overlay to capture clicks on the entire field
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clickable { expanded = true }
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Fast decodes shorter segments for snappier results. Higher accuracy uses more audio context per decode for better word accuracy.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            STT_ACCURACY_MODES.forEach { (mode, name) ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = name,
+                            fontWeight = if (mode == selectedMode) FontWeight.Bold else FontWeight.Normal
+                        )
+                    },
+                    onClick = {
+                        onModeSelected(mode)
+                        expanded = false
+                    },
+                    leadingIcon = {
+                        if (mode == selectedMode) {
+                            Icon(Icons.Default.Check, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                )
             }
         }
     }

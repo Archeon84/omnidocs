@@ -7,16 +7,68 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.omnidocs.app.data.local.entity.ActionItemEntity
+import com.omnidocs.app.data.local.entity.AgentEventEntity
+import com.omnidocs.app.data.local.entity.AgentJobEntity
+import com.omnidocs.app.data.local.entity.AiArtifactEntity
+import com.omnidocs.app.data.local.entity.AiRunEntity
+import com.omnidocs.app.data.local.entity.AuditEventEntity
+import com.omnidocs.app.data.local.entity.ClaimEntity
+import com.omnidocs.app.data.local.entity.ContentBlockEntity
+import com.omnidocs.app.data.local.entity.EmbeddingEntity
+import com.omnidocs.app.data.local.entity.EntityEntity
+import com.omnidocs.app.data.local.entity.EntityMentionEntity
+import com.omnidocs.app.data.local.entity.EvidenceLinkEntity
 import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.data.local.entity.NoteFtsEntity
+import com.omnidocs.app.data.local.entity.NoteLinkEntity
+import com.omnidocs.app.data.local.entity.NoteVersionEntity
+import com.omnidocs.app.data.local.entity.RecordingEntity
+import com.omnidocs.app.data.local.entity.SavedSearchEntity
+import com.omnidocs.app.data.local.entity.SourceDocumentEntity
+import com.omnidocs.app.data.local.entity.SpeakerEntity
+import com.omnidocs.app.data.local.entity.TranscriptSegmentEntity
 import net.sqlcipher.database.SQLiteDatabase
 import net.sqlcipher.database.SupportFactory
 import java.io.File
 import java.security.SecureRandom
 
-@Database(entities = [NoteEntity::class, NoteFtsEntity::class], version = 6, exportSchema = false)
+@Database(
+    entities = [
+        NoteEntity::class, NoteFtsEntity::class,
+        RecordingEntity::class, TranscriptSegmentEntity::class, SpeakerEntity::class,
+        ClaimEntity::class, EvidenceLinkEntity::class, ActionItemEntity::class,
+        EntityEntity::class, EntityMentionEntity::class, NoteLinkEntity::class,
+        EmbeddingEntity::class, AiRunEntity::class, NoteVersionEntity::class,
+        AuditEventEntity::class, SavedSearchEntity::class,
+        AgentJobEntity::class, AgentEventEntity::class,
+        SourceDocumentEntity::class, ContentBlockEntity::class,
+        AiArtifactEntity::class
+    ],
+    version = 12,
+    exportSchema = false
+)
 abstract class NotesDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
+    abstract fun recordingDao(): RecordingDao
+    abstract fun transcriptSegmentDao(): TranscriptSegmentDao
+    abstract fun speakerDao(): SpeakerDao
+    abstract fun claimDao(): ClaimDao
+    abstract fun evidenceLinkDao(): EvidenceLinkDao
+    abstract fun actionItemDao(): ActionItemDao
+    abstract fun entityDao(): EntityDao
+    abstract fun entityMentionDao(): EntityMentionDao
+    abstract fun noteLinkDao(): NoteLinkDao
+    abstract fun embeddingDao(): EmbeddingDao
+    abstract fun aiRunDao(): AiRunDao
+    abstract fun noteVersionDao(): NoteVersionDao
+    abstract fun auditEventDao(): AuditEventDao
+    abstract fun savedSearchDao(): SavedSearchDao
+    abstract fun agentJobDao(): AgentJobDao
+    abstract fun agentEventDao(): AgentEventDao
+    abstract fun sourceDocumentDao(): SourceDocumentDao
+    abstract fun contentBlockDao(): ContentBlockDao
+    abstract fun aiArtifactDao(): AiArtifactDao
 
     companion object {
         @Volatile
@@ -81,6 +133,15 @@ abstract class NotesDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Track when a note was soft-deleted so backup restore can distinguish
+                // "deleted after this backup" (must stay deleted) from "deleted before".
+                // NULL = never deleted / pre-migration rows.
+                db.execSQL("ALTER TABLE notes ADD COLUMN deletedAt INTEGER")
+            }
+        }
+
         fun getDatabase(context: Context): NotesDatabase {
             return INSTANCE ?: synchronized(this) {
                 // Initialize SQLCipher native libraries (only once)
@@ -121,7 +182,7 @@ abstract class NotesDatabase : RoomDatabase() {
                     "notes_database"
                 )
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
                 INSTANCE = instance

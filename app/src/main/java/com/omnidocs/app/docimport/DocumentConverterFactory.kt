@@ -34,10 +34,35 @@ class DocumentConverterFactory @Inject constructor() {
     }
 
     /**
-     * Get the appropriate converter for a MIME type.
+     * File extension → MIME key, used when the content resolver reports a
+     * generic or wrong MIME type (e.g. `.md` as `application/octet-stream`).
+     */
+    private val extensionToMimeType: Map<String, String> = mapOf(
+        "txt" to "text/plain",
+        "csv" to "text/csv",
+        "md" to "text/markdown",
+        "markdown" to "text/markdown",
+        "mdown" to "text/markdown",
+        "html" to "text/html",
+        "htm" to "text/html",
+        "pdf" to "application/pdf",
+        "docx" to "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc" to "application/msword",
+        "xlsx" to "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls" to "application/vnd.ms-excel",
+        "pptx" to "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "ppt" to "application/vnd.ms-powerpoint"
+    )
+
+    /**
+     * Get the appropriate converter, preferring the file's extension when it
+     * identifies a known document type (handles misreported MIME for `.md`/`.html`).
      * Falls back to [PlainTextViewConverter] for unknown types.
      */
-    fun getConverter(mimeType: String): DocumentConverter {
+    fun getConverter(mimeType: String, fileName: String = ""): DocumentConverter {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        val byExtension = extensionToMimeType[ext]?.let { mimeTypeToConverter[it] }
+        if (byExtension != null) return byExtension
         return mimeTypeToConverter[mimeType] ?: PlainTextViewConverter()
     }
 

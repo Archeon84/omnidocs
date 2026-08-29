@@ -16,11 +16,12 @@ object MotionTokens {
     const val STAGGER_MS = 50L
     const val SLIDE_FRACTION = 3 // slide by 1/3 of screen width
 
-    // Spring presets
-    val ListEntrance = spring<Float>(dampingRatio = 0.7f, stiffness = 300f)
+    // Spring presets — refined for smoother, less bouncy feel
+    val ListEntrance = spring<Float>(dampingRatio = 0.8f, stiffness = 250f)
     val ScreenTransition = spring<Float>(dampingRatio = 0.85f, stiffness = 200f)
     val ButtonPress = spring<Float>(dampingRatio = 0.6f, stiffness = 500f)
-    val CardPress = spring<Float>(dampingRatio = 0.7f, stiffness = 400f)
+    val CardPress = spring<Float>(dampingRatio = 0.75f, stiffness = 350f)
+    val BottomNavIndicator = spring<Float>(dampingRatio = 0.9f, stiffness = 400f)
 }
 
 /**

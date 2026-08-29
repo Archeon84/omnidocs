@@ -16,9 +16,10 @@ class PptxDocumentConverter : DocumentConverter {
         "application/vnd.ms-powerpoint"
     )
 
-    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionResult? {
+    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome {
         return try {
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
             val slideshow = XMLSlideShow(inputStream)
 
             val title = fileName.substringBeforeLast('.')
@@ -39,15 +40,17 @@ class PptxDocumentConverter : DocumentConverter {
             val html = htmlBuilder.toString().trim()
             val plain = plainBuilder.toString().trim()
 
-            if (html.isEmpty()) return null
+            if (html.isEmpty()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
-            ConversionResult(
-                title = title,
-                htmlContent = html,
-                plainText = plain
+            ConversionOutcome.Success(
+                ConversionResult(
+                    title = title,
+                    htmlContent = html,
+                    plainText = plain
+                )
             )
         } catch (e: Exception) {
-            null
+            ConversionOutcome.Failure("Couldn't import \"$fileName\": ${e.message ?: e.javaClass.simpleName}")
         }
     }
 

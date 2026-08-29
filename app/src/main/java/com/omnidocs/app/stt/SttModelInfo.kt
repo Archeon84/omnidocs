@@ -19,6 +19,5 @@ data class SttModelInfo(
 
 enum class SttModelType {
     WHISPER,
-    MOONSHINE,
-    SENSE_VOICE
+    MOONSHINE
 }

@@ -17,19 +17,29 @@ data class ConversionResult(
 )
 
 /**
- * Converts a document from a given MIME type into a [ConversionResult].
+ * Result of a conversion attempt: either a [ConversionResult] or a message
+ * explaining why the conversion failed.
+ */
+sealed class ConversionOutcome {
+    data class Success(val result: ConversionResult) : ConversionOutcome()
+    data class Failure(val message: String) : ConversionOutcome()
+}
+
+/**
+ * Converts a document from a given MIME type into a [ConversionOutcome].
  */
 interface DocumentConverter {
     /** MIME types this converter handles (e.g. "application/pdf") */
     val supportedMimeTypes: List<String>
 
     /**
-     * Convert the document at [uri] to a [ConversionResult].
+     * Convert the document at [uri] to a [ConversionOutcome].
      *
      * @param context Application or activity context for content resolver access
      * @param uri Content URI of the document to convert
      * @param fileName Original file name (used for title fallback)
-     * @return Conversion result, or null if conversion fails
+     * @return [ConversionOutcome.Success] on success, [ConversionOutcome.Failure]
+     *         with a user-facing reason otherwise
      */
-    suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionResult?
+    suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome
 }

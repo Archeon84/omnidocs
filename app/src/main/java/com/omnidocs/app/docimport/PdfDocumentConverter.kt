@@ -25,31 +25,34 @@ class PdfDocumentConverter : DocumentConverter {
         }
     }
 
-    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionResult? {
+    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome {
         return try {
             init(context)
 
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
             val document = PDDocument.load(inputStream)
 
             val stripper = PDFTextStripper()
             val text = stripper.getText(document)
             document.close()
 
-            if (text.isBlank()) return null
+            if (text.isBlank()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
             val title = extractTitle(text, fileName)
             val html = text.lines()
                 .filter { it.isNotBlank() }
                 .joinToString("") { "<p>${escapeHtml(it.trim())}</p>" }
 
-            ConversionResult(
-                title = title,
-                htmlContent = html,
-                plainText = text.trim()
+            ConversionOutcome.Success(
+                ConversionResult(
+                    title = title,
+                    htmlContent = html,
+                    plainText = text.trim()
+                )
             )
         } catch (e: Exception) {
-            null
+            ConversionOutcome.Failure("Couldn't import \"$fileName\": ${e.message ?: e.javaClass.simpleName}")
         }
     }
 

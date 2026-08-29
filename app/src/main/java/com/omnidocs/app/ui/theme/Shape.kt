@@ -10,9 +10,9 @@ import androidx.compose.ui.unit.dp
  * Radii follow a consistent scale: small chips → cards → sheets → dialogs.
  */
 val AppShapes = Shapes(
-    extraSmall = RoundedCornerShape(4.dp),   // chips, badges
-    small = RoundedCornerShape(8.dp),        // buttons, small cards, import chip
-    medium = RoundedCornerShape(12.dp),      // note cards, bottom sheets
-    large = RoundedCornerShape(16.dp),       // dialogs, full-width cards
-    extraLarge = RoundedCornerShape(24.dp)   // modals, search bars
+    extraSmall = RoundedCornerShape(6.dp),   // chips, badges
+    small = RoundedCornerShape(10.dp),       // buttons, small cards, import chip
+    medium = RoundedCornerShape(16.dp),      // note cards, bottom sheets
+    large = RoundedCornerShape(20.dp),       // dialogs, full-width cards
+    extraLarge = RoundedCornerShape(28.dp)   // modals, search bars, bottom nav
 )

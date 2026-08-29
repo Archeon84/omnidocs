@@ -56,7 +56,9 @@ class GraphEngine @Inject constructor(
         }
 
         val edges = mutableListOf<GraphEdge>()
-        val model = getActiveModel()
+
+        // Only attempt LLM-based edge analysis if the native lib loaded successfully
+        val model = if (llamaCppService.isNativeLibLoaded()) getActiveModel() else null
 
         if (model != null) {
             // Find candidate pairs by word overlap
@@ -75,10 +77,12 @@ class GraphEngine @Inject constructor(
                     ))
                 }
             }
-        }
 
-        // Store relationships back to notes
-        storeRelationships(notes, edges)
+            // Store relationships back to notes. Must stay inside the model branch:
+            // when no model is available `edges` is empty and storing it would wipe
+            // every note's previously-saved relatedNotes.
+            storeRelationships(notes, edges)
+        }
 
         GraphData(nodes = nodes, edges = edges)
     }
@@ -96,44 +100,50 @@ class GraphEngine @Inject constructor(
     }
 
     /**
-     * Find candidate pairs by word overlap (cheap pre-filter before LLM).
+     * Find candidate pairs by BM25 relevance scoring.
+     * For each note, extracts top terms and scores all other notes using BM25.
+     * Deduplicates pairs and keeps the highest-scoring direction.
      */
     private fun findCandidatePairs(
         notes: List<Note>,
         maxPairs: Int
     ): List<Pair<Note, Note>> {
-        val stopWords = setOf("the", "a", "an", "is", "are", "was", "were", "be", "been",
-            "being", "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "shall", "can", "to", "of", "in", "for", "on", "with",
-            "at", "by", "from", "as", "into", "through", "during", "before", "after", "and",
-            "but", "or", "nor", "not", "so", "yet", "both", "either", "neither", "each",
-            "every", "all", "any", "few", "more", "most", "other", "some", "such", "no",
-            "only", "own", "same", "than", "too", "very", "just", "that", "this", "these",
-            "those", "i", "me", "my", "we", "our", "you", "your", "he", "him", "his",
-            "she", "her", "it", "its", "they", "them", "their", "what", "which", "who",
-            "whom", "when", "where", "why", "how", "if", "then", "else", "because")
+        val tokenized = notes.map { Bm25Scorer.tokenize(it.plainText) }
+        val idf = Bm25Scorer.computeIdf(tokenized)
+        val avgDocLength = tokenized.map { it.size }.average().toFloat().coerceAtLeast(1f)
+        val notesById = notes.associateBy { it.id }
 
-        fun getWords(text: String): Set<String> {
-            return text.lowercase()
-                .replace(Regex("[^a-z0-9\\s]"), "")
-                .split("\\s+".toRegex())
-                .filter { it.length > 2 && it !in stopWords }
-                .toSet()
+        // Precompute term frequencies and top terms for each note
+        val noteTopTerms = tokenized.map { tokens ->
+            Bm25Scorer.topTerms(tokens, n = 10)
+        }
+        val noteTermFreqs = tokenized.map { tokens ->
+            tokens.groupBy { it }.mapValues { it.value.size }
         }
 
-        val noteWords = notes.map { it.id to getWords(it.plainText) }.toMap()
-        val notesById = notes.associateBy { it.id }
+        val seen = mutableSetOf<Pair<String, String>>()
         val pairs = mutableListOf<Triple<String, String, Float>>()
 
         for (i in notes.indices) {
-            for (j in i + 1 until notes.size) {
-                val wordsA = noteWords[notes[i].id] ?: emptySet()
-                val wordsB = noteWords[notes[j].id] ?: emptySet()
-                if (wordsA.isEmpty() || wordsB.isEmpty()) continue
-                val overlap = wordsA.intersect(wordsB).size.toFloat() /
-                    minOf(wordsA.size, wordsB.size).coerceAtLeast(1)
-                if (overlap > 0.1f) {
-                    pairs.add(Triple(notes[i].id, notes[j].id, overlap))
+            val queryTerms = noteTopTerms[i]
+            if (queryTerms.isEmpty()) continue
+
+            for (j in notes.indices) {
+                if (i == j) continue
+                val pairKey = if (notes[i].id < notes[j].id)
+                    notes[i].id to notes[j].id else notes[j].id to notes[i].id
+                if (pairKey in seen) continue
+
+                val score = Bm25Scorer.score(
+                    queryTerms = queryTerms,
+                    docTermFreqs = noteTermFreqs[j],
+                    docLength = tokenized[j].size,
+                    avgDocLength = avgDocLength,
+                    idf = idf
+                )
+                if (score > 0.5f) {
+                    pairs.add(Triple(pairKey.first, pairKey.second, score))
+                    seen.add(pairKey)
                 }
             }
         }

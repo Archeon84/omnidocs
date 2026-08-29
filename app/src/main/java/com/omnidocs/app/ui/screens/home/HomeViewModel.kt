@@ -8,12 +8,16 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.data.repository.NotesRepository
+import com.omnidocs.app.docimport.ConversionOutcome
 import com.omnidocs.app.docimport.DocumentConverterFactory
+import com.omnidocs.app.search.VectorSearch
 import com.omnidocs.app.ui.theme.AppTheme
 import com.omnidocs.app.ui.theme.ThemeManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
@@ -28,6 +32,7 @@ import javax.inject.Inject
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val repository: NotesRepository,
+    private val vectorSearch: VectorSearch,
     private val converterFactory: DocumentConverterFactory,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
@@ -38,6 +43,12 @@ class HomeViewModel @Inject constructor(
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    // Match explanations from the active hybrid search, keyed by note id. Populated
+    // only while a search query is active; empty otherwise. HomeScreen uses it to
+    // label how each note matched ("by meaning", "keyword + meaning", etc.).
+    private val _matchDetails = MutableStateFlow<Map<String, String>>(emptyMap())
+    val matchDetails: StateFlow<Map<String, String>> = _matchDetails.asStateFlow()
 
     private val _isGridView = MutableStateFlow(true)
     val isGridView: StateFlow<Boolean> = _isGridView.asStateFlow()
@@ -54,20 +65,36 @@ class HomeViewModel @Inject constructor(
     private val _snackbarEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val snackbarEvent: SharedFlow<String> = _snackbarEvent.asSharedFlow()
 
+    private val _loadError = MutableStateFlow<String?>(null)
+    val loadError: StateFlow<String?> = _loadError.asStateFlow()
+
     val notes: StateFlow<List<Note>> = _searchQuery
         .flatMapLatest { query ->
-            val flow = if (query.isEmpty()) {
-                repository.getAllNotes()
+            if (query.isEmpty()) {
+                // No search: clear match annotations and list every note, pin-first.
+                _matchDetails.value = emptyMap()
+                repository.getAllNotes().map { list ->
+                    list.sortedWith(
+                        compareByDescending<Note> { it.isPinned }
+                            .thenByDescending { it.updatedAt }
+                    )
+                }
             } else {
-                repository.searchNotes(query)
+                // Hybrid (BM25 + semantic) search so results include "by meaning"
+                // matches, kept in relevance order, with per-note explanations.
+                flow {
+                    val results = withContext(Dispatchers.IO) {
+                        vectorSearch.hybridSearch(query)
+                    }
+                    _matchDetails.value = results.associate { it.note.id to it.explanation }
+                    emit(results.map { it.note.toDomainNote() })
+                }
             }
-            flow.map { list ->
-                // Sort: pinned first, then by updatedAt descending
-                list.sortedWith(
-                    compareByDescending<Note> { it.isPinned }
-                        .thenByDescending { it.updatedAt }
-                )
-            }
+        }
+        .catch { e ->
+            Log.e("HomeViewModel", "Failed to load notes", e)
+            _loadError.value = e.message ?: "Failed to load notes"
+            emit(emptyList())
         }
         .stateIn(
             scope = viewModelScope,
@@ -81,6 +108,14 @@ class HomeViewModel @Inject constructor(
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
+    }
+
+    fun retryLoad() {
+        _loadError.value = null
+        // Force re-subscription by toggling the query
+        val q = _searchQuery.value
+        _searchQuery.value = ""
+        _searchQuery.value = q
     }
 
     fun toggleViewMode() {
@@ -145,23 +180,28 @@ class HomeViewModel @Inject constructor(
      */
     fun importFile(uri: Uri, mimeType: String) {
         viewModelScope.launch {
-            val note = withContext(Dispatchers.IO) {
-                val fileName = getFileName(uri)
-                val converter = converterFactory.getConverter(mimeType)
-                val result = converter.convert(context, uri, fileName)
+            var importedNote: Note? = null
+            var errorMessage: String? = null
 
-                if (result != null) {
-                    repository.createNote(result.title, result.htmlContent, result.plainText, "en")
-                } else {
-                    null
+            withContext(Dispatchers.IO) {
+                val fileName = getFileName(uri)
+                val converter = converterFactory.getConverter(mimeType, fileName)
+
+                when (val outcome = converter.convert(context, uri, fileName)) {
+                    is ConversionOutcome.Success ->
+                        importedNote = repository.createNote(
+                            outcome.result.title, outcome.result.htmlContent, outcome.result.plainText, "en"
+                        )
+                    is ConversionOutcome.Failure -> errorMessage = outcome.message
                 }
             }
 
+            val note = importedNote
             if (note != null) {
                 _importResult.tryEmit(note)
                 _snackbarEvent.tryEmit("Imported \"${note.title}\"")
             } else {
-                _snackbarEvent.tryEmit("Could not import this file format")
+                _snackbarEvent.tryEmit(errorMessage ?: "Could not import this file format")
             }
         }
     }
@@ -170,6 +210,23 @@ class HomeViewModel @Inject constructor(
      * Resolves the display name (filename) of the document from its content URI.
      * Falls back to the last path segment if the content provider doesn't expose it.
      */
+    /** Map a Room [NoteEntity] (as returned by hybrid search) to the domain [Note]. */
+    private fun NoteEntity.toDomainNote(): Note = Note(
+        id = id,
+        title = title,
+        content = content,
+        plainText = plainText,
+        isPinned = isPinned,
+        language = language,
+        createdAt = createdAt,
+        updatedAt = updatedAt,
+        imageUrl = imageUrl,
+        attachments = attachments,
+        isDeleted = isDeleted,
+        tags = tags,
+        relatedNotes = relatedNotes
+    )
+
     private fun getFileName(uri: Uri): String {
         val cursor = context.contentResolver.query(uri, null, null, null, null)
         cursor?.use {

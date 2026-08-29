@@ -14,25 +14,28 @@ class PlainTextViewConverter : DocumentConverter {
         "text/*"
     )
 
-    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionResult? {
+    override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome {
         return try {
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
             val text = inputStream.bufferedReader().use { it.readText() }
 
-            if (text.isBlank()) return null
+            if (text.isBlank()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
             val title = fileName.substringBeforeLast('.')
             val html = text.lines()
                 .filter { it.isNotBlank() }
                 .joinToString("") { "<p>${escapeHtml(it)}</p>" }
 
-            ConversionResult(
-                title = title,
-                htmlContent = html,
-                plainText = text.trim()
+            ConversionOutcome.Success(
+                ConversionResult(
+                    title = title,
+                    htmlContent = html,
+                    plainText = text.trim()
+                )
             )
         } catch (e: Exception) {
-            null
+            ConversionOutcome.Failure("Couldn't import \"$fileName\": ${e.message ?: e.javaClass.simpleName}")
         }
     }
 

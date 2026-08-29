@@ -1,6 +1,9 @@
 package com.omnidocs.app.ui.screens.settings
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -9,6 +12,9 @@ import com.omnidocs.app.ai.LlamaCppService
 import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelInfo
 import com.omnidocs.app.ai.ModelPreferences
+import com.omnidocs.app.data.backup.BackupResult
+import com.omnidocs.app.data.backup.LocalBackupPreferences
+import com.omnidocs.app.data.backup.LocalBackupService
 import com.omnidocs.app.data.remote.DriveService
 import com.omnidocs.app.ui.theme.AppTheme
 import com.omnidocs.app.ui.theme.ThemeManager
@@ -27,7 +33,9 @@ class SettingsViewModel @Inject constructor(
     private val driveService: DriveService,
     val modelDownloadManager: ModelDownloadManager,
     private val llamaCppService: LlamaCppService,
-    private val modelPreferences: ModelPreferences
+    private val modelPreferences: ModelPreferences,
+    private val localBackupService: LocalBackupService,
+    private val localBackupPreferences: LocalBackupPreferences
 ) : ViewModel() {
 
     private val themeManager = ThemeManager(context)
@@ -204,6 +212,94 @@ class SettingsViewModel @Inject constructor(
             initialValue = null
         )
 
+    val sttLanguage: StateFlow<String> = modelPreferences.sttLanguage
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = ""
+        )
+
+    fun setSttLanguage(lang: String) {
+        viewModelScope.launch {
+            modelPreferences.setSttLanguage(lang)
+        }
+    }
+
+    /** STT recognition mode: "fast" (default) or "accurate". */
+    val sttAccuracyMode: StateFlow<String> = modelPreferences.sttAccuracyMode
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = "fast"
+        )
+
+    fun setSttAccuracyMode(mode: String) {
+        viewModelScope.launch {
+            modelPreferences.setSttAccuracyMode(mode)
+        }
+    }
+
+    // ---- Local (device) backup ----
+
+    /** Last-chosen SAF backup folder URI, persisted across restarts. */
+    private val _backupFolderUri = MutableStateFlow(localBackupPreferences.backupFolderUri)
+    val backupFolderUri: StateFlow<String?> = _backupFolderUri.asStateFlow()
+
+    /**
+     * Persist the picked backup folder (and its URI grant) so later backups
+     * reuse it without re-picking.
+     */
+    fun setBackupFolder(uri: Uri) {
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            Log.w("SettingsViewModel", "Failed to persist folder grant: ${e.message}")
+        }
+        localBackupPreferences.backupFolderUri = uri.toString()
+        _backupFolderUri.value = uri.toString()
+        _syncMessage.value = "Backup folder set"
+        _snackbarEvent.tryEmit("Backup folder set")
+    }
+
+    fun backupToDevice(folderUri: Uri? = null) {
+        val target = folderUri ?: localBackupPreferences.backupFolderUri?.let { Uri.parse(it) }
+        if (target == null) {
+            _syncMessage.value = "Choose a backup folder first"
+            _snackbarEvent.tryEmit("Choose a backup folder")
+            return
+        }
+        viewModelScope.launch {
+            _isSyncing.value = true
+            _syncMessage.value = null
+            val result = try {
+                localBackupService.createBackup(target)
+            } catch (e: Exception) {
+                BackupResult(false, "Backup error: ${e.message}")
+            }
+            _syncMessage.value = result.message
+            _snackbarEvent.tryEmit(result.message)
+            _isSyncing.value = false
+        }
+    }
+
+    fun restoreFromDevice(uri: Uri) {
+        viewModelScope.launch {
+            _isSyncing.value = true
+            _syncMessage.value = null
+            val result = try {
+                localBackupService.restoreBackup(uri)
+            } catch (e: Exception) {
+                BackupResult(false, "Restore error: ${e.message}")
+            }
+            _syncMessage.value = result.message
+            _snackbarEvent.tryEmit(result.message)
+            _isSyncing.value = false
+        }
+    }
+
     fun downloadSttModel(model: com.omnidocs.app.stt.SttModelInfo) {
         viewModelScope.launch {
             modelDownloadManager.downloadSttModel(model)
@@ -228,6 +324,50 @@ class SettingsViewModel @Inject constructor(
             } else {
                 _snackbarEvent.tryEmit("Using system recognizer")
             }
+        }
+    }
+
+    // ---- Embedding model management ----
+
+    val embeddingModels: List<ModelInfo> = modelDownloadManager.embeddingModels
+
+    val embeddingDownloadedModels: StateFlow<List<ModelInfo>> = modelDownloadManager.embeddingDownloadState
+        .map { modelDownloadManager.getDownloadedEmbeddingModels() }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = modelDownloadManager.getDownloadedEmbeddingModels()
+        )
+
+    val embeddingDownloadState: StateFlow<DownloadState> = modelDownloadManager.embeddingDownloadState
+
+    val selectedEmbeddingModelId: StateFlow<String?> = modelPreferences.selectedEmbeddingModelId
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = null
+        )
+
+    fun downloadEmbeddingModel(model: ModelInfo) {
+        viewModelScope.launch {
+            modelDownloadManager.downloadEmbeddingModel(model)
+        }
+    }
+
+    fun deleteEmbeddingModel(model: ModelInfo) {
+        modelDownloadManager.deleteEmbeddingModel(model)
+        if (model.id == selectedEmbeddingModelId.value) {
+            viewModelScope.launch {
+                modelPreferences.setSelectedEmbeddingModelId(null)
+            }
+        }
+        _snackbarEvent.tryEmit("${model.name} deleted")
+    }
+
+    fun selectEmbeddingModel(modelId: String?) {
+        viewModelScope.launch {
+            modelPreferences.setSelectedEmbeddingModelId(modelId)
+            _snackbarEvent.tryEmit(if (modelId != null) "Embedding model selected" else "Using built-in search")
         }
     }
 }

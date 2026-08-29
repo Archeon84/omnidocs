@@ -37,9 +37,16 @@ interface NoteDao {
     @Update
     suspend fun updateNote(note: NoteEntity)
 
-    /** Soft-delete: mark as deleted instead of removing from the database */
-    @Query("UPDATE notes SET isDeleted = 1 WHERE id = :id")
-    suspend fun deleteNoteById(id: String)
+    /** Soft-delete: mark as deleted instead of removing from the database.
+     *  Records the deletion timestamp so backup restore can tell a deletion that
+     *  happened AFTER a backup (must stay deleted) from one that predates it. */
+    @Query("UPDATE notes SET isDeleted = 1, deletedAt = :deletedAt WHERE id = :id")
+    suspend fun deleteNoteById(id: String, deletedAt: Long)
+
+    /** Flip only the pinned flag — never touches content/updatedAt, so toggling
+     * pin while the editor has unsaved changes cannot clobber them. */
+    @Query("UPDATE notes SET isPinned = (CASE WHEN isPinned = 1 THEN 0 ELSE 1 END) WHERE id = :id")
+    suspend fun togglePinById(id: String)
 
     /** Hard-delete: permanently remove from the database */
     @Query("DELETE FROM notes WHERE id = :id")

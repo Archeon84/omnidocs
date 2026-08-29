@@ -30,30 +30,47 @@ class SttEngineFactory @Inject constructor(
      */
     suspend fun getEngine(): SttEngine? {
         val selectedModelId = modelPreferences.selectedSttModelId.first()
+        val sttLanguage = modelPreferences.sttLanguage.first()
+        val accuracyMode = modelPreferences.sttAccuracyMode.first()
         val downloadedModels = modelDownloadManager.getDownloadedSttModels()
+        val availableModels = downloadedModels.filter { it.isDownloaded }
+
+        Log.d(TAG, "getEngine: selected=$selectedModelId, downloaded=${availableModels.map { it.id }}, mode=$accuracyMode")
+
+        if (availableModels.isEmpty()) {
+            Log.d(TAG, "No STT model downloaded")
+            return null
+        }
 
         // Try selected model first
-        val selectedModel = downloadedModels.find { it.id == selectedModelId && it.isDownloaded }
+        val selectedModel = availableModels.find { it.id == selectedModelId }
         if (selectedModel != null) {
             val modelDir = modelDownloadManager.getSttModelPath(selectedModel)
-            if (sherpaEngine.initialize(modelDir, selectedModel)) {
+            Log.d(TAG, "Trying selected model: ${selectedModel.name} at $modelDir")
+            if (sherpaEngine.initialize(modelDir, selectedModel, sttLanguage, accuracyMode)) {
                 Log.d(TAG, "Using Sherpa-onnx with ${selectedModel.name}")
                 return sherpaEngine
             }
+            Log.w(TAG, "Failed to initialize selected model: ${selectedModel.name}")
         }
 
-        // Fall back to any downloaded model
-        val anyModel = downloadedModels.firstOrNull { it.isDownloaded }
-        if (anyModel != null) {
-            val modelDir = modelDownloadManager.getSttModelPath(anyModel)
-            if (sherpaEngine.initialize(modelDir, anyModel)) {
-                Log.d(TAG, "Using Sherpa-onnx with fallback: ${anyModel.name}")
+        // Fallback: try any other downloaded model (only auto-save selection if nothing was explicitly chosen)
+        for (model in availableModels) {
+            if (model.id == selectedModelId) continue // already tried
+            val modelDir = modelDownloadManager.getSttModelPath(model)
+            Log.d(TAG, "Trying fallback model: ${model.name} at $modelDir")
+            if (sherpaEngine.initialize(modelDir, model, sttLanguage, accuracyMode)) {
+                Log.d(TAG, "Using Sherpa-onnx with fallback: ${model.name}")
+                // Only auto-select if user had no explicit selection (null = system/default)
+                if (selectedModelId == null) {
+                    modelPreferences.setSelectedSttModelId(model.id)
+                }
                 return sherpaEngine
             }
+            Log.w(TAG, "Failed to initialize fallback model: ${model.name}")
         }
 
-        // No STT model available
-        Log.d(TAG, "No STT model downloaded, system SpeechRecognizer will be used")
+        Log.e(TAG, "All ${availableModels.size} downloaded models failed to initialize")
         return null
     }
 

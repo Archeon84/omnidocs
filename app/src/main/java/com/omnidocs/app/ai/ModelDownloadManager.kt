@@ -26,6 +26,7 @@ private val ALLOWED_DOWNLOAD_HOSTS = setOf(
     "github.com",
     "objects.githubusercontent.com",
     "github-releases.githubusercontent.com",
+    "release-assets.githubusercontent.com",
     "huggingface.co",
     "hf.co",
 )
@@ -146,45 +147,33 @@ class ModelDownloadManager @Inject constructor(
      */
     val sttModels = listOf(
         SttModelInfo(
-            id = "whisper_tiny_en",
-            name = "Whisper Tiny (English)",
-            description = "Fastest model. Good for quick voice notes in English.",
-            size = "~75 MB",
-            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.en-2023-09-14.tar.bz2",
-            fileName = "sherpa-onnx-whisper-tiny.en-2023-09-14.tar.bz2",
-            extractedDirName = "sherpa-onnx-whisper-tiny.en-2023-09-14",
-            sha256 = null,
-            languages = listOf("en"),
+            id = "whisper_small",
+            name = "Whisper Small (Multilingual)",
+            description = "Multilingual model supporting 99 languages including Malay. Good accuracy, moderate size.",
+            size = "~609 MB",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2",
+            fileName = "sherpa-onnx-whisper-small.tar.bz2",
+            extractedDirName = "sherpa-onnx-whisper-small",
+            sha256 = "486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6",
+            languages = listOf("multilingual"),
             modelType = SttModelType.WHISPER
         ),
         SttModelInfo(
-            id = "whisper_base_en",
-            name = "Whisper Base (English)",
-            description = "Better accuracy than Tiny. Good balance of speed and quality.",
-            size = "~140 MB",
-            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en-2023-09-14.tar.bz2",
-            fileName = "sherpa-onnx-whisper-base.en-2023-09-14.tar.bz2",
-            extractedDirName = "sherpa-onnx-whisper-base.en-2023-09-14",
-            sha256 = null,
-            languages = listOf("en"),
-            modelType = SttModelType.WHISPER
-        ),
-        SttModelInfo(
-            id = "whisper_small_en",
-            name = "Whisper Small (English)",
-            description = "High accuracy. Best English-only model for serious transcription.",
-            size = "~460 MB",
-            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.en-2023-09-14.tar.bz2",
-            fileName = "sherpa-onnx-whisper-small.en-2023-09-14.tar.bz2",
-            extractedDirName = "sherpa-onnx-whisper-small.en-2023-09-14",
-            sha256 = null,
-            languages = listOf("en"),
+            id = "whisper_large_v3",
+            name = "Whisper Large V3 (Multilingual)",
+            description = "Best accuracy. Supports 99 languages including Malay. Large download (~3GB).",
+            size = "~3 GB",
+            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-large-v3.tar.bz2",
+            fileName = "sherpa-onnx-whisper-large-v3.tar.bz2",
+            extractedDirName = "sherpa-onnx-whisper-large-v3",
+            sha256 = "2d0e134b3b5fc4a0533baf24a0c9d473b629aa47f030af0a165a05f461df7a03",
+            languages = listOf("multilingual"),
             modelType = SttModelType.WHISPER
         ),
         SttModelInfo(
             id = "moonshine_tiny_en",
             name = "Moonshine Tiny (English)",
-            description = "Ultra-fast, lightweight. 6.65% WER, 105x faster than Whisper Large.",
+            description = "Ultra-fast, lightweight. 105x faster than Whisper Large. English only.",
             size = "~50 MB",
             downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2",
             fileName = "sherpa-onnx-moonshine-tiny-en-int8.tar.bz2",
@@ -192,18 +181,31 @@ class ModelDownloadManager @Inject constructor(
             sha256 = null,
             languages = listOf("en"),
             modelType = SttModelType.MOONSHINE
-        ),
-        SttModelInfo(
-            id = "sense_voice_multilingual",
-            name = "SenseVoice (Multilingual)",
-            description = "Chinese, English, Japanese, Korean, Cantonese. Emotion detection.",
-            size = "~229 MB",
-            downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
-            fileName = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
-            extractedDirName = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
-            sha256 = null,
-            languages = listOf("zh", "en", "ja", "ko", "yue"),
-            modelType = SttModelType.SENSE_VOICE
+        )
+    )
+
+    /**
+     * Available offline embedding models (separate from `availableModels`, which
+     * feed `resolveActiveModel` for generation — an embedding GGUF must never be
+     * selected as a generative model). multilingual-e5-small produces 384-dim
+     * vectors and needs "query:"/"passage:" prefixes (applied in EmbeddingService).
+     *
+     * Model source: cstr/multilingual-e5-small-GGUF (standard llama.cpp conversion).
+     * This repo keeps all 1-D norm/bias tensors at F32 and quantizes only the 2-D
+     * weight matrices. Do NOT swap to fully-quantized GGUFs (e.g. the old
+     * milimyname Q8_0 build where even token_types and every bias were Q8_0): ggml's
+     * scalar binary ops only support f32/f16/bf16, so such models abort on every
+     * embed with "binary_op: unsupported types".
+     */
+    val embeddingModels = listOf(
+        ModelInfo(
+            id = "multilingual_e5_small",
+            name = "Multilingual E5 Small (Q8_0)",
+            description = "384-dim multilingual embedding model for semantic search. Covers Malay and 99+ languages.",
+            size = "~126 MB",
+            downloadUrl = "https://huggingface.co/cstr/multilingual-e5-small-GGUF/resolve/main/multilingual-e5-small-q8_0.gguf",
+            fileName = "multilingual-e5-small-q8_0.gguf",
+            sha256 = "dc5a4599f11a6f5f27ecd20f8ebcf218407d51129522e5fccb900ffab8afb96a"
         )
     )
 
@@ -216,11 +218,21 @@ class ModelDownloadManager @Inject constructor(
         }
     }
 
-    suspend fun downloadModel(model: ModelInfo) {
+    suspend fun downloadModel(model: ModelInfo) = downloadSingleGguf(model, _downloadState)
+
+    suspend fun downloadEmbeddingModel(model: ModelInfo) = downloadSingleGguf(model, _embeddingDownloadState)
+
+    /**
+     * Shared single-GGUF download: streams to a .tmp file, hashes SHA-256 during
+     * download, verifies against the expected checksum (or saves the computed one
+     * when none is configured), and publishes progress to [state]. Used by both
+     * the generative and embedding model registries.
+     */
+    private suspend fun downloadSingleGguf(model: ModelInfo, state: MutableStateFlow<DownloadState>) {
         withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "Starting download for ${model.name}")
-                _downloadState.value = DownloadState.Downloading(model.id, 0f)
+                state.value = DownloadState.Downloading(model.id, 0f)
                 downloadCancelled = false
 
                 val file = File(modelsDir, model.fileName)
@@ -234,7 +246,7 @@ class ModelDownloadManager @Inject constructor(
                 val connection = try {
                     openConnectionWithRedirectValidation(url)
                 } catch (e: SecurityException) {
-                    _downloadState.value = DownloadState.Error(model.id, e.message ?: "URL validation failed")
+                    state.value = DownloadState.Error(model.id, e.message ?: "URL validation failed")
                     return@withContext
                 }
 
@@ -242,7 +254,7 @@ class ModelDownloadManager @Inject constructor(
                 Log.d(TAG, "Response code: $responseCode")
 
                 if (responseCode != HttpURLConnection.HTTP_OK) {
-                    _downloadState.value = DownloadState.Error(model.id, "Server returned $responseCode")
+                    state.value = DownloadState.Error(model.id, "Server returned $responseCode")
                     return@withContext
                 }
 
@@ -265,7 +277,7 @@ class ModelDownloadManager @Inject constructor(
                             if (downloadCancelled) {
                                 Log.d(TAG, "Download cancelled for ${model.name}")
                                 tmpFile.delete()
-                                _downloadState.value = DownloadState.Idle
+                                state.value = DownloadState.Idle
                                 return@withContext
                             }
 
@@ -278,7 +290,7 @@ class ModelDownloadManager @Inject constructor(
                                 val progress = (totalBytes.toFloat() / fileSize.toFloat()) * 100
                                 val now = System.currentTimeMillis()
                                 if (progress - lastProgress >= 1f || now - lastEmitTime >= 100L) {
-                                    _downloadState.value = DownloadState.Downloading(model.id, progress)
+                                    state.value = DownloadState.Downloading(model.id, progress)
                                     lastProgress = progress
                                     lastEmitTime = now
                                 }
@@ -309,7 +321,7 @@ class ModelDownloadManager @Inject constructor(
                         Log.e(TAG, "Checksum mismatch! Expected: ${model.sha256}, Got: $actualSha256")
                         file.delete()
                         deleteChecksum(file)
-                        _downloadState.value = DownloadState.Error(model.id, "Checksum verification failed - file may be corrupted or tampered")
+                        state.value = DownloadState.Error(model.id, "Checksum verification failed - file may be corrupted or tampered")
                         return@withContext
                     }
                     Log.d(TAG, "Checksum verified for ${model.name}")
@@ -317,10 +329,10 @@ class ModelDownloadManager @Inject constructor(
                     Log.w(TAG, "No expected checksum configured. Actual SHA256: $actualSha256")
                 }
 
-                _downloadState.value = DownloadState.Completed(model.id)
+                state.value = DownloadState.Completed(model.id)
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed for ${model.name}", e)
-                _downloadState.value = DownloadState.Error(model.id, e.message ?: "Download failed")
+                state.value = DownloadState.Error(model.id, e.message ?: "Download failed")
             }
         }
     }
@@ -517,6 +529,38 @@ class ModelDownloadManager @Inject constructor(
 
     private fun deleteSttChecksum(model: SttModelInfo) {
         getSttChecksumFile(model).delete()
+    }
+
+    // ---- Embedding model management ----
+
+    private val _embeddingDownloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
+    val embeddingDownloadState: StateFlow<DownloadState> = _embeddingDownloadState.asStateFlow()
+
+    /**
+     * Check which embedding models are downloaded.
+     */
+    fun getDownloadedEmbeddingModels(): List<ModelInfo> {
+        return embeddingModels.map { model ->
+            val file = File(modelsDir, model.fileName)
+            model.copy(isDownloaded = file.exists() && getChecksumFile(file).exists())
+        }
+    }
+
+    /**
+     * Delete an embedding model and its checksum sidecar.
+     */
+    fun deleteEmbeddingModel(model: ModelInfo) {
+        downloadCancelled = true
+        val file = File(modelsDir, model.fileName)
+        if (file.exists()) {
+            file.delete()
+        }
+        val tmpFile = File(modelsDir, "${model.fileName}.tmp")
+        if (tmpFile.exists()) {
+            tmpFile.delete()
+        }
+        deleteChecksum(file)
+        _embeddingDownloadState.value = DownloadState.Idle
     }
 
     /**
