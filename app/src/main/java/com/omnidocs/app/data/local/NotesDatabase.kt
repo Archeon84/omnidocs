@@ -191,27 +191,70 @@ abstract class NotesDatabase : RoomDatabase() {
         }
 
         private const val KEY_LEGACY = "db_passphrase"
+        private const val KEY_KEYSTORE_ENCRYPTED = "db_passphrase_keystore_enc"
 
         /**
          * Returns a stable encryption passphrase for SQLCipher.
          *
-         * Generates a random Base64-encoded 256-bit passphrase on first run and stores it
-         * in app-private SharedPreferences. The passphrase is prefixed with "omnidocs_db_"
-         * and passed to SQLCipher via its key-derivation function.
-         *
-         * Note: The passphrase is stored in plaintext SharedPreferences (not KeyStore-wrapped)
-         * because the database file itself is already encrypted by SQLCipher's built-in
-         * encryption. The SharedPreferences are app-private and inaccessible without root.
+         * Derives or loads a 256-bit passphrase protected by AndroidKeyStore AES-256-GCM.
+         * Automatically migrates legacy plaintext preferences to hardware-backed KeyStore encryption.
          */
         private fun getEncryptionPassword(context: Context): String {
             val prefs = context.getSharedPreferences("crypto_prefs", Context.MODE_PRIVATE)
-            var passphrase = prefs.getString(KEY_LEGACY, null)
+            val keyStoreManager = try {
+                com.omnidocs.app.security.KeyStoreManager()
+            } catch (e: Exception) {
+                null
+            }
+
+            var passphrase: String? = null
+
+            // 1. Try reading KeyStore-encrypted passphrase
+            val encryptedPass = prefs.getString(KEY_KEYSTORE_ENCRYPTED, null)
+            if (encryptedPass != null && keyStoreManager != null) {
+                try {
+                    passphrase = keyStoreManager.decryptString(encryptedPass)
+                } catch (e: Exception) {
+                    // Fallback to legacy check if KeyStore decryption failed
+                }
+            }
+
+            // 2. Try migrating legacy plaintext passphrase
+            if (passphrase == null) {
+                val legacyPass = prefs.getString(KEY_LEGACY, null)
+                if (legacyPass != null) {
+                    passphrase = legacyPass
+                    if (keyStoreManager != null) {
+                        try {
+                            val enc = keyStoreManager.encryptString(legacyPass)
+                            prefs.edit()
+                                .putString(KEY_KEYSTORE_ENCRYPTED, enc)
+                                .remove(KEY_LEGACY)
+                                .apply()
+                        } catch (e: Exception) {
+                            // Non-fatal fallback
+                        }
+                    }
+                }
+            }
+
+            // 3. First-run generation
             if (passphrase == null) {
                 val bytes = ByteArray(32)
                 SecureRandom().nextBytes(bytes)
                 passphrase = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                prefs.edit().putString(KEY_LEGACY, passphrase).apply()
+                if (keyStoreManager != null) {
+                    try {
+                        val enc = keyStoreManager.encryptString(passphrase)
+                        prefs.edit().putString(KEY_KEYSTORE_ENCRYPTED, enc).apply()
+                    } catch (e: Exception) {
+                        prefs.edit().putString(KEY_LEGACY, passphrase).apply()
+                    }
+                } else {
+                    prefs.edit().putString(KEY_LEGACY, passphrase).apply()
+                }
             }
+
             return "omnidocs_db_${passphrase}"
         }
     }

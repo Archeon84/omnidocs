@@ -5,6 +5,7 @@ import androidx.work.*
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -81,6 +82,30 @@ class WorkManagerCoordinator @Inject constructor(
             request
         )
         return request.id
+    }
+
+    /**
+     * Schedules a periodic daily background health scan when battery is not low.
+     */
+    fun schedulePeriodicDailyHealthScan() {
+        val constraints = Constraints.Builder()
+            .setRequiresBatteryNotLow(true)
+            .build()
+
+        val inputData = Data.Builder()
+            .putString(AgentJobWorker.KEY_JOB_TYPE, "WORKFLOW_WORKSPACE_HEALTH_SCAN")
+            .build()
+
+        val periodicRequest = PeriodicWorkRequestBuilder<AgentJobWorker>(24, TimeUnit.HOURS)
+            .setConstraints(constraints)
+            .setInputData(inputData)
+            .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            "periodic_workspace_health_scan",
+            ExistingPeriodicWorkPolicy.KEEP,
+            periodicRequest
+        )
     }
 
     /**

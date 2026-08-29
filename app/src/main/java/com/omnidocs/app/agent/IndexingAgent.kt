@@ -9,8 +9,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Agent responsible for persisting structured [ContentBlockEntity] records,
- * computing vector embeddings via [EmbeddingService], and updating semantic indexes.
+ * Agent responsible for persisting structured [ContentBlockEntity] records with
+ * character offsets, bounding-box provenance, and updating semantic vector embeddings.
  */
 @Singleton
 class IndexingAgent @Inject constructor(
@@ -59,6 +59,8 @@ class IndexingAgent @Inject constructor(
                 pageNumber = if (obj.has("pageNumber")) obj.getInt("pageNumber") else null,
                 startOffset = if (obj.has("startOffset")) obj.getInt("startOffset") else null,
                 endOffset = if (obj.has("endOffset")) obj.getInt("endOffset") else null,
+                boundingBoxJson = obj.optString("boundingBoxJson").takeIf { it.isNotBlank() },
+                confidence = if (obj.has("confidence")) obj.getDouble("confidence").toFloat() else null,
                 createdAt = now
             )
             contentBlocks.add(block)
