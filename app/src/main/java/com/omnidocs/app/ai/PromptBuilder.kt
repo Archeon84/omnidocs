@@ -23,12 +23,11 @@ object PromptBuilder {
         val imE = "<|im_end|>"
         return imS + "system" + NL + systemPrompt + imE + NL +
                imS + "user" + NL + userPrompt + imE + NL +
-               imS + "assistant" + NL + "/no_think" + NL
+               imS + "assistant" + NL
     }
 
     private fun buildLlama3(systemPrompt: String, userPrompt: String): String {
-        return "<|begin_of_text|>" +
-               "<|start_header_id|>system<|end_header_id|>" + NL2 +
+        return "<|start_header_id|>system<|end_header_id|>" + NL2 +
                systemPrompt + "<|eot_id|>" +
                "<|start_header_id|>user<|end_header_id|>" + NL2 +
                userPrompt + "<|eot_id|>" +

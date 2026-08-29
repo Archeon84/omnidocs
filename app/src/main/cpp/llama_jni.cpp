@@ -209,6 +209,15 @@ extern "C" {
                 return env->NewStringUTF("");
             }
 
+            // Context limit guard (n_ctx = 2048): truncate prompt if too long to prevent decode crash
+            const int max_ctx = 2048;
+            const int max_prompt_tokens = max_ctx - 128;
+            if (n_tokenized > max_prompt_tokens) {
+                LOGI("Prompt tokens (%d) exceed safe limit (%d), truncating tokens", n_tokenized, max_prompt_tokens);
+                n_tokenized = max_prompt_tokens;
+                tokens.resize(n_tokenized);
+            }
+
             // ── Evaluate prompt ──────────────────────────────────────────────
             // Clear KV cache so each generate() call starts fresh — otherwise
             // residual KV entries from a prior call pollute the new inference.
@@ -317,6 +326,12 @@ extern "C" {
             int n_past = n_tokenized;
 
             for (int i = 0; i < maxTokens; i++) {
+                // Ensure we never exceed context size (2048) to prevent assertion / memory corruption
+                if (n_past >= max_ctx - 2) {
+                    LOGI("Generation reached context ceiling (%d tokens)", n_past);
+                    break;
+                }
+
                 // C++-side safety timeout: 180 seconds total generation time
                 // (increased from 90s because Qwen3 generates thinking tokens
                 // that eat into the time budget before the actual answer)

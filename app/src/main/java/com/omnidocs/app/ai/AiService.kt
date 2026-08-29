@@ -38,6 +38,29 @@ class AiService @Inject constructor(
     }
 
     /**
+     * Map language code to full readable language name for prompt clarity.
+     */
+    private fun getLanguageName(code: String): String {
+        return when (code.lowercase()) {
+            "en" -> "English"
+            "ms" -> "Bahasa Melayu"
+            "zh" -> "Chinese"
+            "ja" -> "Japanese"
+            "ko" -> "Korean"
+            "ar" -> "Arabic"
+            "hi" -> "Hindi"
+            "fr" -> "French"
+            "de" -> "German"
+            "es" -> "Spanish"
+            "ru" -> "Russian"
+            "id" -> "Indonesian"
+            "th" -> "Thai"
+            "vi" -> "Vietnamese"
+            else -> "English"
+        }
+    }
+
+    /**
      * Build a prompt using the active model's prompt format.
      */
     private suspend fun buildPrompt(
@@ -46,28 +69,27 @@ class AiService @Inject constructor(
         task: String
     ): String? {
         val model = getActiveModel() ?: return null
-        val langInstruction = if (language != "en") "\nRespond in $language language." else ""
+        val langName = getLanguageName(language)
+        val langInstruction = if (language != "en") "\nEnsure the output is written in $langName." else ""
 
         val (systemPrompt, userPrompt) = when (task) {
             "summarize" -> Pair(
-                "You are an expert summarizer. Your task is to create a well-structured, bullet-point summary of the given text.\n\n" +
-                "Rules:\n" +
-                "- Use clear, concise bullet points (start each line with •)\n" +
-                "- Group related ideas under descriptive sub-headings (bold text with **heading**)\n" +
-                "- Capture ALL key facts, figures, names, dates, and conclusions\n" +
-                "- Preserve technical accuracy — do not generalize or add information not in the original\n" +
-                "- Use 5–15 bullet points depending on text length and complexity\n" +
-                "- End with a one-line **Key Takeaway** summarizing the single most important point\n" +
-                "- Output only the structured summary, nothing else$langInstruction",
-                "Create a structured bullet-point summary of the following text:\n\n${truncateText(text)}"
+                "You are an expert summarizer. Your task is to produce a clean, structured summary of the text.\n\n" +
+                "Format rules:\n" +
+                "• Start each point with '• '\n" +
+                "• Group points under bold headers (e.g. **Key Insights**, **Action Items**)\n" +
+                "• Capture core facts, names, figures, and conclusions accurately\n" +
+                "• End with a one-line '**Key Takeaway**'\n" +
+                "• Output only the structured summary with no preamble or conversational filler$langInstruction",
+                "Summarize the following text in $langName:\n\n${truncateText(text)}"
             )
             "proofread" -> Pair(
-                "You are a professional proofreader and editor. Correct ALL grammar, spelling, punctuation, and improve clarity. Keep the original meaning intact. You MUST output the COMPLETE corrected text — do not summarize, abbreviate, or skip any part. Output the full corrected text only, nothing else.$langInstruction",
-                "Proofread and correct the ENTIRE following text. Output every sentence, do not skip or shorten anything:\n\n${truncateText(text)}"
+                "You are an expert proofreader and editor. Fix all spelling, grammar, punctuation, and phrasing errors while strictly preserving the original meaning, tone, and paragraph structure. Do not add introductory remarks, explanations, or notes. Output only the complete corrected text.$langInstruction",
+                "Proofread and correct the following text in $langName:\n\n${truncateText(text)}"
             )
             "rewrite" -> Pair(
-                "You are a professional writer. Rewrite the ENTIRE text to be clearer, more eloquent, and better structured while preserving the original meaning. You MUST output the COMPLETE rewritten text — do not summarize, abbreviate, or skip any part. Output the full rewritten text only, nothing else.$langInstruction",
-                "Rewrite the ENTIRE following text. Output every sentence, do not skip or shorten anything:\n\n${truncateText(text)}"
+                "You are a professional writer. Rewrite the text to improve clarity, flow, vocabulary, and conciseness while preserving all core facts and intent. Do not add conversational preamble or explanations. Output only the rewritten text directly.$langInstruction",
+                "Rewrite the following text for improved clarity and flow in $langName:\n\n${truncateText(text)}"
             )
             else -> return null
         }
@@ -76,12 +98,12 @@ class AiService @Inject constructor(
     }
 
     /**
-     * Truncate input text to a reasonable length for on-device inference.
+     * Truncate input text to a reasonable length for on-device inference (fits 2048 token context).
      */
     private fun truncateText(text: String): String {
-        val maxChars = 4000
+        val maxChars = 2000
         if (text.length <= maxChars) return text
-        return text.take(maxChars) + "\n\n[Text truncated — showing first $maxChars characters]"
+        return text.take(maxChars) + "\n\n[Text truncated for on-device processing]"
     }
 
     suspend fun summarize(text: String, language: String): String? {
@@ -95,7 +117,7 @@ class AiService @Inject constructor(
             val prompt = buildPrompt(text, language, "summarize") ?: return null
             val model = getActiveModel()
             Log.d(TAG, "Running summarize with ${model?.name ?: "unknown"} (lang=$language)")
-            val result = llamaCppService.generate(prompt, maxTokens = 1500)
+            val result = llamaCppService.generate(prompt, maxTokens = 600)
             val processed = result?.let { AiOutputProcessor.process(it) }
             Log.d(TAG, "Summarize result: ${processed?.take(50)}...")
             processed
@@ -116,7 +138,7 @@ class AiService @Inject constructor(
             val prompt = buildPrompt(text, language, "proofread") ?: return null
             val model = getActiveModel()
             Log.d(TAG, "Running proofread with ${model?.name ?: "unknown"} (lang=$language)")
-            val result = llamaCppService.generate(prompt, maxTokens = 1500)
+            val result = llamaCppService.generate(prompt, maxTokens = 800)
             val processed = result?.let { AiOutputProcessor.process(it) }
             Log.d(TAG, "Proofread result: ${processed?.take(50)}...")
             processed
@@ -137,7 +159,7 @@ class AiService @Inject constructor(
             val prompt = buildPrompt(text, language, "rewrite") ?: return null
             val model = getActiveModel()
             Log.d(TAG, "Running rewrite with ${model?.name ?: "unknown"} (lang=$language)")
-            val result = llamaCppService.generate(prompt, maxTokens = 1500)
+            val result = llamaCppService.generate(prompt, maxTokens = 800)
             val processed = result?.let { AiOutputProcessor.process(it) }
             Log.d(TAG, "Rewrite result: ${processed?.take(50)}...")
             processed

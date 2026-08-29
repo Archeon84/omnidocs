@@ -47,6 +47,10 @@ class LlamaCppService @Inject constructor(
     fun isNativeLibLoaded(): Boolean = nativeLibLoaded
 
     suspend fun loadModel(modelId: String? = null): Boolean {
+        if (!nativeLibLoaded) {
+            Log.e(TAG, "Cannot load model: native library not loaded")
+            return false
+        }
         // Prevent re-entrant loads: if a previous loadModel() call is still in
         // flight (e.g. blocked in JNI), return immediately rather than stacking
         // another IO thread that will deadlock on the C++ timed_mutex.
@@ -116,6 +120,10 @@ class LlamaCppService @Inject constructor(
     }
 
     suspend fun generate(prompt: String, maxTokens: Int = 128): String? {
+        if (!nativeLibLoaded) {
+            Log.e(TAG, "Cannot generate: native library not loaded")
+            return null
+        }
         // If a model load is already in progress (from a previous generate call
         // that timed out), don't stack another call — return null immediately.
         // The loading thread may be stuck in JNI and holding the C++ timed_mutex.
