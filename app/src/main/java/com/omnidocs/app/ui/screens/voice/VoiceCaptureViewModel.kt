@@ -26,6 +26,7 @@ class VoiceCaptureViewModel @Inject constructor(
     val transcript: StateFlow<String> = voiceCaptureManager.transcript
     val isListening: StateFlow<Boolean> = voiceCaptureManager.isListening
     val error: StateFlow<String?> = voiceCaptureManager.error
+    val liveAudioLevel: StateFlow<Float> = voiceCaptureManager.liveAudioLevel
 
     private val _isStructuring = MutableStateFlow(false)
     val isStructuring: StateFlow<Boolean> = _isStructuring.asStateFlow()

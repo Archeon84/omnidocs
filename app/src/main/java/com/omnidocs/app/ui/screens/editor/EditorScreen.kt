@@ -189,6 +189,12 @@ fun EditorScreen(
     var showIntelligencePanel by remember { mutableStateOf(false) }
     var selectedText by remember { mutableStateOf("") }
 
+    // OCR Provenance & Bounding Boxes state
+    val contentBlocks by viewModel.contentBlocks.collectAsState()
+    val hasOcrBlocks by viewModel.hasOcrBlocks.collectAsState()
+    val showOcrInspector by viewModel.showOcrInspector.collectAsState()
+    val selectedBlockIndex by viewModel.selectedBlockIndex.collectAsState()
+
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
     val snackbarHostState = remember { SnackbarHostState() }
@@ -390,6 +396,18 @@ fun EditorScreen(
                             modifier = Modifier.padding(8.dp).size(18.dp)
                         )
                     }
+
+                    // OCR Provenance Inspector button
+                    if (hasOcrBlocks) {
+                        IconButton(onClick = { viewModel.openOcrInspector() }) {
+                            Icon(
+                                imageVector = Icons.Default.DocumentScanner,
+                                contentDescription = "OCR Bounding Boxes",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
                     // Save indicator
                     if (isSaving) {
                         CircularProgressIndicator(
@@ -425,6 +443,13 @@ fun EditorScreen(
                                 onClick = { showOverflowMenu = false; onOcrClick() },
                                 leadingIcon = { Icon(Icons.Default.DocumentScanner, null) }
                             )
+                            if (hasOcrBlocks) {
+                                DropdownMenuItem(
+                                    text = { Text("OCR Bounding Boxes (${contentBlocks.size})") },
+                                    onClick = { showOverflowMenu = false; viewModel.openOcrInspector() },
+                                    leadingIcon = { Icon(Icons.Default.DocumentScanner, null) }
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("Export markdown") },
                                 onClick = { showOverflowMenu = false; viewModel.exportAsMarkdown(context) },
@@ -816,6 +841,17 @@ fun EditorScreen(
             concepts = intelligenceConcepts,
             onCreateNote = { name, desc -> viewModel.createNoteFromConcept(name, desc) },
             onDismiss = { viewModel.dismissConceptDialog() }
+        )
+    }
+
+    // OCR Bounding Box Inspector Sheet
+    if (showOcrInspector) {
+        OcrBoundingBoxInspectorSheet(
+            imageUrl = currentNote?.imageUrl,
+            contentBlocks = contentBlocks,
+            selectedIndex = selectedBlockIndex,
+            onSelectBlock = { viewModel.selectBlock(it) },
+            onDismiss = { viewModel.closeOcrInspector() }
         )
     }
 }

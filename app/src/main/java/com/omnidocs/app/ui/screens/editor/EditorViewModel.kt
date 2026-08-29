@@ -3,7 +3,9 @@ package com.omnidocs.app.ui.screens.editor
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.data.local.ContentBlockDao
 import com.omnidocs.app.data.local.RecordingDao
+import com.omnidocs.app.data.local.entity.ContentBlockEntity
 import com.omnidocs.app.data.local.entity.RecordingEntity
 import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.ai.AiService
@@ -43,7 +45,8 @@ class EditorViewModel @Inject constructor(
     private val noteIntelligenceService: NoteIntelligenceService,
     private val evidenceExtractor: EvidenceExtractor,
     private val recordingDao: RecordingDao,
-    private val audioPlaybackController: AudioPlaybackController
+    private val audioPlaybackController: AudioPlaybackController,
+    private val contentBlockDao: ContentBlockDao
 ) : ViewModel() {
 
     private val _currentNote = MutableStateFlow<Note?>(null)
@@ -119,6 +122,33 @@ class EditorViewModel @Inject constructor(
 
     private val _showConceptDialog = MutableStateFlow(false)
     val showConceptDialog: StateFlow<Boolean> = _showConceptDialog.asStateFlow()
+
+    // ── OCR Provenance & Content Blocks ───────────────────────────────────
+    private val _contentBlocks = MutableStateFlow<List<ContentBlockEntity>>(emptyList())
+    val contentBlocks: StateFlow<List<ContentBlockEntity>> = _contentBlocks.asStateFlow()
+
+    val hasOcrBlocks: StateFlow<Boolean> = _contentBlocks.map { blocks ->
+        blocks.any { it.boundingBoxJson != null }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    private val _showOcrInspector = MutableStateFlow(false)
+    val showOcrInspector: StateFlow<Boolean> = _showOcrInspector.asStateFlow()
+
+    private val _selectedBlockIndex = MutableStateFlow<Int?>(null)
+    val selectedBlockIndex: StateFlow<Int?> = _selectedBlockIndex.asStateFlow()
+
+    fun openOcrInspector() {
+        _showOcrInspector.value = true
+    }
+
+    fun closeOcrInspector() {
+        _showOcrInspector.value = false
+        _selectedBlockIndex.value = null
+    }
+
+    fun selectBlock(index: Int?) {
+        _selectedBlockIndex.value = index
+    }
 
     private var autoSaveJob: Job? = null
     private var noteLoadJob: Job? = null
@@ -251,6 +281,13 @@ class EditorViewModel @Inject constructor(
         viewModelScope.launch {
             recordingDao.getRecordingsByNoteId(noteId).collect { recordings ->
                 _recordings.value = recordings
+            }
+        }
+
+        // Load content blocks with OCR bounding boxes belonging to this note.
+        viewModelScope.launch {
+            contentBlockDao.getBlocksForNote(noteId).collect { blocks ->
+                _contentBlocks.value = blocks
             }
         }
     }

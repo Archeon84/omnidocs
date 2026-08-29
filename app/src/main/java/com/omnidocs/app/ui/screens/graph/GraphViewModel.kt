@@ -1,5 +1,6 @@
 package com.omnidocs.app.ui.screens.graph
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.agent.AgentContext
@@ -9,6 +10,8 @@ import com.omnidocs.app.agent.ContradictionDetectionAgent
 import com.omnidocs.app.agent.IdeaEvolutionAgent
 import com.omnidocs.app.graph.GraphData
 import com.omnidocs.app.graph.GraphEngine
+import com.omnidocs.app.graph.GraphExportFormat
+import com.omnidocs.app.graph.GraphExportService
 import com.omnidocs.app.knowledge.IdeaEvolution
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +34,8 @@ data class ContradictionItem(
 class GraphViewModel @Inject constructor(
     private val graphEngine: GraphEngine,
     private val contradictionDetectionAgent: ContradictionDetectionAgent,
-    private val ideaEvolutionAgent: IdeaEvolutionAgent
+    private val ideaEvolutionAgent: IdeaEvolutionAgent,
+    private val graphExportService: GraphExportService
 ) : ViewModel() {
 
     private val _graphData = MutableStateFlow<GraphData?>(null)
@@ -128,5 +132,17 @@ class GraphViewModel @Inject constructor(
 
     fun rebuildGraph() {
         buildGraph()
+    }
+
+    fun exportGraphml(context: Context) {
+        val data = _graphData.value ?: return
+        val content = graphExportService.exportToGraphML(data, _contradictions.value)
+        graphExportService.shareExportedGraph(context, GraphExportFormat.GRAPHML, content)
+    }
+
+    fun exportJsonLd(context: Context) {
+        val data = _graphData.value ?: return
+        val content = graphExportService.exportToJsonLd(data, _contradictions.value)
+        graphExportService.shareExportedGraph(context, GraphExportFormat.JSON_LD, content)
     }
 }

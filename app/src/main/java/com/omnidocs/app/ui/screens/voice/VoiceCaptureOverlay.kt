@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,6 +19,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -37,6 +42,7 @@ fun VoiceCaptureOverlay(
 ) {
     val transcript by viewModel.transcript.collectAsState()
     val isListening by viewModel.isListening.collectAsState()
+    val liveAudioLevel by viewModel.liveAudioLevel.collectAsState()
     val error by viewModel.error.collectAsState()
     val isStructuring by viewModel.isStructuring.collectAsState()
     val savedNoteId by viewModel.savedNoteId.collectAsState()
@@ -106,19 +112,50 @@ fun VoiceCaptureOverlay(
             Spacer(modifier = Modifier.height(32.dp))
 
             // Status text
-            Text(
-                text = when {
-                    isStructuring -> "Structuring your note..."
-                    isListening -> "Listening..."
-                    transcript.isEmpty() -> "Tap to start recording"
-                    else -> "Review your transcript"
-                },
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = when {
+                        isStructuring -> "Structuring your note..."
+                        isListening -> "Live Whisper Transcription"
+                        transcript.isEmpty() -> "Tap to start recording"
+                        else -> "Review your transcript"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+                if (isListening) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(8.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.error
+                        ) {}
+                        Text(
+                            text = "Streaming live speech...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Real-time audio waveform visualizer
+            AudioWaveformVisualizer(
+                audioLevel = liveAudioLevel,
+                isListening = isListening,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Recording button
             Box(contentAlignment = Alignment.Center) {
@@ -256,6 +293,62 @@ fun VoiceCaptureOverlay(
                         .padding(horizontal = 32.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun AudioWaveformVisualizer(
+    audioLevel: Float,
+    isListening: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val barCount = 15
+    val infiniteTransition = rememberInfiniteTransition(label = "waveform_anim")
+    val animatedPhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6.28f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "phase"
+    )
+
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val errorColor = MaterialTheme.colorScheme.error
+
+    Canvas(modifier = modifier) {
+        val totalWidth = size.width
+        val totalHeight = size.height
+        val barWidth = 6.dp.toPx()
+        val spacing = (totalWidth - (barCount * barWidth)) / (barCount - 1).coerceAtLeast(1)
+        val minHeight = 4.dp.toPx()
+
+        for (i in 0 until barCount) {
+            val centerFactor = 1f - kotlin.math.abs(i - (barCount / 2)) / (barCount / 2f)
+            val waveMod = if (isListening) {
+                (kotlin.math.sin(animatedPhase + i * 0.45f) * 0.35f + 0.65f).toFloat()
+            } else {
+                0.15f
+            }
+
+            val dynamicHeight = if (isListening) {
+                val level = (audioLevel * 0.8f + 0.2f) * centerFactor * waveMod
+                (totalHeight * level).coerceIn(minHeight, totalHeight)
+            } else {
+                minHeight
+            }
+
+            val x = i * (barWidth + spacing)
+            val y = (totalHeight - dynamicHeight) / 2f
+
+            drawRoundRect(
+                color = if (isListening) errorColor else primaryColor.copy(alpha = 0.3f),
+                topLeft = Offset(x, y),
+                size = Size(barWidth, dynamicHeight),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
+            )
         }
     }
 }

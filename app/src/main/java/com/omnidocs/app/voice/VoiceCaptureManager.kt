@@ -77,6 +77,9 @@ class VoiceCaptureManager @Inject constructor(
     private val _engineType = MutableStateFlow("system")
     val engineType: StateFlow<String> = _engineType.asStateFlow()
 
+    private val _liveAudioLevel = MutableStateFlow(0f)
+    val liveAudioLevel: StateFlow<Float> = _liveAudioLevel.asStateFlow()
+
     /** Result of a recording session, available after stopListening(). */
     data class RecordingResult(
         val storageKey: String,
@@ -175,6 +178,17 @@ class VoiceCaptureManager @Inject constructor(
                     },
                     onAudio = { bytes ->
                         synchronized(audioBuffer) { audioBuffer.write(bytes) }
+                        if (bytes.isNotEmpty()) {
+                            var sum = 0.0
+                            val sampleCount = bytes.size / 2
+                            for (i in 0 until sampleCount) {
+                                val sample = (bytes[i * 2].toInt() and 0xFF) or (bytes[i * 2 + 1].toInt() shl 8)
+                                val normalized = sample.toShort().toFloat() / 32768f
+                                sum += normalized * normalized
+                            }
+                            val rms = kotlin.math.sqrt(sum / sampleCount).toFloat()
+                            _liveAudioLevel.value = (rms * 3.5f).coerceIn(0f, 1f)
+                        }
                     }
                 )
             } else {
@@ -198,7 +212,11 @@ class VoiceCaptureManager @Inject constructor(
                 }
 
                 override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onRmsChanged(rmsdB: Float) {
+                    if (!isCurrentSession()) return
+                    val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+                    _liveAudioLevel.value = normalized
+                }
                 override fun onBufferReceived(buffer: ByteArray?) {
                     // Persist the mic audio the system recognizer captured so the
                     // saved recording is not empty.
@@ -301,6 +319,7 @@ class VoiceCaptureManager @Inject constructor(
             }
         }
         _isListening.value = false
+        _liveAudioLevel.value = 0f
 
         if (finalText.isNotBlank()) {
             // Accumulate across Record More sessions; audio persistence is
@@ -320,6 +339,7 @@ class VoiceCaptureManager @Inject constructor(
         synchronized(audioBuffer) { audioBuffer.reset() }
         lastRecordingResult = null
         _transcript.value = ""
+        _liveAudioLevel.value = 0f
         _error.value = null
     }
 

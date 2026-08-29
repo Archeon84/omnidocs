@@ -42,7 +42,9 @@ fun GraphScreen(
     val error by viewModel.error.collectAsState()
     var webView by remember { mutableStateOf<WebView?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
+    var showExportMenu by remember { mutableStateOf(false) }
     val colorScheme = MaterialTheme.colorScheme
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     fun buildGraphJson(data: GraphData): String {
         return JSONObject().apply {
@@ -110,6 +112,32 @@ fun GraphScreen(
                 actions = {
                     IconButton(onClick = { viewModel.rebuildGraph() }) {
                         Icon(Icons.Default.Refresh, "Rebuild Graph")
+                    }
+                    Box {
+                        IconButton(onClick = { showExportMenu = true }) {
+                            Icon(Icons.Default.Share, contentDescription = "Export Graph")
+                        }
+                        DropdownMenu(
+                            expanded = showExportMenu,
+                            onDismissRequest = { showExportMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Export GraphML (.graphml)") },
+                                onClick = {
+                                    showExportMenu = false
+                                    viewModel.exportGraphml(context)
+                                },
+                                leadingIcon = { Icon(Icons.Default.FileDownload, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export JSON-LD (.jsonld)") },
+                                onClick = {
+                                    showExportMenu = false
+                                    viewModel.exportJsonLd(context)
+                                },
+                                leadingIcon = { Icon(Icons.Default.Code, null) }
+                            )
+                        }
                     }
                 }
             )
