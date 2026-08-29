@@ -37,9 +37,13 @@ import com.omnidocs.app.ui.theme.screenPopExitTransition
 
 sealed class Screen(val route: String) {
     object Home : Screen("home")
-    object Editor : Screen("editor?noteId={noteId}") {
-        fun createRoute(noteId: String? = null): String {
-            return if (noteId != null) "editor?noteId=$noteId" else "editor"
+    object Editor : Screen("editor?noteId={noteId}&highlight={highlight}") {
+        fun createRoute(noteId: String? = null, highlight: String? = null): String {
+            return when {
+                noteId != null && highlight != null -> "editor?noteId=$noteId&highlight=${android.net.Uri.encode(highlight)}"
+                noteId != null -> "editor?noteId=$noteId"
+                else -> "editor"
+            }
         }
     }
     object Ocr : Screen("ocr")
@@ -139,6 +143,11 @@ fun NotesNavHost(
                     type = NavType.StringType
                     nullable = true
                     defaultValue = null
+                },
+                navArgument("highlight") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
                 }
             ),
             enterTransition = {
@@ -171,8 +180,10 @@ fun NotesNavHost(
             }
         ) { backStackEntry ->
             val noteId = backStackEntry.arguments?.getString("noteId")
+            val highlight = backStackEntry.arguments?.getString("highlight")
             EditorScreen(
                 noteId = noteId,
+                highlightText = highlight,
                 onNavigateBack = {
                     navController.popBackStack()
                 },
@@ -310,7 +321,9 @@ fun NotesNavHost(
         ) {
             AskNotesScreen(
                 onNavigateBack = { navController.popBackStack() },
-                onSourceClick = { noteId -> navController.navigate(Screen.Editor.createRoute(noteId)) }
+                onSourceClick = { noteId, snippet ->
+                    navController.navigate(Screen.Editor.createRoute(noteId, snippet))
+                }
             )
         }
 

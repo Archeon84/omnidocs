@@ -48,6 +48,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -153,6 +154,7 @@ fun EditorScreen(
     onNavigateBack: () -> Unit,
     onOcrClick: () -> Unit,
     navController: NavController,
+    highlightText: String? = null,
     viewModel: EditorViewModel = hiltViewModel()
 ) {
     val currentNote by viewModel.currentNote.collectAsState()
@@ -175,6 +177,7 @@ fun EditorScreen(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var formatState by remember { mutableStateOf(FormatState()) }
     var isEditorFocused by remember { mutableStateOf(false) }
+    var highlightDismissed by remember { mutableStateOf(false) }
     var contentReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { contentReady = true }
 
@@ -466,6 +469,57 @@ fun EditorScreen(
                             shape = SegmentedButtonDefaults.itemShape(index = index, count = EditorMode.entries.size)
                         ) {
                             Text(mode.name, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+
+            // Evidence Provenance Citation Banner
+            AnimatedVisibility(
+                visible = !highlightDismissed && !highlightText.isNullOrBlank(),
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Cited Evidence",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Verified Citation Grounding",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "\"${highlightText?.take(100)}...\"",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                            )
+                        }
+                        IconButton(
+                            onClick = { highlightDismissed = true },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
                     }
                 }

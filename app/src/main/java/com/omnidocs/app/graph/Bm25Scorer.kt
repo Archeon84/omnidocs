@@ -3,8 +3,8 @@ package com.omnidocs.app.graph
 import kotlin.math.ln
 
 /**
- * BM25 scoring utility for text relevance.
- * Used by [GraphEngine] to find candidate note pairs for the knowledge graph.
+ * BM25 scoring utility for text relevance supporting English, Malay, and CJK multilingual text.
+ * Used by [GraphEngine] and vector/hybrid search to score candidate document relevance.
  * Pure Kotlin, no Android dependencies.
  */
 object Bm25Scorer {
@@ -34,13 +34,37 @@ object Bm25Scorer {
     )
 
     /**
-     * Tokenize text into lowercase terms, stripping punctuation and stop words.
+     * Tokenize text into lowercase terms, supporting Latin words and CJK unigrams/bigrams.
      */
     fun tokenize(text: String): List<String> {
-        return text.lowercase()
-            .replace(Regex("[^a-z0-9\\s]"), "")
+        val tokens = mutableListOf<String>()
+        val cleaned = text.lowercase()
+
+        // 1. Extract space-separated Latin/alphanumeric words
+        val latinWords = cleaned.replace(Regex("[^a-z0-9\\s]"), " ")
             .split(Regex("\\s+"))
             .filter { it.length > 2 && it !in STOP_WORDS }
+        tokens.addAll(latinWords)
+
+        // 2. Extract CJK unigrams and bigrams for Chinese, Japanese, and Korean
+        val cjkChars = StringBuilder()
+        for (char in cleaned) {
+            val code = char.code
+            val isCjk = code in 0x4E00..0x9FFF || code in 0x3040..0x30FF || code in 0xAC00..0xD7AF
+            if (isCjk) {
+                tokens.add(char.toString())
+                cjkChars.append(char)
+            }
+        }
+
+        // CJK Bigrams
+        if (cjkChars.length >= 2) {
+            for (i in 0 until cjkChars.length - 1) {
+                tokens.add(cjkChars.substring(i, i + 2))
+            }
+        }
+
+        return tokens
     }
 
     /**
@@ -67,13 +91,6 @@ object Bm25Scorer {
 
     /**
      * Compute BM25 score of query terms against a document.
-     *
-     * @param queryTerms terms to score (typically top-N terms from a note)
-     * @param docTermFreqs term frequencies in the target document
-     * @param docLength number of tokens in the target document
-     * @param avgDocLength average document length across the corpus
-     * @param idf precomputed IDF values
-     * @return BM25 score (higher = more relevant)
      */
     fun score(
         queryTerms: List<String>,
@@ -83,12 +100,13 @@ object Bm25Scorer {
         idf: Map<String, Float>
     ): Float {
         var totalScore = 0f
+        val safeAvgLength = if (avgDocLength > 0f) avgDocLength else 1f
 
         for (term in queryTerms) {
             val tf = docTermFreqs[term] ?: continue
             val termIdf = idf[term] ?: continue
 
-            val tfNorm = (tf * (K1 + 1)) / (tf + K1 * (1 - B + B * docLength / avgDocLength))
+            val tfNorm = (tf * (K1 + 1)) / (tf + K1 * (1 - B + B * docLength / safeAvgLength))
             totalScore += termIdf * tfNorm
         }
 

@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.ui.components.IngestionReviewSheet
 import com.omnidocs.app.ui.components.OmniBottomNavBar
 import com.omnidocs.app.ui.components.BottomNavItem
 import com.omnidocs.app.ui.components.ShimmerGrid
@@ -130,6 +131,7 @@ fun HomeScreen(
     val selectedNoteIds by viewModel.selectedNoteIds.collectAsState()
     val currentTheme by viewModel.currentTheme.collectAsState()
     val loadError by viewModel.loadError.collectAsState()
+    val pendingReview by viewModel.pendingReview.collectAsState()
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
     var showImportMenu by remember { mutableStateOf(false) }
@@ -802,6 +804,19 @@ fun HomeScreen(
             onShareDoc = {
                 viewModel.shareSelectedNotes("doc")
                 showShareDialog = false
+            }
+        )
+    }
+
+    // Ingestion Human Review Sheet
+    pendingReview?.let { pending ->
+        IngestionReviewSheet(
+            reviewState = pending.reviewState,
+            onConfirm = { confirmedTitle, confirmedTags, selectedTasks ->
+                viewModel.confirmImport(pending, confirmedTitle, confirmedTags, selectedTasks)
+            },
+            onDismiss = {
+                viewModel.dismissImportReview()
             }
         )
     }

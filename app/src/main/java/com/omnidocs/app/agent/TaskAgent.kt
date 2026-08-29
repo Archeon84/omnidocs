@@ -119,17 +119,25 @@ JSON:"""
     private fun heuristicExtractTasks(text: String): List<ExtractedTask> {
         val patterns = listOf(
             Regex("(?i)\\b(todo|action item|task|must|perlu|sila|need to):?\\s*(.+)"),
-            Regex("(?i)^\\[ \\]\\s*(.+)")
+            Regex("(?i)^\\[[ x]?\\]\\s*(.+)")
         )
         val list = mutableListOf<ExtractedTask>()
         for (line in text.lines()) {
-            val trimmed = line.trim()
-            for (p in patterns) {
-                val match = p.find(trimmed)
-                if (match != null) {
-                    val title = match.groupValues.last().trim()
-                    if (title.length in 3..120) {
-                        list.add(ExtractedTask(title = title))
+            val trimmedLine = line.trim()
+            if (trimmedLine.isBlank()) continue
+
+            val sentences = trimmedLine.split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }
+            val units = if (sentences.size > 1) listOf(trimmedLine) + sentences else listOf(trimmedLine)
+
+            for (unit in units) {
+                val clean = unit.trim().trimEnd('.', ';', '!', '?')
+                for (p in patterns) {
+                    val match = p.find(clean)
+                    if (match != null) {
+                        val title = match.groupValues.last().trim()
+                        if (title.length in 3..120) {
+                            list.add(ExtractedTask(title = title))
+                        }
                     }
                 }
             }

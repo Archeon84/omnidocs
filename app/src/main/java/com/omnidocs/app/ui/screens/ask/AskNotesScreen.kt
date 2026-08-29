@@ -27,7 +27,7 @@ import com.omnidocs.app.agent.Citation
 @Composable
 fun AskNotesScreen(
     onNavigateBack: () -> Unit,
-    onSourceClick: (String) -> Unit,
+    onSourceClick: (noteId: String, snippet: String?) -> Unit,
     viewModel: AskNotesViewModel = hiltViewModel()
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -171,7 +171,7 @@ fun AskNotesScreen(
 }
 
 @Composable
-private fun AskRound(message: GroundedAskMessage, onSourceClick: (String) -> Unit) {
+private fun AskRound(message: GroundedAskMessage, onSourceClick: (noteId: String, snippet: String?) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         // Question bubble (right-aligned)
         Surface(
@@ -275,7 +275,7 @@ private fun AskRound(message: GroundedAskMessage, onSourceClick: (String) -> Uni
                 fontWeight = FontWeight.SemiBold
             )
             message.citations.forEach { citation ->
-                CitationItem(citation = citation, onClick = { onSourceClick(citation.noteId) })
+                CitationItem(citation = citation, onClick = { onSourceClick(citation.noteId, citation.quoteSnippet) })
             }
         }
     }
