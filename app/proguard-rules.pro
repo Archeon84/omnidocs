@@ -126,3 +126,13 @@
 
 # ---- Keep custom Application class ----
 -keep class * extends android.app.Application { *; }
+
+# ---- OmniDocs Evidence-First Domain & Agent Tool Models ----
+-keep class com.omnidocs.app.study.** { *; }
+-keep class com.omnidocs.app.calendar.** { *; }
+-keep class com.omnidocs.app.email.** { *; }
+-keep class com.omnidocs.app.sync.** { *; }
+-keep class com.omnidocs.app.vocabulary.** { *; }
+-keep class com.omnidocs.app.agent.AgentTool** { *; }
+-keep interface com.omnidocs.app.agent.AgentTool { *; }
+
