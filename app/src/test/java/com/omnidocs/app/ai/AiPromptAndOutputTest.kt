@@ -64,4 +64,22 @@ class AiPromptAndOutputTest {
         assertFalse(processed.endsWith("```"))
         assertTrue(processed.contains("• **Summary Item 1**"))
     }
+
+    @Test
+    fun testAiOutputProcessor_stripsConversationalPreambles() {
+        val testCases = listOf(
+            "Here is the proofread version:\n\nThis is the corrected text." to "This is the corrected text.",
+            "Sure! Here is the corrected text:\nThis is the corrected text." to "This is the corrected text.",
+            "Certainly, here is the rewritten text:\n\nThis is the rewritten text." to "This is the rewritten text.",
+            "Here's the proofread text:\nThis is the corrected text." to "This is the corrected text.",
+            "Proofread version:\n\nThis is the corrected text." to "This is the corrected text.",
+            "Corrected text:\nThis is the corrected text." to "This is the corrected text."
+        )
+
+        for ((input, expected) in testCases) {
+            val processed = AiOutputProcessor.process(input)
+            assertEquals("Failed to strip preamble from: $input", expected, processed)
+        }
+    }
 }
+

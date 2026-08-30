@@ -31,7 +31,9 @@ set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 #
 # GGML_CPU_ALL_VARIANTS is NOT used because it requires GGML_BACKEND_DL
 # (dynamic backend loading) which doesn't work with our JNI static linking.
-set(GGML_CPU_ARM_ARCH "armv8.6-a+dotprod+i8mm" CACHE STRING "" FORCE)
+if (CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "arm64-v8a")
+    set(GGML_CPU_ARM_ARCH "armv8.6-a+dotprod+i8mm" CACHE STRING "" FORCE)
+endif()
 set(GGML_OPENMP ON CACHE BOOL "" FORCE)
 
 # Add llama.cpp as a subdirectory

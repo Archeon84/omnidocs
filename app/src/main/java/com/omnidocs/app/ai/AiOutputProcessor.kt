@@ -10,6 +10,15 @@ package com.omnidocs.app.ai
  */
 object AiOutputProcessor {
 
+    private val PREAMBLE_REGEXES = listOf(
+        // "Here is the proofread / corrected / rewritten / summary version/text:"
+        Regex("(?i)^here(?:'s|\\s+is)\\s+(?:the\\s+)?(?:proofread|corrected|rewritten|revised|summarized|summary|structured\\s+summary)(?:\\s+(?:version|text))?[:\\s*]*\n*"),
+        // "Sure! Here is the corrected text:" or "Certainly, here is the rewritten text:"
+        Regex("(?i)^(?:sure|certainly|of\\s+course)[!.,\\s]+(?:here(?:'s|\\s+is)\\s+(?:the\\s+)?(?:proofread|corrected|rewritten|revised|summarized|summary)(?:\\s+(?:version|text))?[:\\s*]*)?\n*"),
+        // "Proofread version:" or "Corrected text:" or "Rewritten text:"
+        Regex("(?i)^(?:proofread|corrected|rewritten|revised)\\s+(?:version|text)[:\\s*]*\n*")
+    )
+
     /**
      * Clean up raw LLM output for display to the user.
      */
@@ -65,7 +74,12 @@ object AiOutputProcessor {
             }
         }
 
-        // ── 8. Excessive blank lines ──────────────────────────────────────
+        // ── 8. Strip conversational preambles (e.g. "Here is the proofread version:") ─
+        for (regex in PREAMBLE_REGEXES) {
+            result = result.replaceFirst(regex, "").trim()
+        }
+
+        // ── 9. Excessive blank lines ──────────────────────────────────────
         result = result.replace(Regex("\n{3,}"), "\n\n").trim()
 
         return result

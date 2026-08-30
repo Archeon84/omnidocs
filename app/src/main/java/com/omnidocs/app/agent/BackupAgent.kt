@@ -28,12 +28,13 @@ class BackupAgent @Inject constructor(
         }
 
         val operation = input.payload["operation"] ?: "VERIFY"
+        val password = input.payload["password"]
         return when (operation) {
             "CREATE_BACKUP" -> {
                 val folderUriStr = input.payload["folderUri"]
                     ?: return AgentResult.PermanentFailure("Missing folderUri for backup creation")
                 val uri = Uri.parse(folderUriStr)
-                val result = localBackupService.createBackup(uri)
+                val result = localBackupService.createBackup(uri, password)
                 if (result.success) {
                     AgentResult.Success(
                         payload = mapOf(
@@ -69,7 +70,7 @@ class BackupAgent @Inject constructor(
                 val fileUriStr = input.payload["fileUri"]
                     ?: return AgentResult.PermanentFailure("Missing fileUri for restore")
                 val uri = Uri.parse(fileUriStr)
-                val result = localBackupService.restoreBackup(uri)
+                val result = localBackupService.restoreBackup(uri, password)
                 if (result.success) {
                     AgentResult.Success(
                         payload = mapOf(
@@ -113,7 +114,16 @@ class BackupAgent @Inject constructor(
 
             val checksum = digest.digest().joinToString("") { "%02x".format(it) }
 
-            // Inspect ZIP entries
+            if (localBackupService.isEncryptedBackup(uri)) {
+                return ArchiveValidation(
+                    isValid = true,
+                    schemaVersion = 2,
+                    checksum = checksum,
+                    fileSize = totalBytes
+                )
+            }
+
+            // Inspect ZIP entries for unencrypted archives
             appContext.contentResolver.openInputStream(uri)?.use { stream ->
                 ZipInputStream(stream).use { zis ->
                     var entry = zis.nextEntry

@@ -621,30 +621,47 @@ class EditorViewModel @Inject constructor(
         if (preview.isLoading || preview.error != null) return
 
         pushUndo()
-        val safeResult = com.omnidocs.app.util.HtmlSanitizer.toPlainText(preview.result)
-        _contentSource.value = ContentSource.PROGRAMMATIC
-        when (preview.operation) {
-            AiOperation.SUMMARIZE -> {
-                // Convert bullet-point lines to HTML list items for rich rendering
-                val htmlResult = safeResult.lines().joinToString("\n") { line ->
-                    val trimmed = line.trim()
-                    when {
-                        trimmed.startsWith("•") -> "<li>${trimmed.removePrefix("•").trim()}</li>"
-                        trimmed.startsWith("-") -> "<li>${trimmed.removePrefix("-").trim()}</li>"
-                        trimmed.startsWith("**") && trimmed.endsWith("**") -> {
-                            "<p><strong>${trimmed.removeSurrounding("**")}</strong></p>"
+        val plainResult = preview.result.trim()
+
+        if (_editorMode.value == EditorMode.MARKDOWN) {
+            val currentMd = _markdownText.value
+            val formattedMd = when (preview.operation) {
+                AiOperation.SUMMARIZE -> "## Summary\n\n$plainResult\n\n---\n\n$currentMd"
+                AiOperation.PROOFREAD -> "$currentMd\n\n---\n\n### Proofread Version\n\n$plainResult"
+                AiOperation.REWRITE -> "$currentMd\n\n---\n\n### Rewritten Version\n\n$plainResult"
+            }
+            updateMarkdown(formattedMd)
+        } else {
+            _contentSource.value = ContentSource.PROGRAMMATIC
+            when (preview.operation) {
+                AiOperation.SUMMARIZE -> {
+                    // Convert bullet-point lines to HTML list items for rich rendering
+                    val htmlSummary = plainResult.lines().joinToString("\n") { line ->
+                        val trimmed = line.trim()
+                        when {
+                            trimmed.startsWith("•") -> "<li>${sanitizeForHtml(trimmed.removePrefix("•").trim())}</li>"
+                            trimmed.startsWith("-") -> "<li>${sanitizeForHtml(trimmed.removePrefix("-").trim())}</li>"
+                            trimmed.startsWith("**") && trimmed.endsWith("**") -> {
+                                "<p><strong>${sanitizeForHtml(trimmed.removeSurrounding("**"))}</strong></p>"
+                            }
+                            trimmed.isBlank() -> ""
+                            else -> "<p>${sanitizeForHtml(trimmed)}</p>"
                         }
-                        trimmed.isBlank() -> ""
-                        else -> "<p>$trimmed</p>"
                     }
+                    _content.value = "<p><strong>Summary:</strong></p><ul>$htmlSummary</ul><hr><p>${preview.originalContent}</p>"
                 }
-                _content.value = "<p><strong>Summary:</strong></p><ul>$htmlResult</ul><hr><p>${preview.originalContent}</p>"
-            }
-            AiOperation.PROOFREAD -> {
-                _content.value = "${preview.originalContent}<hr><p><strong>Proofread Version:</strong></p><p>${safeResult}</p>"
-            }
-            AiOperation.REWRITE -> {
-                _content.value = "${preview.originalContent}<hr><p><strong>Rewritten:</strong></p><p>${safeResult}</p>"
+                AiOperation.PROOFREAD -> {
+                    val htmlParagraphs = plainResult.lines()
+                        .filter { it.isNotBlank() }
+                        .joinToString("") { "<p>${sanitizeForHtml(it.trim())}</p>" }
+                    _content.value = "${preview.originalContent}<hr><p><strong>Proofread Version:</strong></p>$htmlParagraphs"
+                }
+                AiOperation.REWRITE -> {
+                    val htmlParagraphs = plainResult.lines()
+                        .filter { it.isNotBlank() }
+                        .joinToString("") { "<p>${sanitizeForHtml(it.trim())}</p>" }
+                    _content.value = "${preview.originalContent}<hr><p><strong>Rewritten:</strong></p>$htmlParagraphs"
+                }
             }
         }
         isDirty = true

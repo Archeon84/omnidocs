@@ -84,12 +84,20 @@ class AiService @Inject constructor(
                 "Summarize the following text in $langName:\n\n${truncateText(text)}"
             )
             "proofread" -> Pair(
-                "You are an expert proofreader and editor. Fix all spelling, grammar, punctuation, and phrasing errors while strictly preserving the original meaning, tone, and paragraph structure. Do not add introductory remarks, explanations, or notes. Output only the complete corrected text.$langInstruction",
-                "Proofread and correct the following text in $langName:\n\n${truncateText(text)}"
+                "You are an expert proofreader. Correct all spelling, grammar, punctuation, and typographical mistakes in the text while strictly preserving the original meaning, tone, and paragraph structure.\n\n" +
+                "Rules:\n" +
+                "• Output ONLY the complete corrected text directly\n" +
+                "• Do NOT list errors or explain what you changed\n" +
+                "• Do NOT include introductory greetings or conversational preamble$langInstruction",
+                "Correct all mistakes in the text below. Output only the corrected text in $langName directly:\n\n${truncateText(text)}"
             )
             "rewrite" -> Pair(
-                "You are a professional writer. Rewrite the text to improve clarity, flow, vocabulary, and conciseness while preserving all core facts and intent. Do not add conversational preamble or explanations. Output only the rewritten text directly.$langInstruction",
-                "Rewrite the following text for improved clarity and flow in $langName:\n\n${truncateText(text)}"
+                "You are a professional writer. Rewrite the text to improve clarity, flow, vocabulary, and conciseness while strictly preserving all core facts, meaning, and paragraph structure.\n\n" +
+                "Rules:\n" +
+                "• Output ONLY the rewritten text directly\n" +
+                "• Do NOT explain your edits\n" +
+                "• Do NOT include introductory greetings or conversational preamble$langInstruction",
+                "Rewrite the following text for improved clarity and flow in $langName. Output only the rewritten text directly:\n\n${truncateText(text)}"
             )
             else -> return null
         }

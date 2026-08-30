@@ -264,7 +264,7 @@ class SettingsViewModel @Inject constructor(
         _snackbarEvent.tryEmit("Backup folder set")
     }
 
-    fun backupToDevice(folderUri: Uri? = null) {
+    fun backupToDevice(folderUri: Uri? = null, password: String? = null) {
         val target = folderUri ?: localBackupPreferences.backupFolderUri?.let { Uri.parse(it) }
         if (target == null) {
             _syncMessage.value = "Choose a backup folder first"
@@ -275,7 +275,7 @@ class SettingsViewModel @Inject constructor(
             _isSyncing.value = true
             _syncMessage.value = null
             val result = try {
-                localBackupService.createBackup(target)
+                localBackupService.createBackup(target, password)
             } catch (e: Exception) {
                 BackupResult(false, "Backup error: ${e.message}")
             }
@@ -285,12 +285,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun restoreFromDevice(uri: Uri) {
+    fun restoreFromDevice(uri: Uri, password: String? = null) {
         viewModelScope.launch {
             _isSyncing.value = true
             _syncMessage.value = null
             val result = try {
-                localBackupService.restoreBackup(uri)
+                localBackupService.restoreBackup(uri, password)
             } catch (e: Exception) {
                 BackupResult(false, "Restore error: ${e.message}")
             }
@@ -299,6 +299,8 @@ class SettingsViewModel @Inject constructor(
             _isSyncing.value = false
         }
     }
+
+    fun isEncryptedBackup(uri: Uri): Boolean = localBackupService.isEncryptedBackup(uri)
 
     fun downloadSttModel(model: com.omnidocs.app.stt.SttModelInfo) {
         viewModelScope.launch {

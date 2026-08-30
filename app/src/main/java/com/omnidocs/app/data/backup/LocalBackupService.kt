@@ -17,18 +17,37 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import javax.crypto.AEADBadTagException
+import javax.crypto.Cipher
+import javax.crypto.CipherInputStream
+import javax.crypto.CipherOutputStream
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
 import androidx.room.withTransaction
 
 private const val TAG = "LocalBackupService"
 private const val SCHEMA_VERSION = 2
+
+private val MAGIC_HEADER = "OMNI_ENC_V1".toByteArray(Charsets.UTF_8)
+private const val SALT_LENGTH_BYTES = 16
+private const val IV_LENGTH_BYTES = 12
+private const val TAG_LENGTH_BITS = 128
+private const val PBKDF2_ITERATIONS = 65536
+private const val KEY_LENGTH_BITS = 256
 
 // Knowledge-layer tables backed up generically (every column, one JSON array per
 // table). notes/recordings have dedicated entity code (conflict resolution +
@@ -68,9 +87,30 @@ class LocalBackupService @Inject constructor(
 ) {
 
     /**
-     * Write a fresh backup ZIP into the user-picked folder.
+     * Check if a backup archive at the given URI is encrypted with AES-256-GCM.
      */
-    suspend fun createBackup(folderUri: Uri): BackupResult = withContext(Dispatchers.IO) {
+    fun isEncryptedBackup(sourceUri: Uri): Boolean {
+        return try {
+            context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                val magic = ByteArray(MAGIC_HEADER.size)
+                var totalRead = 0
+                while (totalRead < magic.size) {
+                    val read = input.read(magic, totalRead, magic.size - totalRead)
+                    if (read == -1) break
+                    totalRead += read
+                }
+                totalRead == MAGIC_HEADER.size && magic.contentEquals(MAGIC_HEADER)
+            } ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Write a fresh backup ZIP into the user-picked folder, optionally encrypted with AES-256-GCM.
+     */
+    suspend fun createBackup(folderUri: Uri, password: String? = null): BackupResult = withContext(Dispatchers.IO) {
+        var tempZipFile: File? = null
         try {
             val notes = noteDao.getAllNotesIncludeDeleted()
             val recordings = recordingDao.getAllRecordingsIncludeDeleted()
@@ -129,9 +169,19 @@ class LocalBackupService @Inject constructor(
                 context.contentResolver, directoryUri, "application/zip", zipFileName
             ) ?: throw Exception("Failed to create backup file")
 
-            context.contentResolver.openOutputStream(documentUri, "wt").use { os ->
-                if (os == null) throw Exception("Failed to open backup output")
-                ZipOutputStream(os.buffered()).use { zip ->
+            val isEncrypted = !password.isNullOrBlank()
+
+            // If encrypted, build the ZIP in a cache file first, then encrypt to destination
+            val zipTargetStream = if (isEncrypted) {
+                tempZipFile = File(context.cacheDir, "backup_temp_${System.currentTimeMillis()}.zip")
+                FileOutputStream(tempZipFile)
+            } else {
+                context.contentResolver.openOutputStream(documentUri, "wt")
+                    ?: throw Exception("Failed to open backup output")
+            }
+
+            zipTargetStream.use { rawOs ->
+                ZipOutputStream(rawOs.buffered()).use { zip ->
                     // manifest
                     val manifest = JSONObject().apply {
                         put("schemaVersion", SCHEMA_VERSION)
@@ -139,6 +189,7 @@ class LocalBackupService @Inject constructor(
                         put("createdAt", System.currentTimeMillis())
                         put("noteCount", notes.size)
                         put("recordingCount", recordings.size)
+                        put("isEncrypted", isEncrypted)
                     }
                     writeZipEntry(zip, "manifest.json", manifest.toString().toByteArray())
 
@@ -196,45 +247,123 @@ class LocalBackupService @Inject constructor(
                 }
             }
 
-            val message = "Backed up ${notes.size} notes, ${recordings.size} recordings" +
+            // If encryption is enabled, encrypt the temp zip to destination
+            if (isEncrypted && tempZipFile != null) {
+                val salt = ByteArray(SALT_LENGTH_BYTES).also { SecureRandom().nextBytes(it) }
+                val iv = ByteArray(IV_LENGTH_BYTES).also { SecureRandom().nextBytes(it) }
+
+                val keySpec = PBEKeySpec(password!!.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+                val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                val secretKey = SecretKeySpec(factory.generateSecret(keySpec).encoded, "AES")
+
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(TAG_LENGTH_BITS, iv))
+
+                val destOs = context.contentResolver.openOutputStream(documentUri, "wt")
+                    ?: throw Exception("Failed to open encrypted backup destination")
+
+                destOs.use { out ->
+                    out.write(MAGIC_HEADER)
+                    out.write(salt)
+                    out.write(iv)
+                    CipherOutputStream(out, cipher).use { cipherOut ->
+                        FileInputStream(tempZipFile).use { fileIn ->
+                            val buffer = ByteArray(8192)
+                            var read: Int
+                            while (fileIn.read(buffer).also { read = it } != -1) {
+                                cipherOut.write(buffer, 0, read)
+                            }
+                        }
+                    }
+                }
+            }
+
+            val encLabel = if (isEncrypted) " (AES-256 encrypted)" else ""
+            val message = "Backed up ${notes.size} notes, ${recordings.size} recordings$encLabel" +
                 if (missingAudioCount > 0) " ($missingAudioCount audio missing)" else ""
             BackupResult(true, message, notes.size, recordings.size, audioFileCount, missingAudioCount)
         } catch (e: Exception) {
             Log.e(TAG, "createBackup failed", e)
             BackupResult(false, "Backup failed: ${e.message}")
+        } finally {
+            tempZipFile?.delete()
         }
     }
 
     /**
      * Read a backup ZIP and merge notes/recordings back into local storage.
+     * Supports both AES-256-GCM encrypted backups and legacy unencrypted ZIP backups.
      */
-    suspend fun restoreBackup(sourceUri: Uri): BackupResult = withContext(Dispatchers.IO) {
+    suspend fun restoreBackup(sourceUri: Uri, password: String? = null): BackupResult = withContext(Dispatchers.IO) {
+        var tempRestoreZip: File? = null
         try {
             val jsonEntries = mutableMapOf<String, ByteArray>()
             val restoredKeys = mutableSetOf<String>()
             var audioFileCount = 0
 
-            context.contentResolver.openInputStream(sourceUri).use { input ->
-                if (input == null) throw Exception("Failed to open backup file")
-                ZipInputStream(input.buffered()).use { zip ->
-                    var entry: ZipEntry?
-                    while (zip.nextEntry.also { entry = it } != null) {
-                        val e = entry ?: continue
-                        val name = e.name
-                        when {
-                            name.endsWith(".json") ->
-                                jsonEntries[name] = readAllBytes(zip)
-                            name.startsWith("recordings/") -> {
-                                val storageKey = safeFileName(name.substringAfterLast('/'))
-                                if (storageKey.isNotEmpty() && storageKey != "..") {
-                                    val bytes = readAllBytes(zip)
-                                    recordingStorage.saveAudioWithKey(bytes, storageKey)
-                                    restoredKeys.add(storageKey)
-                                    audioFileCount++
+            // Determine if archive is encrypted
+            val isEncrypted = isEncryptedBackup(sourceUri)
+
+            if (isEncrypted) {
+                if (password.isNullOrBlank()) {
+                    return@withContext BackupResult(false, "Password required: this backup is encrypted with AES-256-GCM")
+                }
+
+                tempRestoreZip = File(context.cacheDir, "restore_temp_${System.currentTimeMillis()}.zip")
+                try {
+                    context.contentResolver.openInputStream(sourceUri).use { input ->
+                        if (input == null) throw Exception("Failed to open backup file")
+
+                        // Skip magic header
+                        val magic = ByteArray(MAGIC_HEADER.size)
+                        readFully(input, magic)
+
+                        // Read salt and IV
+                        val salt = ByteArray(SALT_LENGTH_BYTES)
+                        readFully(input, salt)
+
+                        val iv = ByteArray(IV_LENGTH_BYTES)
+                        readFully(input, iv)
+
+                        val keySpec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+                        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                        val secretKey = SecretKeySpec(factory.generateSecret(keySpec).encoded, "AES")
+
+                        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(TAG_LENGTH_BITS, iv))
+
+                        FileOutputStream(tempRestoreZip).use { fos ->
+                            CipherInputStream(input, cipher).use { cipherIn ->
+                                val buffer = ByteArray(8192)
+                                var read: Int
+                                while (cipherIn.read(buffer).also { read = it } != -1) {
+                                    fos.write(buffer, 0, read)
                                 }
                             }
                         }
-                        zip.closeEntry()
+                    }
+                } catch (e: Exception) {
+                    val root = generateSequence(e as Throwable) { it.cause }.lastOrNull()
+                    if (root is AEADBadTagException || e is AEADBadTagException ||
+                        e.message?.contains("tag", ignoreCase = true) == true ||
+                        e.message?.contains("pad", ignoreCase = true) == true) {
+                        return@withContext BackupResult(false, "Incorrect password or corrupted backup file")
+                    }
+                    throw e
+                }
+
+                // Process decrypted zip
+                FileInputStream(tempRestoreZip).use { fileIn ->
+                    ZipInputStream(fileIn.buffered()).use { zip ->
+                        readZipEntries(zip, jsonEntries, restoredKeys, { audioFileCount++ })
+                    }
+                }
+            } else {
+                // Legacy / Unencrypted ZIP
+                context.contentResolver.openInputStream(sourceUri).use { input ->
+                    if (input == null) throw Exception("Failed to open backup file")
+                    ZipInputStream(input.buffered()).use { zip ->
+                        readZipEntries(zip, jsonEntries, restoredKeys, { audioFileCount++ })
                     }
                 }
             }
@@ -374,6 +503,44 @@ class LocalBackupService @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "restoreBackup failed", e)
             BackupResult(false, "Restore failed: ${e.message}")
+        } finally {
+            tempRestoreZip?.delete()
+        }
+    }
+
+    private fun readZipEntries(
+        zip: ZipInputStream,
+        jsonEntries: MutableMap<String, ByteArray>,
+        restoredKeys: MutableSet<String>,
+        onAudioRestored: () -> Unit
+    ) {
+        var entry: ZipEntry?
+        while (zip.nextEntry.also { entry = it } != null) {
+            val e = entry ?: continue
+            val name = e.name
+            when {
+                name.endsWith(".json") ->
+                    jsonEntries[name] = readAllBytes(zip)
+                name.startsWith("recordings/") -> {
+                    val storageKey = safeFileName(name.substringAfterLast('/'))
+                    if (storageKey.isNotEmpty() && storageKey != "..") {
+                        val bytes = readAllBytes(zip)
+                        recordingStorage.saveAudioWithKey(bytes, storageKey)
+                        restoredKeys.add(storageKey)
+                        onAudioRestored()
+                    }
+                }
+            }
+            zip.closeEntry()
+        }
+    }
+
+    private fun readFully(input: InputStream, buffer: ByteArray) {
+        var totalRead = 0
+        while (totalRead < buffer.size) {
+            val read = input.read(buffer, totalRead, buffer.size - totalRead)
+            if (read == -1) throw java.io.EOFException("Unexpected end of stream while reading backup header")
+            totalRead += read
         }
     }
 

@@ -26,16 +26,15 @@ android {
         }
 
         ndk {
-            // Only build for 64-bit ARM — the target device (Xiaomi 13 Ultra) is arm64,
-            // and the ARM arch flags (armv8.6-a+dotprod+i8mm) are 64-bit only.
-            abiFilters += "arm64-v8a"
+            // Build for 64-bit ARM (target devices) and x86_64 (emulators / CI)
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
 
         externalNativeBuild {
             cmake {
                 cppFlags("-std=c++11 -frtti -fexceptions -Wno-format")
                 arguments("-DANDROID_PLATFORM=android-26", "-DANDROID_STL=c++_shared", "-DANDROID_ARM_NEON=TRUE")
-                abiFilters("arm64-v8a")
+                abiFilters("arm64-v8a", "x86_64")
             }
         }
     }
