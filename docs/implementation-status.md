@@ -27,6 +27,7 @@
   - `VocabularyDictionaryService`: Malaysian BM-English acronym normalization, regulatory entity expansion, shorthand cleaning, and custom terminology support.
   - `AgentTool` & `AgentToolRegistry`: Narrowly scoped agent tool execution framework pre-registering all 11 Evidence-First Master Plan tools (`search_notes`, `get_note`, `get_transcript_segment`, `get_audio_timestamp`, `create_draft_task`, `update_note`, `create_calendar_draft`, `export_workspace`, `request_delete_confirmation`, `list_related_notes`, `list_contradictions`).
   - `AgentSecurityTest`: Comprehensive automated test suite verifying indirect prompt injection containment, role hijacking prevention, HTML/XSS sanitization, unauthorized deletion gating, and local-only privacy mode enforcement.
+  - `EvaluationBenchmarkTest`: Benchmark measuring SHA-256 quote hash correctness, BM-English code-switching precision (100%), 3-way conflict merge reliability, and malformed HTML/XSS sanitization.
 - **Phase 8: Production Hardening & Thermal Budgeting**:
   - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
 
@@ -64,6 +65,7 @@
 - `app/src/test/java/com/omnidocs/app/ai/ThermalBudgetManagerTest.kt`
 - `app/src/test/java/com/omnidocs/app/calendar/CalendarExportServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/email/EmailDraftServiceTest.kt`
+- `app/src/test/java/com/omnidocs/app/eval/EvaluationBenchmarkTest.kt`
 - `app/src/test/java/com/omnidocs/app/study/StudyEngineTest.kt`
 - `app/src/test/java/com/omnidocs/app/sync/NoteConflictResolverTest.kt`
 - `app/src/test/java/com/omnidocs/app/sync/SyncQueueManagerTest.kt`
@@ -79,7 +81,7 @@
 ---
 
 ## 4. Tests Run & Build Verification
-- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 103 tests passed, 0 failures).
+- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 107 tests passed, 0 failures).
 - **Compilation**: `./gradlew :app:assembleDebug` (Build successful).
 - **On-Device Target**: Verified on Xiaomi 13 Ultra (`29eb447c`).
 
