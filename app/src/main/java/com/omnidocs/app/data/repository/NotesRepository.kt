@@ -1,6 +1,7 @@
 package com.omnidocs.app.data.repository
 
 import androidx.room.withTransaction
+import com.omnidocs.app.ai.BackgroundInferenceDispatcher
 import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.isAnyEmbeddingModelDownloaded
 import com.omnidocs.app.data.local.EmbeddingDao
@@ -11,13 +12,9 @@ import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.domain.model.Note
 import com.omnidocs.app.search.EmbeddingService
 import com.omnidocs.app.voice.RecordingStorage
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 import android.util.Log
 import java.util.UUID
 import javax.inject.Inject
@@ -31,11 +28,9 @@ class NotesRepository @Inject constructor(
     private val notesDatabase: NotesDatabase,
     private val embeddingService: EmbeddingService,
     private val embeddingDao: EmbeddingDao,
-    private val modelDownloadManager: ModelDownloadManager
+    private val modelDownloadManager: ModelDownloadManager,
+    private val inferenceDispatcher: BackgroundInferenceDispatcher
 ) {
-    // Fire-and-forget scope for post-save re-indexing. SupervisorJob so a single
-    // failed embed doesn't kill the scope for later saves.
-    private val reindexScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     fun getAllNotes(): Flow<List<Note>> {
         return noteDao.getAllNotes().map { entities ->
             entities.map { it.toDomain() }
@@ -108,7 +103,7 @@ class NotesRepository @Inject constructor(
         val modelDownloaded = isAnyEmbeddingModelDownloaded(modelDownloadManager)
         Log.d("NotesRepository", "reindexOnSave: note=${note.id}, modelDownloaded=$modelDownloaded")
         if (!modelDownloaded) return
-        reindexScope.launch {
+        inferenceDispatcher.enqueue {
             try {
                 Log.d("NotesRepository", "reindexOnSave: starting passage embed for note ${note.id}")
                 embeddingService.embedAndStoreNotePassages(note.id, note.title, note.plainText)
