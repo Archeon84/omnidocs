@@ -25,6 +25,7 @@
   - `NoteConflictResolver`: 3-way synchronization conflict detection, Git-style diff formatting, and field-level manual resolution choices.
   - `VocabularyDictionaryService`: Malaysian BM-English acronym normalization, regulatory entity expansion, shorthand cleaning, and custom terminology support.
   - `AgentTool` & `AgentToolRegistry`: Narrowly scoped agent tool execution framework pre-registering all 11 Evidence-First Master Plan tools (`search_notes`, `get_note`, `get_transcript_segment`, `get_audio_timestamp`, `create_draft_task`, `update_note`, `create_calendar_draft`, `export_workspace`, `request_delete_confirmation`, `list_related_notes`, `list_contradictions`).
+  - `AgentSecurityTest`: Comprehensive automated test suite verifying indirect prompt injection containment, role hijacking prevention, HTML/XSS sanitization, unauthorized deletion gating, and local-only privacy mode enforcement.
 - **Phase 8: Production Hardening & Thermal Budgeting**:
   - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
 
@@ -56,6 +57,7 @@
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyScreen.kt`
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyViewModel.kt`
 - `app/src/main/java/com/omnidocs/app/vocabulary/VocabularyDictionaryService.kt`
+- `app/src/test/java/com/omnidocs/app/agent/AgentSecurityTest.kt`
 - `app/src/test/java/com/omnidocs/app/agent/AgentToolRegistryTest.kt`
 - `app/src/test/java/com/omnidocs/app/ai/AiPromptAndOutputTest.kt`
 - `app/src/test/java/com/omnidocs/app/ai/NoteIntelligenceServiceStudyTest.kt`
@@ -76,7 +78,7 @@
 ---
 
 ## 4. Tests Run & Build Verification
-- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 99 tests passed, 0 failures).
+- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 103 tests passed, 0 failures).
 - **Compilation**: `./gradlew :app:assembleDebug` (Build successful).
 - **On-Device Target**: Verified on Xiaomi 13 Ultra (`29eb447c`).
 
