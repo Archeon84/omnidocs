@@ -2,9 +2,23 @@
 # These ensure that reflection, serialization, and JNI continue to work
 # after obfuscation and shrinking.
 
-# ---- AI / LLM (JNI) ----
+# ---- AI / LLM / Embedding (JNI) ----
 -keep class com.omnidocs.app.ai.LlamaCppService { native <methods>; }
 -keep class com.omnidocs.app.ai.LlamaCppService$Companion { *; }
+-keep class com.omnidocs.app.ai.EmbeddingEngine { native <methods>; }
+-keep class com.omnidocs.app.ai.EmbeddingEngine$Companion { *; }
+
+# ---- Sherpa-onnx / STT ----
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-dontwarn com.k2fsa.sherpa.onnx.**
+
+# ---- PDFBox ----
+-keep class com.tom_roush.pdfbox.** { *; }
+-dontwarn com.tom_roush.pdfbox.**
+
+# ---- Flexmark (Markdown parser) ----
+-keep class com.vladsch.flexmark.** { *; }
+-dontwarn com.vladsch.flexmark.**
 
 # ---- Room (entities + DAOs) ----
 -keep class com.omnidocs.app.data.local.entity.** { *; }
