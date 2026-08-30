@@ -27,6 +27,7 @@ import com.omnidocs.app.ui.screens.privacy.PrivacyDashboardScreen
 import com.omnidocs.app.ui.screens.recordings.RecordingsScreen
 import com.omnidocs.app.ui.screens.settings.SettingsScreen
 import com.omnidocs.app.ui.screens.settings.PrivacySettingsScreen
+import com.omnidocs.app.ui.screens.study.StudyScreen
 import com.omnidocs.app.ui.screens.tasks.TaskListScreen
 import com.omnidocs.app.ui.screens.voice.VoiceCaptureOverlay
 import com.omnidocs.app.ui.theme.MotionTokens
@@ -58,6 +59,11 @@ sealed class Screen(val route: String) {
     object Ask : Screen("ask")
     object AgentJobs : Screen("agent_jobs")
     object PrivacyDashboard : Screen("privacy_dashboard")
+    object Study : Screen("study?noteId={noteId}") {
+        fun createRoute(noteId: String? = null): String {
+            return if (noteId != null) "study?noteId=$noteId" else "study"
+        }
+    }
 }
 
 @Composable
@@ -348,6 +354,25 @@ fun NotesNavHost(
         ) {
             PrivacyDashboardScreen(
                 onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = Screen.Study.route,
+            arguments = listOf(
+                navArgument("noteId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            ),
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            StudyScreen(
+                onNavigateBack = { navController.popBackStack() }
             )
         }
     }
