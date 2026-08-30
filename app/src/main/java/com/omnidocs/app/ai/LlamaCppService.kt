@@ -20,7 +20,8 @@ private const val GENERATE_TIMEOUT_MS = 240_000L
 class LlamaCppService @Inject constructor(
     @ApplicationContext private val context: Context,
     private val modelDownloadManager: ModelDownloadManager,
-    private val modelPreferences: ModelPreferences
+    private val modelPreferences: ModelPreferences,
+    private val thermalBudgetManager: ThermalBudgetManager? = null
 ) {
     @Volatile
     private var modelLoaded = false
@@ -124,6 +125,18 @@ class LlamaCppService @Inject constructor(
             Log.e(TAG, "Cannot generate: native library not loaded")
             return null
         }
+
+        if (thermalBudgetManager?.isSafeToInfer() == false) {
+            Log.w(TAG, "Thermal status is critical/emergency; skipping generation to prevent overheating")
+            return null
+        }
+
+        val effectiveMaxTokens = thermalBudgetManager?.getBudgetedMaxTokens(maxTokens) ?: maxTokens
+        if (effectiveMaxTokens <= 0) {
+            Log.w(TAG, "Effective thermal token budget is 0; skipping generation")
+            return null
+        }
+
         // If a model load is already in progress (from a previous generate call
         // that timed out), don't stack another call — return null immediately.
         // The loading thread may be stuck in JNI and holding the C++ timed_mutex.
@@ -156,7 +169,7 @@ class LlamaCppService @Inject constructor(
                 val startTime = System.currentTimeMillis()
                 val result = withTimeoutOrNull(GENERATE_TIMEOUT_MS) {
                     try {
-                        nativeGenerate(prompt, maxTokens)
+                        nativeGenerate(prompt, effectiveMaxTokens)
                     } catch (e: Throwable) {
                         Log.e(TAG, "Native generate error", e)
                         null
