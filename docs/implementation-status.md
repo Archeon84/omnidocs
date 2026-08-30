@@ -15,11 +15,12 @@
   - `SherpaOnnxSttEngine` & `VoiceCaptureManager`: Live audio amplitude sampling (`liveAudioLevel`) and real-time streaming Whisper partial callbacks.
 - **Phase 6: Knowledge Graph & Interchange**:
   - `GraphExportService`: Serialization of knowledge graph nodes and contradiction hyperedges to **GraphML (XML)** and **JSON-LD (W3C Linked Data)** with system share sheet.
-- **Phase 7: Study & Workflow Integrations**:
+- **Phase 7: Study, Multi-Agent & Workflow Integrations**:
   - `CalendarExportService`: RFC 5545 iCalendar (`.ics`) serialization for action items, deadlines, priorities, and advance reminder alarms.
   - `EmailDraftService`: Executive meeting summary email composer with structured decisions, prioritized action items, and `mailto:` intent.
   - `StudyEngine` / `SpacedRepetitionScheduler`: SuperMemo-2 (SM-2) scheduling algorithm for flashcards, cloze deletions, MCQs, and Anki/Markdown export.
   - `NoteConflictResolver`: 3-way synchronization conflict detection, Git-style diff formatting, and field-level manual resolution choices.
+  - `VocabularyDictionaryService`: Malaysian BM-English acronym normalization, regulatory entity expansion, shorthand cleaning, and custom terminology support.
 - **Phase 8: Production Hardening & Thermal Budgeting**:
   - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
 
@@ -45,12 +46,14 @@
 - `app/src/main/java/com/omnidocs/app/study/SpacedRepetitionScheduler.kt`
 - `app/src/main/java/com/omnidocs/app/study/StudyExportService.kt`
 - `app/src/main/java/com/omnidocs/app/sync/NoteConflictResolver.kt`
+- `app/src/main/java/com/omnidocs/app/vocabulary/VocabularyDictionaryService.kt`
 - `app/src/test/java/com/omnidocs/app/ai/AiPromptAndOutputTest.kt`
 - `app/src/test/java/com/omnidocs/app/ai/ThermalBudgetManagerTest.kt`
 - `app/src/test/java/com/omnidocs/app/calendar/CalendarExportServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/email/EmailDraftServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/study/StudyEngineTest.kt`
 - `app/src/test/java/com/omnidocs/app/sync/NoteConflictResolverTest.kt`
+- `app/src/test/java/com/omnidocs/app/vocabulary/VocabularyDictionaryServiceTest.kt`
 - `docs/current-state.md`
 - `docs/architecture-audit.md`
 - `docs/gap-matrix.md`
@@ -61,9 +64,9 @@
 ---
 
 ## 4. Tests Run & Build Verification
-- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All passed, 0 failures).
+- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 93 tests passed, 0 failures).
 - **Compilation**: `./gradlew :app:assembleDebug` (Build successful).
-- **On-Device Target**: Installed and verified on Xiaomi 13 Ultra (`29eb447c`).
+- **On-Device Target**: Verified on Xiaomi 13 Ultra (`29eb447c`).
 
 ---
 
