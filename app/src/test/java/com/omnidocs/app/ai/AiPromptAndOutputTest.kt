@@ -73,13 +73,43 @@ class AiPromptAndOutputTest {
             "Certainly, here is the rewritten text:\n\nThis is the rewritten text." to "This is the rewritten text.",
             "Here's the proofread text:\nThis is the corrected text." to "This is the corrected text.",
             "Proofread version:\n\nThis is the corrected text." to "This is the corrected text.",
-            "Corrected text:\nThis is the corrected text." to "This is the corrected text."
+            "Corrected text:\nThis is the corrected text." to "This is the corrected text.",
+            "Answer:\nThe meeting is scheduled for 3 PM." to "The meeting is scheduled for 3 PM.",
+            "**Answer:**\nThe budget is $50,000." to "The budget is $50,000.",
+            "Response:\nProject alpha was completed in Q2." to "Project alpha was completed in Q2."
         )
 
         for ((input, expected) in testCases) {
             val processed = AiOutputProcessor.process(input)
             assertEquals("Failed to strip preamble from: $input", expected, processed)
         }
+    }
+
+    @Test
+    fun testAiOutputProcessor_cutsOffSimulatedSubsequentTurns() {
+        val rawWithSimulatedTurns = """
+            The project launch date is September 15th according to [Source 1].
+
+            User: When is the launch?
+            Assistant: The launch is on September 15th.
+        """.trimIndent()
+
+        val processed = AiOutputProcessor.process(rawWithSimulatedTurns)
+        assertEquals("The project launch date is September 15th according to [Source 1].", processed)
+        assertFalse(processed.contains("User:"))
+        assertFalse(processed.contains("Assistant:"))
+    }
+
+    @Test
+    fun testAiOutputProcessor_deduplicatesRepeatedParagraphs() {
+        val rawDoubleAnswer = """
+            The quarterly revenue reached $1.2M, representing a 15% increase year-over-year.
+
+            The quarterly revenue reached $1.2M, representing a 15% increase year-over-year.
+        """.trimIndent()
+
+        val processed = AiOutputProcessor.process(rawDoubleAnswer)
+        assertEquals("The quarterly revenue reached $1.2M, representing a 15% increase year-over-year.", processed)
     }
 }
 

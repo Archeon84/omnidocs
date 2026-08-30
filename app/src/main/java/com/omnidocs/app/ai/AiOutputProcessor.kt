@@ -11,12 +11,23 @@ package com.omnidocs.app.ai
 object AiOutputProcessor {
 
     private val PREAMBLE_REGEXES = listOf(
-        // "Here is the proofread / corrected / rewritten / summary version/text:"
-        Regex("(?i)^here(?:'s|\\s+is)\\s+(?:the\\s+)?(?:proofread|corrected|rewritten|revised|summarized|summary|structured\\s+summary)(?:\\s+(?:version|text))?[:\\s*]*\n*"),
+        // "Here is the proofread / corrected / rewritten / summary / answer version/text:"
+        Regex("(?i)^here(?:'s|\\s+is)\\s+(?:the\\s+)?(?:proofread|corrected|rewritten|revised|summarized|summary|structured\\s+summary|answer|response)(?:\\s+(?:version|text))?[:\\s*]*\n*"),
         // "Sure! Here is the corrected text:" or "Certainly, here is the rewritten text:"
-        Regex("(?i)^(?:sure|certainly|of\\s+course)[!.,\\s]+(?:here(?:'s|\\s+is)\\s+(?:the\\s+)?(?:proofread|corrected|rewritten|revised|summarized|summary)(?:\\s+(?:version|text))?[:\\s*]*)?\n*"),
-        // "Proofread version:" or "Corrected text:" or "Rewritten text:"
-        Regex("(?i)^(?:proofread|corrected|rewritten|revised)\\s+(?:version|text)[:\\s*]*\n*")
+        Regex("(?i)^(?:sure|certainly|of\\s+course)[!.,\\s]+(?:here(?:'s|\\s+is)\\s+(?:the\\s+)?(?:proofread|corrected|rewritten|revised|summarized|summary|answer|response)(?:\\s+(?:version|text))?[:\\s*]*)?\n*"),
+        // "Proofread version:" or "Corrected text:" or "Rewritten text:" or "Answer:" or "**Answer:**"
+        Regex("(?i)^[*_#\\[(]*(?:proofread|corrected|rewritten|revised|answer|response)(?:\\s+(?:version|text))?[*_#\\])]*[:\\s*]*\n*")
+    )
+
+    private val TURN_CUTOFFS = listOf(
+        "\n\nUser:",
+        "\n\nHuman:",
+        "\n\nQuestion:",
+        "\n\nQ:",
+        "\n<|im_start|>",
+        "\n<|start_header_id|>",
+        "\n<|im_end|>",
+        "\n<|eot_id|>"
     )
 
     /**
@@ -60,13 +71,21 @@ object AiOutputProcessor {
         // ── 4b. Strip orphaned closing tag if any ─────────────────────────
         result = result.replace(Regex("^</think(?:ing)?>"), "").trim()
 
-        // ── 5. Qwen3 xxx tracking markers ─────────────────────────────────
+        // ── 5. Cut off simulated subsequent conversation turns ────────────
+        for (cutoff in TURN_CUTOFFS) {
+            val idx = result.indexOf(cutoff, ignoreCase = true)
+            if (idx > 0) {
+                result = result.substring(0, idx).trim()
+            }
+        }
+
+        // ── 6. Qwen3 xxx tracking markers ─────────────────────────────────
         result = stripBetween(result, "xxx\n", "\nxxx")
 
-        // ── 6. Qwen3 bracket thinking markers ─────────────────────────────
+        // ── 7. Qwen3 bracket thinking markers ─────────────────────────────
         result = result.replace(Regex("(?s)【.*?】"), "").trim()
 
-        // ── 7. Strip markdown code fence wrappers if output is enclosed in ```
+        // ── 8. Strip markdown code fence wrappers if output is enclosed in ```
         if (result.startsWith("```") && result.endsWith("```")) {
             val lines = result.lines()
             if (lines.size >= 3) {
@@ -74,15 +93,39 @@ object AiOutputProcessor {
             }
         }
 
-        // ── 8. Strip conversational preambles (e.g. "Here is the proofread version:") ─
+        // ── 9. Strip conversational preambles and "Answer:" prefixes ──────
         for (regex in PREAMBLE_REGEXES) {
             result = result.replaceFirst(regex, "").trim()
         }
 
-        // ── 9. Excessive blank lines ──────────────────────────────────────
+        // ── 10. Deduplicate exact repeated paragraphs / answer sections ────
+        result = deduplicateRepeatedParagraphs(result)
+
+        // ── 11. Excessive blank lines ─────────────────────────────────────
         result = result.replace(Regex("\n{3,}"), "\n\n").trim()
 
         return result
+    }
+
+    /**
+     * Deduplicate identical or duplicated paragraphs produced by small model self-repetition.
+     */
+    private fun deduplicateRepeatedParagraphs(text: String): String {
+        val paragraphs = text.split("\n\n").map { it.trim() }.filter { it.isNotBlank() }
+        if (paragraphs.size <= 1) return text
+
+        val seen = mutableSetOf<String>()
+        val unique = mutableListOf<String>()
+
+        for (p in paragraphs) {
+            val normalized = p.lowercase().replace(Regex("\\W+"), " ").trim()
+            if (normalized !in seen) {
+                seen.add(normalized)
+                unique.add(p)
+            }
+        }
+
+        return unique.joinToString("\n\n")
     }
 
     /**

@@ -1,8 +1,10 @@
 package com.omnidocs.app.agent
 
+import com.omnidocs.app.ai.AiOutputProcessor
 import com.omnidocs.app.ai.LlamaCppService
 import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelPreferences
+import com.omnidocs.app.ai.PromptBuilder
 import com.omnidocs.app.ai.resolveActiveModel
 import org.json.JSONArray
 import org.json.JSONObject
@@ -94,18 +96,25 @@ class AnswerAgent @Inject constructor(
 
         val model = resolveActiveModel(modelPreferences, modelDownloadManager)
         val answerText = if (model != null) {
-            val prompt = """You are a grounded knowledge assistant.
+            val langInstruction = if (language.lowercase() != "en") "\nEnsure your answer is in $language language." else ""
+            val systemPrompt = """You are a grounded knowledge assistant.
 Answer the user's question ONLY using the provided sources. If the sources do not contain enough facts to answer, state clearly: "Insufficient evidence in your workspace."
 Always cite sources by their [Source X] labels.
 
-Sources:
-$contextBuilder
+Rules:
+• Provide a single, direct, concise answer.
+• Do NOT repeat the question or generate duplicate answer variations.
+• Do NOT simulate conversation turns, role tags, or Q&A loops.$langInstruction"""
 
-Question: $query
-Answer:"""
+            val userPrompt = "Sources:\n$contextBuilder\n\nQuestion: $query"
+            val prompt = PromptBuilder.buildPrompt(model.promptFormat, systemPrompt, userPrompt)
 
-            llamaCppService.generate(prompt, maxTokens = 512)
-                ?: generateRuleBasedAnswer(query, citations)
+            val rawResult = llamaCppService.generate(prompt, maxTokens = 400)
+            if (rawResult != null) {
+                AiOutputProcessor.process(rawResult).ifBlank { generateRuleBasedAnswer(query, citations) }
+            } else {
+                generateRuleBasedAnswer(query, citations)
+            }
         } else {
             generateRuleBasedAnswer(query, citations)
         }

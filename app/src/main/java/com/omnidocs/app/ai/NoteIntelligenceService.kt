@@ -89,15 +89,18 @@ class NoteIntelligenceService @Inject constructor(
      * Answer a question about a note's content.
      */
     suspend fun askAboutNote(noteContent: String, question: String, language: String): String {
-        val langInstruction = if (language != "en") "\nRespond in $language language." else ""
+        val langInstruction = if (language != "en") "\nEnsure your answer is written in $language language." else ""
 
-        val systemPrompt = "You are a helpful assistant that answers questions about a note's content. " +
-            "Base your answer only on the information provided in the note. " +
-            "If the note doesn't contain the answer, say so clearly.$langInstruction"
+        val systemPrompt = "You are a helpful assistant that answers questions about a note's content.\n\n" +
+            "Rules:\n" +
+            "• Base your answer ONLY on the information provided in the note\n" +
+            "• Output a single direct, concise answer\n" +
+            "• Do NOT repeat the question, generate multiple answer versions, or simulate conversation turns\n" +
+            "• If the note doesn't contain the answer, state clearly: \"The note does not contain information to answer this question.\"$langInstruction"
 
         val userPrompt = "Note content:\n${truncateText(noteContent)}\n\nQuestion: $question"
 
-        val result = generateResponse(systemPrompt, userPrompt, maxTokens = 1000)
+        val result = generateResponse(systemPrompt, userPrompt, maxTokens = 600)
         return result ?: "Unable to generate answer. Please ensure a model is downloaded."
     }
 
