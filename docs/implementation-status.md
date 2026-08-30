@@ -23,6 +23,7 @@
   - `StudyScreen` & `StudyViewModel`: Interactive 3D flip card review interface with SM-2 quality ratings (Again/Hard/Good/Easy), progress tracking, and deck sharing.
   - `Navigation.kt`: Wired `Screen.Study` route (`study?noteId={noteId}`).
   - `NoteConflictResolver`: 3-way synchronization conflict detection, Git-style diff formatting, and field-level manual resolution choices.
+  - `SyncQueueManager`: Offline-first synchronization queue with exponential backoff retries, peer push/pull, and 3-way conflict integration.
   - `VocabularyDictionaryService`: Malaysian BM-English acronym normalization, regulatory entity expansion, shorthand cleaning, and custom terminology support.
   - `AgentTool` & `AgentToolRegistry`: Narrowly scoped agent tool execution framework pre-registering all 11 Evidence-First Master Plan tools (`search_notes`, `get_note`, `get_transcript_segment`, `get_audio_timestamp`, `create_draft_task`, `update_note`, `create_calendar_draft`, `export_workspace`, `request_delete_confirmation`, `list_related_notes`, `list_contradictions`).
   - `AgentSecurityTest`: Comprehensive automated test suite verifying indirect prompt injection containment, role hijacking prevention, HTML/XSS sanitization, unauthorized deletion gating, and local-only privacy mode enforcement.
@@ -32,8 +33,6 @@
 ---
 
 ## 2. In Progress / Upcoming
-- **End-to-End Multi-Device Sync Worker**:
-  - Background worker connecting `NoteConflictResolver` with remote cloud or local LAN sync peers.
 - **Release Optimization**:
   - Signed release build packaging and ProGuard optimization.
 
@@ -53,6 +52,7 @@
 - `app/src/main/java/com/omnidocs/app/study/StudyExportService.kt`
 - `app/src/main/java/com/omnidocs/app/study/StudyModels.kt`
 - `app/src/main/java/com/omnidocs/app/sync/NoteConflictResolver.kt`
+- `app/src/main/java/com/omnidocs/app/sync/SyncQueueManager.kt`
 - `app/src/main/java/com/omnidocs/app/ui/navigation/Navigation.kt`
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyScreen.kt`
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyViewModel.kt`
@@ -66,6 +66,7 @@
 - `app/src/test/java/com/omnidocs/app/email/EmailDraftServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/study/StudyEngineTest.kt`
 - `app/src/test/java/com/omnidocs/app/sync/NoteConflictResolverTest.kt`
+- `app/src/test/java/com/omnidocs/app/sync/SyncQueueManagerTest.kt`
 - `app/src/test/java/com/omnidocs/app/ui/screens/study/StudyViewModelTest.kt`
 - `app/src/test/java/com/omnidocs/app/vocabulary/VocabularyDictionaryServiceTest.kt`
 - `docs/current-state.md`
