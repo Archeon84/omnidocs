@@ -26,20 +26,23 @@
   - `SyncQueueManager`: Offline-first synchronization queue with exponential backoff retries, peer push/pull, and 3-way conflict integration.
   - `VocabularyDictionaryService`: Malaysian BM-English acronym normalization, regulatory entity expansion, shorthand cleaning, and custom terminology support.
   - `AgentTool` & `AgentToolRegistry`: Narrowly scoped agent tool execution framework pre-registering all 11 Evidence-First Master Plan tools (`search_notes`, `get_note`, `get_transcript_segment`, `get_audio_timestamp`, `create_draft_task`, `update_note`, `create_calendar_draft`, `export_workspace`, `request_delete_confirmation`, `list_related_notes`, `list_contradictions`).
+  - `WorkspaceExportService`: Full workspace ZIP archive packaging containing Markdown (with YAML frontmatter), HTML, GraphML, JSON-LD, calendar (.ics), study decks, action items, and manifest.json.
   - `AgentSecurityTest`: Comprehensive automated test suite verifying indirect prompt injection containment, role hijacking prevention, HTML/XSS sanitization, unauthorized deletion gating, and local-only privacy mode enforcement.
   - `EvaluationBenchmarkTest`: Benchmark measuring SHA-256 quote hash correctness, BM-English code-switching precision (100%), 3-way conflict merge reliability, and malformed HTML/XSS sanitization.
 - **Phase 8: Production Hardening & Thermal Budgeting**:
   - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
+  - `proguard-rules.pro`: Production R8/ProGuard obfuscation and shrinking protection for all domain, AI, STT, and export models.
 
 ---
 
 ## 2. In Progress / Upcoming
-- **Release Optimization**:
-  - Signed release build packaging and ProGuard optimization.
+- **Release Packaging**:
+  - Signed release AAB bundle generation.
 
 ---
 
 ## 3. Files Created / Modified
+- `app/proguard-rules.pro`
 - `app/src/main/java/com/omnidocs/app/agent/AgentTool.kt`
 - `app/src/main/java/com/omnidocs/app/agent/AgentToolRegistry.kt`
 - `app/src/main/java/com/omnidocs/app/agent/AnswerAgent.kt`
@@ -49,6 +52,7 @@
 - `app/src/main/java/com/omnidocs/app/ai/ThermalBudgetManager.kt`
 - `app/src/main/java/com/omnidocs/app/calendar/CalendarExportService.kt`
 - `app/src/main/java/com/omnidocs/app/email/EmailDraftService.kt`
+- `app/src/main/java/com/omnidocs/app/export/WorkspaceExportService.kt`
 - `app/src/main/java/com/omnidocs/app/study/SpacedRepetitionScheduler.kt`
 - `app/src/main/java/com/omnidocs/app/study/StudyExportService.kt`
 - `app/src/main/java/com/omnidocs/app/study/StudyModels.kt`
@@ -66,6 +70,7 @@
 - `app/src/test/java/com/omnidocs/app/calendar/CalendarExportServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/email/EmailDraftServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/eval/EvaluationBenchmarkTest.kt`
+- `app/src/test/java/com/omnidocs/app/export/WorkspaceExportServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/study/StudyEngineTest.kt`
 - `app/src/test/java/com/omnidocs/app/sync/NoteConflictResolverTest.kt`
 - `app/src/test/java/com/omnidocs/app/sync/SyncQueueManagerTest.kt`
@@ -81,9 +86,9 @@
 ---
 
 ## 4. Tests Run & Build Verification
-- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 107 tests passed, 0 failures).
+- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 108 tests passed, 0 failures).
 - **Compilation**: `./gradlew :app:assembleDebug` (Build successful).
-- **On-Device Target**: Verified on Xiaomi 13 Ultra (`29eb447c`).
+- **On-Device Target**: Deployed and verified on Xiaomi 13 Ultra (`29eb447c`).
 
 ---
 
