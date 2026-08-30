@@ -24,6 +24,7 @@
   - `Navigation.kt`: Wired `Screen.Study` route (`study?noteId={noteId}`).
   - `NoteConflictResolver`: 3-way synchronization conflict detection, Git-style diff formatting, and field-level manual resolution choices.
   - `VocabularyDictionaryService`: Malaysian BM-English acronym normalization, regulatory entity expansion, shorthand cleaning, and custom terminology support.
+  - `AgentTool` & `AgentToolRegistry`: Narrowly scoped agent tool execution framework pre-registering all 11 Evidence-First Master Plan tools (`search_notes`, `get_note`, `get_transcript_segment`, `get_audio_timestamp`, `create_draft_task`, `update_note`, `create_calendar_draft`, `export_workspace`, `request_delete_confirmation`, `list_related_notes`, `list_contradictions`).
 - **Phase 8: Production Hardening & Thermal Budgeting**:
   - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
 
@@ -38,21 +39,24 @@
 ---
 
 ## 3. Files Created / Modified
-- `app/src/main/java/com/omnidocs/app/ai/AiOutputProcessor.kt`
-- `app/src/main/java/com/omnidocs/app/ai/NoteIntelligenceService.kt`
+- `app/src/main/java/com/omnidocs/app/agent/AgentTool.kt`
+- `app/src/main/java/com/omnidocs/app/agent/AgentToolRegistry.kt`
 - `app/src/main/java/com/omnidocs/app/agent/AnswerAgent.kt`
-- `app/src/main/java/com/omnidocs/app/ai/ThermalBudgetManager.kt`
+- `app/src/main/java/com/omnidocs/app/ai/AiOutputProcessor.kt`
 - `app/src/main/java/com/omnidocs/app/ai/LlamaCppService.kt`
+- `app/src/main/java/com/omnidocs/app/ai/NoteIntelligenceService.kt`
+- `app/src/main/java/com/omnidocs/app/ai/ThermalBudgetManager.kt`
 - `app/src/main/java/com/omnidocs/app/calendar/CalendarExportService.kt`
 - `app/src/main/java/com/omnidocs/app/email/EmailDraftService.kt`
-- `app/src/main/java/com/omnidocs/app/study/StudyModels.kt`
 - `app/src/main/java/com/omnidocs/app/study/SpacedRepetitionScheduler.kt`
 - `app/src/main/java/com/omnidocs/app/study/StudyExportService.kt`
+- `app/src/main/java/com/omnidocs/app/study/StudyModels.kt`
 - `app/src/main/java/com/omnidocs/app/sync/NoteConflictResolver.kt`
 - `app/src/main/java/com/omnidocs/app/ui/navigation/Navigation.kt`
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyScreen.kt`
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyViewModel.kt`
 - `app/src/main/java/com/omnidocs/app/vocabulary/VocabularyDictionaryService.kt`
+- `app/src/test/java/com/omnidocs/app/agent/AgentToolRegistryTest.kt`
 - `app/src/test/java/com/omnidocs/app/ai/AiPromptAndOutputTest.kt`
 - `app/src/test/java/com/omnidocs/app/ai/NoteIntelligenceServiceStudyTest.kt`
 - `app/src/test/java/com/omnidocs/app/ai/ThermalBudgetManagerTest.kt`
@@ -72,7 +76,7 @@
 ---
 
 ## 4. Tests Run & Build Verification
-- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 95 tests passed, 0 failures).
+- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 99 tests passed, 0 failures).
 - **Compilation**: `./gradlew :app:assembleDebug` (Build successful).
 - **On-Device Target**: Verified on Xiaomi 13 Ultra (`29eb447c`).
 
@@ -82,4 +86,5 @@
 - **100% On-Device Processing**: Verified zero remote network calls for LLM generation, embeddings, speech recognition, and OCR.
 - **Hardware Protection**: Hardware-backed KeyStore SQLCipher AES-256 encryption at rest.
 - **Thermal Safety**: Automated inference throttling and shutdown protection against device overheating.
+- **Tool Sandbox**: Strict read-only vs mutating classification, user approval confirmation gates, and audit logging for all agent tool executions.
 - **Export Safety**: Strict escaping for RFC 5545, XML, JSON-LD, and TSV with app-isolated FileProvider cache sharing.
