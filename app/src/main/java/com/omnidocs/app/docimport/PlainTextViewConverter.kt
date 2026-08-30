@@ -14,16 +14,33 @@ class PlainTextViewConverter : DocumentConverter {
         "text/*"
     )
 
+    companion object {
+        private const val MAX_IMPORT_CHARS = 500_000
+    }
+
     override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome {
         return try {
             val inputStream = context.contentResolver.openInputStream(uri)
                 ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
-            val text = inputStream.bufferedReader().use { it.readText() }
 
-            if (text.isBlank()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
+            val rawText = inputStream.bufferedReader().use { reader ->
+                val buffer = CharArray(8192)
+                val sb = StringBuilder()
+                var read: Int
+                while (reader.read(buffer).also { read = it } != -1) {
+                    sb.append(buffer, 0, read)
+                    if (sb.length >= MAX_IMPORT_CHARS) {
+                        sb.append("\n\n[Document truncated: exceeded mobile import limit of 500,000 characters]")
+                        break
+                    }
+                }
+                sb.toString()
+            }
+
+            if (rawText.isBlank()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
             val title = fileName.substringBeforeLast('.')
-            val html = text.lines()
+            val html = rawText.lines()
                 .filter { it.isNotBlank() }
                 .joinToString("") { "<p>${escapeHtml(it)}</p>" }
 
@@ -31,7 +48,7 @@ class PlainTextViewConverter : DocumentConverter {
                 ConversionResult(
                     title = title,
                     htmlContent = html,
-                    plainText = text.trim()
+                    plainText = rawText.trim()
                 )
             )
         } catch (e: Exception) {

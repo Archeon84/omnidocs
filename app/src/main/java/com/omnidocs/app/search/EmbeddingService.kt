@@ -48,6 +48,69 @@ class EmbeddingService @Inject constructor(
     }
 
     /**
+     * Chunk text into overlapping word passages for granular semantic retrieval.
+     */
+    fun chunkText(text: String, chunkSizeWords: Int = 180, overlapWords: Int = 35): List<String> {
+        val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty()) return emptyList()
+        if (words.size <= chunkSizeWords) return listOf(text.trim())
+
+        val chunks = mutableListOf<String>()
+        var start = 0
+        val step = (chunkSizeWords - overlapWords).coerceAtLeast(1)
+
+        while (start < words.size) {
+            val end = (start + chunkSizeWords).coerceAtMost(words.size)
+            val chunk = words.subList(start, end).joinToString(" ")
+            if (chunk.isNotBlank()) {
+                chunks.add(chunk)
+            }
+            if (end >= words.size) break
+            start += step
+        }
+        return chunks
+    }
+
+    /**
+     * Chunk a note into multiple passages and store embeddings for each passage.
+     * Replaces previous embeddings for this note with the current model.
+     */
+    suspend fun embedAndStoreNotePassages(
+        noteId: String,
+        title: String,
+        content: String,
+        modelName: String? = null
+    ): List<EmbeddingEntity> {
+        val fullText = "$title\n\n$content".trim()
+        if (fullText.isBlank()) return emptyList()
+
+        val chunks = chunkText(fullText)
+        val entities = mutableListOf<EmbeddingEntity>()
+
+        for ((index, chunk) in chunks.withIndex()) {
+            val (vector, usedModelName) = embedInternal(chunk, isQuery = false)
+            val resolvedModel = modelName ?: usedModelName
+            val entity = EmbeddingEntity(
+                id = "note:$noteId:$index:$resolvedModel",
+                sourceType = "note",
+                sourceId = noteId,
+                chunkHash = chunk.hashCode().toString(),
+                modelName = resolvedModel,
+                embeddingVector = serializeVector(vector),
+                createdAt = System.currentTimeMillis()
+            )
+            entities.add(entity)
+        }
+
+        if (entities.isNotEmpty()) {
+            // Remove previous embeddings for this note before saving new passage set
+            embeddingDao.deleteEmbeddingsBySource("note", noteId)
+            embeddingDao.insertEmbeddings(entities)
+        }
+        return entities
+    }
+
+    /**
      * Generate and store an embedding for a text chunk (document context: uses
      * the "passage:" prefix required by e5-family models). Idempotent: the row id
      * is deterministic so re-saving a note upserts instead of accumulating rows.

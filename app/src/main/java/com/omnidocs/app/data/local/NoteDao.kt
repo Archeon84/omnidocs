@@ -31,6 +31,12 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE rowid IN (SELECT docid FROM notes_fts WHERE notes_fts MATCH :query) AND isDeleted = 0 ORDER BY updatedAt DESC")
     fun searchNotesFts(query: String): Flow<List<NoteEntity>>
 
+    @Query("SELECT * FROM notes WHERE rowid IN (SELECT docid FROM notes_fts WHERE notes_fts MATCH :query) AND isDeleted = 0 ORDER BY updatedAt DESC")
+    suspend fun searchNotesFtsSync(query: String): List<NoteEntity>
+
+    @Query("SELECT * FROM notes WHERE id IN (:ids) AND isDeleted = 0")
+    suspend fun getNotesByIdsSync(ids: List<String>): List<NoteEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNote(note: NoteEntity)
 

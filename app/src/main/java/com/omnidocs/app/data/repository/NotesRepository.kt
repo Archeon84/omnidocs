@@ -110,9 +110,9 @@ class NotesRepository @Inject constructor(
         if (!modelDownloaded) return
         reindexScope.launch {
             try {
-                Log.d("NotesRepository", "reindexOnSave: starting embed for note ${note.id}")
-                embeddingService.embedAndStore("note", note.id, "${note.title} ${note.plainText}")
-                Log.d("NotesRepository", "reindexOnSave: completed embed for note ${note.id}")
+                Log.d("NotesRepository", "reindexOnSave: starting passage embed for note ${note.id}")
+                embeddingService.embedAndStoreNotePassages(note.id, note.title, note.plainText)
+                Log.d("NotesRepository", "reindexOnSave: completed passage embed for note ${note.id}")
             } catch (e: Exception) {
                 Log.e("NotesRepository", "reindexOnSave failed for note ${note.id}", e)
             }

@@ -15,47 +15,62 @@ class XlsxDocumentConverter : DocumentConverter {
         "application/vnd.ms-excel"
     )
 
+    companion object {
+        private const val MAX_ROWS_PER_SHEET = 3000
+        private const val MAX_COLS_PER_ROW = 100
+    }
+
     override suspend fun convert(context: Context, uri: Uri, fileName: String): ConversionOutcome {
         return try {
             val inputStream = context.contentResolver.openInputStream(uri)
                 ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
-            val workbook = XSSFWorkbook(inputStream)
 
             val title = fileName.substringBeforeLast('.')
             val htmlBuilder = StringBuilder()
             val plainBuilder = StringBuilder()
 
-            for (sheetIdx in 0 until workbook.numberOfSheets) {
-                val sheet = workbook.getSheetAt(sheetIdx)
-                val sheetName = sheet.sheetName
+            inputStream.use { stream ->
+                XSSFWorkbook(stream).use { workbook ->
+                    for (sheetIdx in 0 until workbook.numberOfSheets) {
+                        val sheet = workbook.getSheetAt(sheetIdx)
+                        val sheetName = sheet.sheetName
 
-                if (workbook.numberOfSheets > 1) {
-                    htmlBuilder.appendLine("<h2>${escapeHtml(sheetName)}</h2>")
-                    plainBuilder.appendLine("=== $sheetName ===")
-                }
+                        if (workbook.numberOfSheets > 1) {
+                            htmlBuilder.appendLine("<h2>${escapeHtml(sheetName)}</h2>")
+                            plainBuilder.appendLine("=== $sheetName ===")
+                        }
 
-                htmlBuilder.appendLine("<table>")
+                        htmlBuilder.appendLine("<table>")
 
-                for (row in sheet) {
-                    htmlBuilder.append("<tr>")
-                    val cells = mutableListOf<String>()
+                        var rowCount = 0
+                        for (row in sheet) {
+                            if (rowCount >= MAX_ROWS_PER_SHEET) {
+                                htmlBuilder.appendLine("<tr><td colspan=\"3\"><em>[Sheet truncated: exceeded $MAX_ROWS_PER_SHEET rows]</em></td></tr>")
+                                plainBuilder.appendLine("[Sheet truncated: exceeded $MAX_ROWS_PER_SHEET rows]")
+                                break
+                            }
 
-                    for (cellIdx in 0 until row.lastCellNum) {
-                        val cell = row.getCell(cellIdx)
-                        val value = getCellValue(cell)
-                        htmlBuilder.append("<td>${escapeHtml(value)}</td>")
-                        cells.add(value)
+                            htmlBuilder.append("<tr>")
+                            val cells = mutableListOf<String>()
+
+                            val lastCol = row.lastCellNum.toInt().coerceAtMost(MAX_COLS_PER_ROW)
+                            for (cellIdx in 0 until lastCol) {
+                                val cell = row.getCell(cellIdx)
+                                val value = getCellValue(cell)
+                                htmlBuilder.append("<td>${escapeHtml(value)}</td>")
+                                cells.add(value)
+                            }
+
+                            htmlBuilder.appendLine("</tr>")
+                            plainBuilder.appendLine(cells.joinToString(" | "))
+                            rowCount++
+                        }
+
+                        htmlBuilder.appendLine("</table>")
+                        htmlBuilder.appendLine()
                     }
-
-                    htmlBuilder.appendLine("</tr>")
-                    plainBuilder.appendLine(cells.joinToString(" | "))
                 }
-
-                htmlBuilder.appendLine("</table>")
-                htmlBuilder.appendLine()
             }
-
-            workbook.close()
 
             val html = htmlBuilder.toString().trim()
             val plain = plainBuilder.toString().trim()

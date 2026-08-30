@@ -31,11 +31,13 @@ class PdfDocumentConverter : DocumentConverter {
 
             val inputStream = context.contentResolver.openInputStream(uri)
                 ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
-            val document = PDDocument.load(inputStream)
 
-            val stripper = PDFTextStripper()
-            val text = stripper.getText(document)
-            document.close()
+            val text = inputStream.use { stream ->
+                PDDocument.load(stream).use { document ->
+                    val stripper = PDFTextStripper()
+                    stripper.getText(document)
+                }
+            }
 
             if (text.isBlank()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
