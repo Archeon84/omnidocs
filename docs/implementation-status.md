@@ -19,14 +19,17 @@
   - `CalendarExportService`: RFC 5545 iCalendar (`.ics`) serialization for action items, deadlines, priorities, and advance reminder alarms.
   - `EmailDraftService`: Executive meeting summary email composer with structured decisions, prioritized action items, and `mailto:` intent.
   - `StudyEngine` / `SpacedRepetitionScheduler`: SuperMemo-2 (SM-2) scheduling algorithm for flashcards, cloze deletions, MCQs, and Anki/Markdown export.
+  - `NoteConflictResolver`: 3-way synchronization conflict detection, Git-style diff formatting, and field-level manual resolution choices.
+- **Phase 8: Production Hardening & Thermal Budgeting**:
+  - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
 
 ---
 
-## 2. Partially Completed / In Progress
-- **Phase 7: Cloud Sync Conflict Resolution**:
-  - Visual side-by-side diff dialog for concurrent offline/online edits.
-- **Phase 8: Release Hardening & Thermal Budgeting**:
-  - Dynamic token cap throttling based on Android `ThermalManager` status.
+## 2. In Progress / Upcoming
+- **End-to-End Multi-Device Sync Worker**:
+  - Background worker connecting `NoteConflictResolver` with remote cloud or local LAN sync peers.
+- **Release Optimization**:
+  - Signed release build packaging and ProGuard optimization.
 
 ---
 
@@ -34,20 +37,26 @@
 - `app/src/main/java/com/omnidocs/app/ai/AiOutputProcessor.kt`
 - `app/src/main/java/com/omnidocs/app/ai/NoteIntelligenceService.kt`
 - `app/src/main/java/com/omnidocs/app/agent/AnswerAgent.kt`
+- `app/src/main/java/com/omnidocs/app/ai/ThermalBudgetManager.kt`
+- `app/src/main/java/com/omnidocs/app/ai/LlamaCppService.kt`
 - `app/src/main/java/com/omnidocs/app/calendar/CalendarExportService.kt`
 - `app/src/main/java/com/omnidocs/app/email/EmailDraftService.kt`
 - `app/src/main/java/com/omnidocs/app/study/StudyModels.kt`
 - `app/src/main/java/com/omnidocs/app/study/SpacedRepetitionScheduler.kt`
 - `app/src/main/java/com/omnidocs/app/study/StudyExportService.kt`
+- `app/src/main/java/com/omnidocs/app/sync/NoteConflictResolver.kt`
 - `app/src/test/java/com/omnidocs/app/ai/AiPromptAndOutputTest.kt`
+- `app/src/test/java/com/omnidocs/app/ai/ThermalBudgetManagerTest.kt`
 - `app/src/test/java/com/omnidocs/app/calendar/CalendarExportServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/email/EmailDraftServiceTest.kt`
 - `app/src/test/java/com/omnidocs/app/study/StudyEngineTest.kt`
+- `app/src/test/java/com/omnidocs/app/sync/NoteConflictResolverTest.kt`
 - `docs/current-state.md`
 - `docs/architecture-audit.md`
 - `docs/gap-matrix.md`
 - `docs/security-risk-register.md`
 - `docs/implementation-plan.md`
+- `docs/implementation-status.md`
 
 ---
 
@@ -60,5 +69,6 @@
 
 ## 5. Security & Privacy Review
 - **100% On-Device Processing**: Verified zero remote network calls for LLM generation, embeddings, speech recognition, and OCR.
-- **Data Protection (PDPA)**: AES-256 SQLCipher encrypted storage at rest with hardware KeyStore master key.
-- **Export Safety**: Strict RFC 5545 / XML / JSON-LD escaping and app-isolated FileProvider cache paths.
+- **Hardware Protection**: Hardware-backed KeyStore SQLCipher AES-256 encryption at rest.
+- **Thermal Safety**: Automated inference throttling and shutdown protection against device overheating.
+- **Export Safety**: Strict escaping for RFC 5545, XML, JSON-LD, and TSV with app-isolated FileProvider cache sharing.
