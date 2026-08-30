@@ -29,6 +29,10 @@
   - `WorkspaceExportService`: Full workspace ZIP archive packaging containing Markdown (with YAML frontmatter), HTML, GraphML, JSON-LD, calendar (.ics), study decks, action items, and manifest.json.
   - `AgentSecurityTest`: Comprehensive automated test suite verifying indirect prompt injection containment, role hijacking prevention, HTML/XSS sanitization, unauthorized deletion gating, and local-only privacy mode enforcement.
   - `EvaluationBenchmarkTest`: Benchmark measuring SHA-256 quote hash correctness, BM-English code-switching precision (100%), 3-way conflict merge reliability, and malformed HTML/XSS sanitization.
+- **UI/UX Overhaul & Decluttering**:
+  - `SettingsScreen.kt`: Clean M3 grouped preference cards with 1-sentence concise descriptions for all settings (Appearance, Sync, AI Models, Privacy, About) and compact model dialogs.
+  - `HomeScreen.kt`: Streamlined main menu workflow with 1-tap Quick Creation Action Bar (New Note, Voice Note, Scan Doc, Import File, Templates), "Talk with your Notes" AI hero prompt card, instant search bar, review filter tabs (All, Pinned, Recent, Recordings), and smart note card metadata badges.
+  - `BottomNavBar.kt`: Wired `Ask AI` directly to "Talk with your Notes" Q&A.
 - **Phase 8: Production Hardening & Thermal Budgeting**:
   - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
   - `proguard-rules.pro`: Production R8/ProGuard obfuscation and shrinking protection for all domain, AI, STT, and export models.
@@ -58,7 +62,10 @@
 - `app/src/main/java/com/omnidocs/app/study/StudyModels.kt`
 - `app/src/main/java/com/omnidocs/app/sync/NoteConflictResolver.kt`
 - `app/src/main/java/com/omnidocs/app/sync/SyncQueueManager.kt`
+- `app/src/main/java/com/omnidocs/app/ui/components/BottomNavBar.kt`
 - `app/src/main/java/com/omnidocs/app/ui/navigation/Navigation.kt`
+- `app/src/main/java/com/omnidocs/app/ui/screens/home/HomeScreen.kt`
+- `app/src/main/java/com/omnidocs/app/ui/screens/settings/SettingsScreen.kt`
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyScreen.kt`
 - `app/src/main/java/com/omnidocs/app/ui/screens/study/StudyViewModel.kt`
 - `app/src/main/java/com/omnidocs/app/vocabulary/VocabularyDictionaryService.kt`

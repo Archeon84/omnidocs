@@ -50,7 +50,7 @@ enum class BottomNavItem(
 ) {
     Notes("Notes", Icons.Filled.Description, Icons.Outlined.Description),
     Search("Search", Icons.Filled.Search, Icons.Outlined.Search),
-    AI("AI", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
+    AI("Ask AI", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
     Tasks("Tasks", Icons.Filled.CheckCircle, Icons.Outlined.CheckCircle),
     Settings("Settings", Icons.Filled.Settings, Icons.Outlined.Settings),
 }
