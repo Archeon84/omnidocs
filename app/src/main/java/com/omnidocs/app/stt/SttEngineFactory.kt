@@ -5,6 +5,8 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelPreferences
+import com.omnidocs.app.ai.NativeMemoryManager
+import com.omnidocs.app.ai.NativeModelSlot
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
@@ -21,7 +23,8 @@ class SttEngineFactory @Inject constructor(
     @ApplicationContext private val context: Context,
     private val modelDownloadManager: ModelDownloadManager,
     private val modelPreferences: ModelPreferences,
-    private val sherpaEngine: SherpaOnnxSttEngine
+    private val sherpaEngine: SherpaOnnxSttEngine,
+    private val nativeMemoryManager: NativeMemoryManager
 ) {
     /**
      * Get the best available STT engine.
@@ -42,12 +45,20 @@ class SttEngineFactory @Inject constructor(
             return null
         }
 
-        // Try selected model first
+        // Try selected model first.
+        // STT slot acquisition evicts the resident LLM BEFORE the multi-hundred-MB
+        // Whisper/Moonshine load, so the two giants are never resident at once.
         val selectedModel = availableModels.find { it.id == selectedModelId }
         if (selectedModel != null) {
             val modelDir = modelDownloadManager.getSttModelPath(selectedModel)
             Log.d(TAG, "Trying selected model: ${selectedModel.name} at $modelDir")
-            if (sherpaEngine.initialize(modelDir, selectedModel, sttLanguage, accuracyMode)) {
+            val initialized = nativeMemoryManager.withSlot(
+                NativeModelSlot.SPEECH_TO_TEXT,
+                NativeMemoryManager.OWNER_STT
+            ) {
+                sherpaEngine.initialize(modelDir, selectedModel, sttLanguage, accuracyMode)
+            }
+            if (initialized) {
                 Log.d(TAG, "Using Sherpa-onnx with ${selectedModel.name}")
                 return sherpaEngine
             }
@@ -59,7 +70,13 @@ class SttEngineFactory @Inject constructor(
             if (model.id == selectedModelId) continue // already tried
             val modelDir = modelDownloadManager.getSttModelPath(model)
             Log.d(TAG, "Trying fallback model: ${model.name} at $modelDir")
-            if (sherpaEngine.initialize(modelDir, model, sttLanguage, accuracyMode)) {
+            val initialized = nativeMemoryManager.withSlot(
+                NativeModelSlot.SPEECH_TO_TEXT,
+                NativeMemoryManager.OWNER_STT
+            ) {
+                sherpaEngine.initialize(modelDir, model, sttLanguage, accuracyMode)
+            }
+            if (initialized) {
                 Log.d(TAG, "Using Sherpa-onnx with fallback: ${model.name}")
                 // Only auto-select if user had no explicit selection (null = system/default)
                 if (selectedModelId == null) {

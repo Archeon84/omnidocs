@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="shared_notes" path="shared_notes/" />
+    <!-- Workspace ZIP exports are written to cacheDir/exports by
+         WorkspaceExportService.exportAndShareWorkspace; without this root
+         FileProvider.getUriForFile throws and sharing always fails. -->
+    <cache-path name="workspace_exports" path="exports/" />
     <files-path name="attachments" path="attachments/" />
 </paths>

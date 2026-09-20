@@ -9,6 +9,9 @@ interface TranscriptSegmentDao {
     @Query("SELECT * FROM transcript_segments WHERE recordingId = :recordingId ORDER BY startMs ASC")
     fun getSegmentsByRecording(recordingId: String): Flow<List<TranscriptSegmentEntity>>
 
+    @Query("SELECT * FROM transcript_segments WHERE recordingId IN (:recordingIds) ORDER BY startMs ASC")
+    suspend fun getSegmentsByRecordingIds(recordingIds: List<String>): List<TranscriptSegmentEntity>
+
     @Query("SELECT * FROM transcript_segments WHERE noteId = :noteId ORDER BY startMs ASC")
     fun getSegmentsByNoteId(noteId: String): Flow<List<TranscriptSegmentEntity>>
 

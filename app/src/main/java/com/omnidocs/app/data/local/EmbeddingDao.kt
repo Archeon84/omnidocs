@@ -34,4 +34,7 @@ interface EmbeddingDao {
 
     @Query("DELETE FROM embeddings WHERE sourceId IN (:sourceIds)")
     suspend fun deleteEmbeddingsBySourceIds(sourceIds: List<String>)
+
+    @Query("DELETE FROM embeddings WHERE id IN (:ids)")
+    suspend fun deleteEmbeddingsByIds(ids: List<String>)
 }

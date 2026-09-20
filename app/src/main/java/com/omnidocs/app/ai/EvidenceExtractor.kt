@@ -55,36 +55,69 @@ class EvidenceExtractor @Inject constructor(
     // for one caller at a time; the flag is cleared in the finally block.
     private val isExtracting = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    // Hash of the last text successfully submitted for extraction. Skips re-extraction
-    // when the note content hasn't changed since the previous run.
-    @Volatile private var lastExtractedHash: Int = 0
+    // Per-note hash of the last submitted text. The old single global hash
+    // suppressed legitimate work across different notes on hash match.
+    private val lastExtractedHash = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    // Single coalescing slot: while an extraction runs, newer requests replace
+    // (not pile behind) the pending one — extraction is expensive, so only the
+    // latest state per burst is worth processing. Never silently dropped.
+    private data class PendingExtraction(
+        val noteId: String,
+        val text: String,
+        val language: String,
+        val hash: Int
+    )
+    private val pending = java.util.concurrent.atomic.AtomicReference<PendingExtraction?>(null)
 
     /**
      * Fire-and-forget variant of [extractFromNote]. Runs off the ViewModel scope so
      * a back-navigation (which cancels viewModelScope) never aborts extraction, and
      * the slow offline-LLM call never blocks save/navigation.
      *
-     * Drops the request silently if an extraction is already in progress or if the
-     * content hash is unchanged since the last run — both guards prevent successive
-     * GGML invocations that can trigger ggml_abort / SIGABRT.
+     * Skips only when this note's content hash is unchanged since its last run;
+     * otherwise the request is coalesced into the pending slot and processed
+     * next. Successive GGML invocations stay serialized via [isExtracting].
      */
     fun extractFromNoteAsync(noteId: String, text: String, language: String = "en") {
         val contentHash = text.hashCode()
-        if (contentHash == lastExtractedHash) {
+        if (lastExtractedHash[noteId] == contentHash) {
             Log.d(TAG, "Content unchanged since last extraction, skipping")
             return
         }
+        pending.set(PendingExtraction(noteId, text, language, contentHash))
         if (!isExtracting.compareAndSet(false, true)) {
-            Log.d(TAG, "Extraction already in progress, skipping")
+            Log.d(TAG, "Extraction in progress; coalesced pending request for $noteId")
             return
         }
         extractionScope.launch {
             try {
-                lastExtractedHash = contentHash
-                extractFromNote(noteId, text, language)
+                drainPending()
             } finally {
                 isExtracting.set(false)
+                // Handoff race: work may have landed after the final drain but
+                // before the flag cleared. Re-check and restart if so.
+                if (pending.get() != null && isExtracting.compareAndSet(false, true)) {
+                    extractionScope.launch {
+                        try {
+                            drainPending()
+                        } finally {
+                            isExtracting.set(false)
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    /** Process the coalesced pending request, then any that arrived meanwhile. */
+    private suspend fun drainPending() {
+        while (true) {
+            val next = pending.getAndSet(null) ?: break
+            // A newer save may have made this request stale; re-check cheaply.
+            if (lastExtractedHash[next.noteId] == next.hash) continue
+            lastExtractedHash[next.noteId] = next.hash
+            extractFromNote(next.noteId, next.text, next.language)
         }
     }
 

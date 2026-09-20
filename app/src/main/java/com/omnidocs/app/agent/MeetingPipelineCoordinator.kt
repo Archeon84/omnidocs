@@ -8,9 +8,12 @@ import com.omnidocs.app.data.local.entity.ActionItemEntity
 import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.data.local.entity.RecordingEntity
 import com.omnidocs.app.data.local.entity.TranscriptSegmentEntity
+import com.omnidocs.app.util.sanitizeForHtml
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -56,7 +59,8 @@ class MeetingPipelineCoordinator @Inject constructor(
     ): MeetingPipelineResult = withContext(Dispatchers.IO) {
         val job = agentCoordinator.createJob(
             jobType = "WORKFLOW_MEETING_RECORDING",
-            inputRefsJson = "{\"storageKey\":\"$storageKey\",\"language\":\"$language\"}"
+            inputRefsJson = "{\"storageKey\":\"${escapeJsonString(storageKey)}\"," +
+                "\"language\":\"${escapeJsonString(language)}\"}"
         )
         val jobId = job.id
 
@@ -116,7 +120,11 @@ class MeetingPipelineCoordinator @Inject constructor(
             val noteId = UUID.randomUUID().toString()
             val recordingId = UUID.randomUUID().toString()
 
-            val combinedHtml = "<h2>$meetingTitle</h2><p>$summaryText</p><hr/><h3>Transcript</h3><p>${fullNormalizedText.replace("\n", "<br/>")}</p>"
+            // Escape user/LLM text before embedding in stored HTML: a title
+            // with '<' or unbalanced LLM tags used to corrupt note rendering.
+            val combinedHtml = "<h2>${sanitizeForHtml(meetingTitle)}</h2>" +
+                "<p>$summaryText</p><hr/><h3>Transcript</h3>" +
+                "<p>${sanitizeForHtml(fullNormalizedText).replace("\n", "<br/>")}</p>"
             val noteEntity = NoteEntity(
                 id = noteId,
                 title = meetingTitle,
@@ -171,7 +179,7 @@ class MeetingPipelineCoordinator @Inject constructor(
                     transcriptSegmentDao.insertSegments(segmentEntities)
                 }
             } catch (e: Exception) {
-                // Non-fatal
+                android.util.Log.w("MeetingPipeline", "Transcript segments dropped (unindexed)", e)
             }
 
             // Save Extracted Action Items
@@ -179,7 +187,16 @@ class MeetingPipelineCoordinator @Inject constructor(
                 val taskArray = JSONArray(tasksJson)
                 val actionEntities = mutableListOf<ActionItemEntity>()
                 for (i in 0 until taskArray.length()) {
-                    val obj = taskArray.getJSONObject(i)
+                    // One bad task must not wipe the whole action list.
+                    val obj = try {
+                        taskArray.getJSONObject(i)
+                    } catch (e: Exception) {
+                        android.util.Log.w("MeetingPipeline", "Skipping malformed task at index $i", e)
+                        continue
+                    }
+                    // dueAt is LLM JSON: often "tomorrow" or a date string, not
+                    // a Long — coerce, never throw.
+                    val dueAtRaw = obj.optLongLenient("dueAt")?.takeIf { it > 0 }
                     actionEntities.add(
                         ActionItemEntity(
                             id = UUID.randomUUID().toString(),
@@ -188,7 +205,7 @@ class MeetingPipelineCoordinator @Inject constructor(
                             title = obj.optString("title", "Action Item"),
                             description = obj.optString("description", ""),
                             owner = obj.optString("owner").takeIf { it.isNotBlank() },
-                            dueAt = if (obj.has("dueAt") && obj.getLong("dueAt") > 0) obj.getLong("dueAt") else null,
+                            dueAt = dueAtRaw,
                             status = "OPEN",
                             priority = obj.optString("priority", "MEDIUM"),
                             createdAt = now,
@@ -200,16 +217,52 @@ class MeetingPipelineCoordinator @Inject constructor(
                     actionItemDao.insertActionItems(actionEntities)
                 }
             } catch (e: Exception) {
-                // Non-fatal
+                android.util.Log.w("MeetingPipeline", "Action items dropped", e)
             }
 
-            // Step 6: Indexing
+            // Step 6: Indexing — same block granularity as imports: the summary
+            // plus one block per transcript segment, with note-relative offsets
+            // so block-level retrieval and citations work for meeting notes.
             agentCoordinator.updateProgress(jobId, 95)
+            val meetingBlocksJson = JSONArray()
+            var blockCursor = 0
+            fun addMeetingBlock(content: String, blockType: String) {
+                if (content.isBlank()) return
+                val start = noteEntity.plainText.indexOf(content, blockCursor)
+                    .coerceAtLeast(0)
+                val end = (start + content.length).coerceAtMost(noteEntity.plainText.length)
+                blockCursor = end
+                meetingBlocksJson.put(
+                    JSONObject()
+                        .put("content", content)
+                        .put("blockType", blockType)
+                        .put("startOffset", start)
+                        .put("endOffset", end)
+                )
+            }
+            addMeetingBlock(summaryText, "summary")
+            try {
+                val segArray = JSONArray(normalizedSegmentsJson)
+                for (i in 0 until segArray.length()) {
+                    val obj = segArray.optJSONObject(i) ?: continue
+                    val text = obj.optString("correctedText").ifBlank { obj.optString("rawText") }
+                    addMeetingBlock(text, "transcript")
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MeetingPipeline", "Transcript blocks skipped", e)
+            }
             val indexingInput = AgentInput(
                 type = "INDEXING_INPUT",
-                payload = mapOf("noteId" to noteId, "fullText" to noteEntity.plainText)
+                payload = mapOf(
+                    "noteId" to noteId,
+                    "fullText" to noteEntity.plainText,
+                    "blocksJson" to meetingBlocksJson.toString()
+                )
             )
-            agentCoordinator.runAgent(jobId, indexingAgent, indexingInput, privacyMode)
+            val indexingResult = agentCoordinator.runAgent(jobId, indexingAgent, indexingInput, privacyMode)
+            if (indexingResult !is AgentResult.Success) {
+                android.util.Log.w("MeetingPipeline", "Indexing failed: note saved but unindexed")
+            }
 
             agentCoordinator.updateProgress(jobId, 100)
             agentCoordinator.recordEvent(
@@ -229,9 +282,13 @@ class MeetingPipelineCoordinator @Inject constructor(
                 segmentCount = segmentCount,
                 taskCount = taskCount
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val message = e.message ?: e.javaClass.simpleName
             failure(jobId, "Meeting pipeline exception: $message")
+        } finally {
+            agentCoordinator.clearJobCancellation(jobId)
         }
     }
 

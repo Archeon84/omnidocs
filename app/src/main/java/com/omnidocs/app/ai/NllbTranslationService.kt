@@ -19,6 +19,12 @@ class NllbTranslationService @Inject constructor(
 ) {
     private var modelLoaded = false
 
+    /** Chat template of the resident translation model (set at load). */
+    private var loadedPromptFormat: PromptFormat = PromptFormat.CHATML
+
+    /** Id of the resident translation model; a selection change forces reload. */
+    private var loadedModelId: String? = null
+
     private val supportedLanguages = mapOf(
         // East Asian
         "zho" to "Chinese",
@@ -140,7 +146,7 @@ class NllbTranslationService @Inject constructor(
             val translatedChunks = mutableListOf<String>()
             for ((index, chunk) in chunks.withIndex()) {
                 Log.d(TAG, "Translating chunk ${index + 1}/${chunks.size} (${chunk.length} chars)")
-                val prompt = Qwen3PromptBuilder.buildTranslatePrompt(chunk, lang)
+                val prompt = Qwen3PromptBuilder.buildTranslatePrompt(chunk, lang, loadedPromptFormat)
                 val raw = llamaCppService.generate(prompt, maxTokens = 2048)
                 if (raw != null) {
                     val cleaned = AiOutputProcessor.process(raw).trim()
@@ -235,13 +241,19 @@ class NllbTranslationService @Inject constructor(
 
     private suspend fun loadModel(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val model = modelDownloadManager.getDownloadedModels().firstOrNull { it.isDownloaded }
+            // Honor the user's SELECTED model (same resolver the prompt
+            // builders use) so template and weights agree. Reload when the
+            // selection changed since the cached format would then be wrong.
+            val model = resolveActiveModel(modelPreferences, modelDownloadManager)
                 ?: return@withContext false
+            if (modelLoaded && loadedModelId == model.id) return@withContext true
 
             // FIX: Actually load the model via llamaCppService
             val loaded = llamaCppService.loadModel(model.id)
             if (loaded) {
                 modelLoaded = true
+                loadedModelId = model.id
+                loadedPromptFormat = model.promptFormat
                 Log.d(TAG, "Model loaded successfully: ${model.name}")
                 true
             } else {

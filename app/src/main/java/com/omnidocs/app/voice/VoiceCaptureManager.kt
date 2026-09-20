@@ -363,7 +363,7 @@ class VoiceCaptureManager @Inject constructor(
         val userPrompt = "Structure this speech transcript into a well-organized HTML note:\n\n" +
             "<transcript>\n$rawText\n</transcript>"
 
-        val prompt = PromptBuilder.buildPrompt(model.promptFormat, systemPrompt, userPrompt)
+        val prompt = PromptBuilder.buildPrompt(model.promptFormat, systemPrompt, userPrompt, model)
         val result = llamaCppService.generate(prompt, maxTokens = 1500)
         val processed = result?.let { AiOutputProcessor.process(it) }
 

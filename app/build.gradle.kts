@@ -11,14 +11,17 @@ plugins {
 
 android {
     namespace = "com.omnidocs.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.omnidocs.app"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        // r27+ emits 16KB page-aligned native libs, required for targetSdk 35+
+        // on Android 15+ devices with 16KB page sizes.
+        ndkVersion = "27.0.12077973"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -46,6 +49,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+    }
+
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
         }
     }
 
@@ -173,9 +182,6 @@ dependencies {
 
     // Markdown → HTML conversion
     implementation("com.vladsch.flexmark:flexmark-all:0.64.8")
-
-    // Kotlinx Serialization for model checksums
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
     // Sherpa-onnx for offline speech recognition (AAR via JitPack)
     implementation("com.github.k2-fsa:sherpa-onnx:v1.13.5") {

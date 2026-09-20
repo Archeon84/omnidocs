@@ -51,7 +51,11 @@
       "Bash(adb -s 29eb447c shell \"am start -n com.omnidocs.app/.MainActivity\")",
       "Bash(adb -s 29eb447c logcat -d -s HomeViewModel,VectorSearch,EmbeddingService,EmbeddingEngine,NotesRepository,LlamaCpp)",
       "Bash(adb -s 29eb447c logcat -d -s HomeViewModel)",
-      "Bash(adb -s 29eb447c logcat -d -s *:V)"
+      "Bash(adb -s 29eb447c logcat -d -s *:V)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(./gradlew :app:testDebugUnitTest *)",
+      "Bash(adb *)"
     ]
   }
 }

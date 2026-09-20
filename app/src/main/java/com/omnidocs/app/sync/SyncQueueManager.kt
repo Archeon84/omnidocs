@@ -1,5 +1,6 @@
 package com.omnidocs.app.sync
 
+import com.omnidocs.app.data.local.EmbeddingDao
 import com.omnidocs.app.data.local.NoteDao
 import com.omnidocs.app.data.local.entity.NoteEntity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -7,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+import android.util.Log
 import kotlin.math.min
 import kotlin.math.pow
 
@@ -37,7 +39,8 @@ interface SyncPeer {
 @Singleton
 class SyncQueueManager @Inject constructor(
     private val noteDao: NoteDao,
-    private val conflictResolver: NoteConflictResolver
+    private val conflictResolver: NoteConflictResolver,
+    private val embeddingDao: EmbeddingDao? = null
 ) {
 
     private val _syncStatus = MutableStateFlow(SyncStatus.IDLE)
@@ -60,17 +63,27 @@ class SyncQueueManager @Inject constructor(
         val detectedConflictReports = mutableListOf<NoteConflictReport>()
 
         try {
-            // 1. Push local unsynced changes to peer
-            val unsyncedLocal = noteDao.getUnsyncedNotes()
+            var pullSucceeded = true
+
+            // 1. Push local unsynced changes to peer (tombstones included so
+            //    deletions propagate instead of silently reviving on other devices).
+            //    Paginated so a large offline backlog never ships in one giant RPC.
+            val unsyncedLocal = noteDao.getUnsyncedNotesIncludingDeleted()
             if (unsyncedLocal.isNotEmpty()) {
-                val pushResult = peer.pushNotes(unsyncedLocal)
-                pushResult.onSuccess { acceptedIds ->
-                    if (acceptedIds.isNotEmpty()) {
-                        noteDao.markAsSynced(acceptedIds)
-                        synced += acceptedIds.size
-                    }
-                }.onFailure {
+                val acceptedIds = mutableListOf<String>()
+                var pushFailed = false
+                for (page in unsyncedLocal.chunked(PUSH_PAGE_SIZE)) {
+                    val pushResult = peer.pushNotes(page)
+                    pushResult.onSuccess { acceptedIds.addAll(it) }
+                        .onFailure { pushFailed = true }
+                    if (pushFailed) break
+                }
+                if (pushFailed) {
                     failed += unsyncedLocal.size
+                    pullSucceeded = false
+                } else if (acceptedIds.isNotEmpty()) {
+                    noteDao.markAsSynced(acceptedIds)
+                    synced += acceptedIds.size
                 }
             }
 
@@ -79,45 +92,51 @@ class SyncQueueManager @Inject constructor(
             val pullResult = peer.fetchRemoteChanges(lastSyncTime)
 
             pullResult.onSuccess { remoteNotes ->
+                // Single batch fetch for all remote IDs instead of one query per note
+                val localsById = if (remoteNotes.isNotEmpty()) {
+                    noteDao.getNotesByIdsIncludeDeleted(remoteNotes.map { it.id })
+                        .associateBy { it.id }
+                } else {
+                    emptyMap()
+                }
                 for (remote in remoteNotes) {
-                    val local = noteDao.getNoteById(remote.id)
+                    val local = localsById[remote.id]
                     if (local == null) {
-                        // Brand new remote note: insert directly
                         noteDao.insertNote(remote.copy(isSynced = true))
                         synced++
+                    } else if (local.isDeleted || remote.isDeleted) {
+                        val localEffective = local.deletedAt ?: local.updatedAt
+                        val remoteEffective = remote.deletedAt ?: remote.updatedAt
+                        if (localEffective >= remoteEffective) {
+                            if (!local.isSynced) {
+                                noteDao.markAsSynced(local.id)
+                            }
+                        } else {
+                            noteDao.insertNote(remote.copy(isSynced = true))
+                            synced++
+                        }
                     } else if (local.isSynced) {
-                        // Local has no unsaved offline edits: accept remote version
                         noteDao.insertNote(remote.copy(isSynced = true))
                         synced++
                     } else {
-                        // Both local and remote have independent modifications: run 3-way conflict detection!
                         val conflictReport = conflictResolver.detectConflicts(
-                            baseNote = null, // In 2-peer sync, compare local vs remote
+                            baseNote = null,
                             localNote = local,
                             remoteNote = remote
                         )
-
                         if (conflictReport.hasConflicts) {
                             detectedConflictReports.add(conflictReport)
                             conflicts++
                         } else {
-                            // Clean auto-merge
                             val merged = conflictResolver.resolveConflicts(conflictReport, local, remote)
-                            noteDao.insertNote(
-                                local.copy(
-                                    title = merged.title,
-                                    content = merged.content,
-                                    tags = merged.tags,
-                                    isSynced = true,
-                                    updatedAt = System.currentTimeMillis()
-                                )
-                            )
+                            noteDao.insertNote(applyMerge(local, remote, merged))
                             synced++
                         }
                     }
                 }
             }.onFailure {
                 failed++
+                pullSucceeded = false
             }
 
             _pendingConflicts.value = detectedConflictReports
@@ -128,15 +147,27 @@ class SyncQueueManager @Inject constructor(
                 else -> SyncStatus.SUCCESS
             }
 
+            // Only advance the delta cursor when the full pass succeeded. Advancing on a
+            // failed pull would permanently skip remote changes created before the new
+            // cursor, so keep the previous timestamp to retry them next pass.
             val newStats = SyncStats(
                 syncedCount = synced,
                 conflictCount = conflicts,
                 failedCount = failed,
-                lastSyncTimestampMs = System.currentTimeMillis()
+                lastSyncTimestampMs = if (pullSucceeded) {
+                    System.currentTimeMillis()
+                } else {
+                    _syncStats.value.lastSyncTimestampMs
+                }
             )
 
             _syncStatus.value = status
             _syncStats.value = newStats
+
+            if (status == SyncStatus.SUCCESS || status == SyncStatus.CONFLICT) {
+                purgeOldTombstones()
+            }
+
             return newStats
         } catch (e: Exception) {
             _syncStatus.value = SyncStatus.ERROR
@@ -164,15 +195,7 @@ class SyncQueueManager @Inject constructor(
             customValues = customValues
         )
 
-        noteDao.insertNote(
-            localNote.copy(
-                title = merged.title,
-                content = merged.content,
-                tags = merged.tags,
-                isSynced = true,
-                updatedAt = System.currentTimeMillis()
-            )
-        )
+        noteDao.insertNote(applyMerge(localNote, remoteNote, merged))
 
         _pendingConflicts.value = _pendingConflicts.value.filter { it.noteId != report.noteId }
         if (_pendingConflicts.value.isEmpty() && _syncStatus.value == SyncStatus.CONFLICT) {
@@ -181,6 +204,10 @@ class SyncQueueManager @Inject constructor(
     }
 
     companion object {
+        private const val TOMBSTONE_RETENTION_MS = 30L * 24 * 60 * 60 * 1000 // 30 days
+        private const val PUSH_PAGE_SIZE = 100
+        private val TAG = SyncQueueManager::class.java.simpleName
+
         /**
          * Calculates exponential backoff delay in milliseconds.
          */
@@ -194,5 +221,50 @@ class SyncQueueManager @Inject constructor(
             val delay = (baseDelayMs * exp).toLong()
             return min(delay, maxDelayMs)
         }
+    }
+
+    private suspend fun purgeOldTombstones() {
+        val cutoff = System.currentTimeMillis() - TOMBSTONE_RETENTION_MS
+        // Clean embeddings first: the hard delete below would orphan them,
+        // inflating vector scans and suppressing the lazy-reindex trigger.
+        try {
+            val purgeIds = noteDao.getPurgeableNoteIds(cutoff)
+            if (purgeIds.isNotEmpty()) {
+                embeddingDao?.deleteEmbeddingsBySourceIds(purgeIds)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Purge embedding cleanup failed", e)
+        }
+        noteDao.purgeDeletedNotesOlderThan(cutoff)
+    }
+
+    /**
+     * Build the merged row preserving columns the text merge doesn't model.
+     * Content-derived columns (plainText, attachments, imageUrl, language)
+     * follow whichever side won the content; pin/related-notes follow the
+     * newer side. Without this, a remote word-edit silently discarded local
+     * media/pins and left plainText disagreeing with content (breaking search).
+     */
+    internal fun applyMerge(
+        local: NoteEntity,
+        remote: NoteEntity,
+        merged: NoteMergeResult
+    ): NoteEntity {
+        val remoteWonContent = merged.content == remote.content && merged.content != local.content
+        val contentSide = if (remoteWonContent) remote else local
+        val newerSide = if (remote.updatedAt >= local.updatedAt) remote else local
+        return local.copy(
+            title = merged.title,
+            content = merged.content,
+            plainText = contentSide.plainText,
+            attachments = contentSide.attachments,
+            imageUrl = contentSide.imageUrl,
+            language = contentSide.language,
+            tags = merged.tags,
+            isPinned = newerSide.isPinned,
+            relatedNotes = newerSide.relatedNotes,
+            isSynced = true,
+            updatedAt = System.currentTimeMillis()
+        )
     }
 }

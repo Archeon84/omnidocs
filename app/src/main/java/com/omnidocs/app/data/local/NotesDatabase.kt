@@ -19,6 +19,7 @@ import com.omnidocs.app.data.local.entity.EmbeddingEntity
 import com.omnidocs.app.data.local.entity.EntityEntity
 import com.omnidocs.app.data.local.entity.EntityMentionEntity
 import com.omnidocs.app.data.local.entity.EvidenceLinkEntity
+import com.omnidocs.app.data.local.entity.FlashcardEntity
 import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.data.local.entity.NoteFtsEntity
 import com.omnidocs.app.data.local.entity.NoteLinkEntity
@@ -43,9 +44,9 @@ import java.security.SecureRandom
         AuditEventEntity::class, SavedSearchEntity::class,
         AgentJobEntity::class, AgentEventEntity::class,
         SourceDocumentEntity::class, ContentBlockEntity::class,
-        AiArtifactEntity::class
+        AiArtifactEntity::class, FlashcardEntity::class
     ],
-    version = 12,
+    version = 16,
     exportSchema = false
 )
 abstract class NotesDatabase : RoomDatabase() {
@@ -69,6 +70,7 @@ abstract class NotesDatabase : RoomDatabase() {
     abstract fun sourceDocumentDao(): SourceDocumentDao
     abstract fun contentBlockDao(): ContentBlockDao
     abstract fun aiArtifactDao(): AiArtifactDao
+    abstract fun flashcardDao(): FlashcardDao
 
     companion object {
         @Volatile
@@ -148,7 +150,8 @@ abstract class NotesDatabase : RoomDatabase() {
                 SQLiteDatabase.loadLibs(context)
 
                 // Derive encryption passphrase
-                val password = getEncryptionPassword(context)
+                val passwordResult = getEncryptionPassword(context)
+                val password = passwordResult.passphrase
                 val passphraseBytes = SQLiteDatabase.getBytes(password.toCharArray())
 
                 // If the database file exists, verify that our current passphrase
@@ -164,8 +167,25 @@ abstract class NotesDatabase : RoomDatabase() {
                         )
                         testDb.close()
                     } catch (e: Exception) {
-                        // Passphrase doesn't match — delete the stale database
-                        // so Room/SQLCipher can create a fresh one below
+                        // A restored device restores both the encrypted database and
+                        // SharedPreferences, but the AndroidKeyStore key that guarded the
+                        // passphrase is NOT restored. Decrypting then silently generates a
+                        // fresh random passphrase, which would not match the existing DB.
+                        //
+                        // A valid, deliberate rotation (legacy -> KeyStore) always has the
+                        // plaintext still readable from the legacy pref at rotation time, so
+                        // we can prove we have the correct passphrase. When that proof is
+                        // absent, deleting the workspace is permanent data loss. Fail loudly
+                        // and recoverably instead of destroying user data.
+                        if (!passwordResult.verified) {
+                            throw IllegalStateException(
+                                "Database is encrypted with a passphrase that cannot be recovered " +
+                                    "after restore. KeyStore material is unavailable. Do NOT delete data. " +
+                                    "Recover by restoring a matching backup, or clear app data manually."
+                            )
+                        }
+                        // Proof of a deliberate passphrase rotation exists; the DB is stale and
+                        // safe to recreate.
                         dbFile.delete()
                         File(dbFile.absolutePath + "-wal").delete()
                         File(dbFile.absolutePath + "-shm").delete()
@@ -182,7 +202,7 @@ abstract class NotesDatabase : RoomDatabase() {
                     "notes_database"
                 )
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
                 INSTANCE = instance
@@ -199,7 +219,7 @@ abstract class NotesDatabase : RoomDatabase() {
          * Derives or loads a 256-bit passphrase protected by AndroidKeyStore AES-256-GCM.
          * Automatically migrates legacy plaintext preferences to hardware-backed KeyStore encryption.
          */
-        private fun getEncryptionPassword(context: Context): String {
+        private fun getEncryptionPassword(context: Context): PasswordResult {
             val prefs = context.getSharedPreferences("crypto_prefs", Context.MODE_PRIVATE)
             val keyStoreManager = try {
                 com.omnidocs.app.security.KeyStoreManager()
@@ -208,6 +228,8 @@ abstract class NotesDatabase : RoomDatabase() {
             }
 
             var passphrase: String? = null
+            // Set when we can positively prove the passphrase matches the existing database.
+            var verified = false
 
             // 1. Try reading KeyStore-encrypted passphrase
             val encryptedPass = prefs.getString(KEY_KEYSTORE_ENCRYPTED, null)
@@ -219,11 +241,13 @@ abstract class NotesDatabase : RoomDatabase() {
                 }
             }
 
-            // 2. Try migrating legacy plaintext passphrase
+            // 2. Try migrating legacy plaintext passphrase. A readable legacy pref proves we
+            //    hold the real passphrase, so the on-disk DB can be trusted (deliberate rotation).
             if (passphrase == null) {
                 val legacyPass = prefs.getString(KEY_LEGACY, null)
                 if (legacyPass != null) {
                     passphrase = legacyPass
+                    verified = true
                     if (keyStoreManager != null) {
                         try {
                             val enc = keyStoreManager.encryptString(legacyPass)
@@ -238,24 +262,35 @@ abstract class NotesDatabase : RoomDatabase() {
                 }
             }
 
-            // 3. First-run generation
+            // 3. First-run generation. Only "verified" when no database file exists yet,
+            //    proving this passphrase is the original one for a fresh install. If a DB
+            //    file IS present but we could not recover its passphrase (restored prefs +
+            //    unavailable KeyStore), generating a fresh one must stay unverified so the
+            //    open-check below refuses to delete the user's workspace. The generated
+            //    passphrase is NOT persisted in that case either, so a later launch with a
+            //    working KeyStore can still recover the original blob instead of clobbering it.
             if (passphrase == null) {
                 val bytes = ByteArray(32)
                 SecureRandom().nextBytes(bytes)
                 passphrase = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                if (keyStoreManager != null) {
-                    try {
-                        val enc = keyStoreManager.encryptString(passphrase)
-                        prefs.edit().putString(KEY_KEYSTORE_ENCRYPTED, enc).apply()
-                    } catch (e: Exception) {
+                verified = !context.getDatabasePath("notes_database").exists()
+                if (verified) {
+                    if (keyStoreManager != null) {
+                        try {
+                            val enc = keyStoreManager.encryptString(passphrase)
+                            prefs.edit().putString(KEY_KEYSTORE_ENCRYPTED, enc).apply()
+                        } catch (e: Exception) {
+                            prefs.edit().putString(KEY_LEGACY, passphrase).apply()
+                        }
+                    } else {
                         prefs.edit().putString(KEY_LEGACY, passphrase).apply()
                     }
-                } else {
-                    prefs.edit().putString(KEY_LEGACY, passphrase).apply()
                 }
             }
 
-            return "omnidocs_db_${passphrase}"
+            return PasswordResult("omnidocs_db_${passphrase}", verified)
         }
     }
+
+    data class PasswordResult(val passphrase: String, val verified: Boolean)
 }

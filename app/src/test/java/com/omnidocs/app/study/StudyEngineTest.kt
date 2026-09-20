@@ -77,6 +77,7 @@ class StudyEngineTest {
                     prompt = "How does OmniDocs encrypt SQLite at rest?",
                     answer = "Using SQLCipher 4.5.4 with AES-256 and an Android KeyStore master key.",
                     sourceSnippet = "Database encrypted via SQLCipher with KeyStore master key",
+                    sourceTitle = "Security Whitepaper",
                     tags = listOf("security", "storage")
                 ),
                 Flashcard(
@@ -99,6 +100,7 @@ class StudyEngineTest {
         assertTrue(md.contains("## Card 1"))
         assertTrue(md.contains("**Question:** How does OmniDocs encrypt SQLite at rest?"))
         assertTrue(md.contains("**Answer:** Using SQLCipher 4.5.4"))
+        assertTrue(md.contains("> **Source:** Security Whitepaper — *\"Database encrypted via SQLCipher with KeyStore master key\"*"))
         assertTrue(md.contains("Tags: #security #storage"))
 
         assertTrue(md.contains("## Card 2"))
@@ -119,6 +121,7 @@ class StudyEngineTest {
                     type = StudyCardType.DEFINITION,
                     prompt = "Merdeka",
                     answer = "Independence Day of Malaysia celebrated on August 31st.",
+                    sourceTitle = "Sejarah Malaysia",
                     tags = listOf("history", "malaysia")
                 )
             )
@@ -128,6 +131,6 @@ class StudyEngineTest {
 
         assertNotNull(tsv)
         assertTrue(tsv.contains("#separator:tab"))
-        assertTrue(tsv.contains("Merdeka\tIndependence Day of Malaysia celebrated on August 31st.\thistory malaysia"))
+        assertTrue(tsv.contains("Merdeka\tIndependence Day of Malaysia celebrated on August 31st.<br/><br/><small><b>Source:</b> Sejarah Malaysia</small>\thistory malaysia"))
     }
 }

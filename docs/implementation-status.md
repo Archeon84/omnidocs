@@ -33,6 +33,22 @@
   - `SettingsScreen.kt`: Clean M3 grouped preference cards with 1-sentence concise descriptions for all settings (Appearance, Sync, AI Models, Privacy, About) and compact model dialogs.
   - `HomeScreen.kt`: Streamlined main menu workflow with 1-tap Quick Creation Action Bar (New Note, Voice Note, Scan Doc, Import File, Templates), "Talk with your Notes" AI hero prompt card, instant search bar, review filter tabs (All, Pinned, Recent, Recordings), and smart note card metadata badges.
   - `BottomNavBar.kt`: Wired `Ask AI` directly to "Talk with your Notes" Q&A.
+  - `IntelligencePanel.kt`: Upgraded "Ask about this note" to Material 3 `ModalBottomSheet` with native window insets, drag handle, and bottom-up expansion, eliminating status bar / notification bar overlap.
+- **RAG & Retrieval Engine Enhancements**:
+  - `SmartSnippetExtractor`: Dynamic list block expansion (-, *, +, 1., checkboxes) detecting Markdown formatting, extracting complete contiguous lists, and scaling excerpt ceiling from 400 to 1,500 characters for comprehensive queries.
+  - `NoteBlockAdapter`: Semantic Markdown-aware chunking respecting header boundaries (#, ##, ###) and merging short consecutive paragraphs/list items separated by \n\n into unified `SourceSegment`s up to 512 tokens (~2000 chars).
+  - `PromptAssembler`: Bypasses 100-character UI previews via explicit disk reads (`NotesRepository.getNoteById`), and introduces **Full-Note Retrieval Mode** for comprehensive queries ("list all", "what are all the", "give me every") to inject single top notes up to 4,000 tokens while dropping competing excerpts.
+  - `SourceBackedQA` & `RetrievalAgent`: Fully integrated with `PromptAssembler` and `SmartSnippetExtractor`.
+  - `SmartSnippetExtractorTest`, `NoteBlockAdapterTest`, `PromptAssemblerTest`: Complete unit test suites verifying list expansion, 40-date chunk merging, preview bypass, and full-note retrieval.
+  - **RAG Gold Standard Audit & Remediation (Industry Parity)**:
+    - `VectorSearch`: Implemented standard **Reciprocal Rank Fusion (RRF, $k=60$)** with normalized $[0, 1]$ fused scoring, replacing ad-hoc linear blending and eliminating lexical starvation. Upgraded vector search to passage-level retrieval with **MaxP scoring** ($\max_{p \in D} Score(p)$) and provenance tracking (`parsePassageIndex`, `topPassageIndex`, `passageScore`), eliminating section score dilution in multi-passage notes.
+    - `RetrievalAgent`: Integrated `topPassageIndex` extraction via `NoteBlockAdapter.chunkText()`, resolving the semantic blindspot where vector hits previously collapsed to offset 0 introductory text. Removed lexical-priority starvation filter to fairly interleave high-confidence semantic matches.
+    - `PromptBudget`: Implemented **Lost-in-the-Middle context reordering** (`reorderLostInTheMiddle`) placing highest-relevance evidence at the extremes (beginning and immediately preceding the query) for maximum LLM attention, and added **sentence-boundary-safe truncation** (`truncateAtSentenceBoundary`) preserving syntactical integrity.
+    - `VerificationAgent`: Hardened entailment verification by eliminating the bare note-title mention bypass; requires carrier sentences to share at least two content words with the passage snippet (or one content word + note title).
+    - `AnswerAgent`: Expanded citation `quoteSnippet` from 150 characters to full passage ceiling (`PromptBudget.MAX_SOURCE_CHARS` = 800) and assigned 1-based `sourceIndex` directly.
+    - `IndexingAgent` & `NotesRepository`: Unified all document import, meeting note, and rich note save paths to generate passage-level embeddings via `embedAndStoreNotePassages`, preserving Markdown heading hierarchies (`#`, `##`) via `MarkdownCodec.htmlToMarkdown`.
+    - `ResearchCoordinator` & `AskNotesViewModel`: Decoupled `searchQuery` from generation prompt so `continueAnswer()` uses original question context for retrieval while routing continuation instructions to generation.
+    - `ResearchAgentsTest`: Comprehensive test suite verifying exact/semantic query classification, passage index parsing, direct passage extraction, sentence-boundary verification, abstention detection, and hallucination rejection.
 - **Phase 8: Production Hardening & Thermal Budgeting**:
   - `ThermalBudgetManager`: Dynamic on-device token budgeting monitoring Android `PowerManager` thermal status and battery saver mode.
   - `proguard-rules.pro`: Production R8/ProGuard obfuscation and shrinking protection for all domain, AI, STT, and export models.
@@ -83,6 +99,35 @@
 - `app/src/test/java/com/omnidocs/app/sync/SyncQueueManagerTest.kt`
 - `app/src/test/java/com/omnidocs/app/ui/screens/study/StudyViewModelTest.kt`
 - `app/src/test/java/com/omnidocs/app/vocabulary/VocabularyDictionaryServiceTest.kt`
+- `app/src/main/cpp/llama_jni.cpp`
+- `app/src/main/java/com/omnidocs/app/ai/LlamaCppService.kt`
+- `app/src/main/java/com/omnidocs/app/ai/ModelDownloadManager.kt`
+- `app/src/main/java/com/omnidocs/app/ai/ModelPreferences.kt`
+- `app/src/main/java/com/omnidocs/app/ai/PromptAssembler.kt`
+- `app/src/main/java/com/omnidocs/app/ai/PromptBuilder.kt`
+- `app/src/main/java/com/omnidocs/app/ai/SmartSnippetExtractor.kt`
+- `app/src/main/java/com/omnidocs/app/ai/SourceBackedQA.kt`
+- `app/src/main/java/com/omnidocs/app/agent/IndexingAgent.kt`
+- `app/src/main/java/com/omnidocs/app/agent/ResearchCoordinator.kt`
+- `app/src/main/java/com/omnidocs/app/agent/RetrievalAgent.kt`
+- `app/src/main/java/com/omnidocs/app/agent/VerificationAgent.kt`
+- `app/src/main/java/com/omnidocs/app/ai/PromptBudget.kt`
+- `app/src/main/java/com/omnidocs/app/data/repository/NotesRepository.kt`
+- `app/src/main/java/com/omnidocs/app/rag/Chunk.kt`
+- `app/src/main/java/com/omnidocs/app/rag/ChunkingService.kt`
+- `app/src/main/java/com/omnidocs/app/rag/RagPromptBuilder.kt`
+- `app/src/main/java/com/omnidocs/app/rag/RetrievalService.kt`
+- `app/src/main/java/com/omnidocs/app/search/VectorSearch.kt`
+- `app/src/main/java/com/omnidocs/app/ui/screens/ask/AskNotesViewModel.kt`
+- `app/src/main/java/com/omnidocs/app/ui/screens/editor/IntelligencePanel.kt`
+- `app/src/test/java/com/omnidocs/app/agent/ResearchAgentsTest.kt`
+- `app/src/test/java/com/omnidocs/app/ai/NoteBlockAdapterTest.kt`
+- `app/src/test/java/com/omnidocs/app/ai/PromptAssemblerTest.kt`
+- `app/src/test/java/com/omnidocs/app/ai/SmartSnippetExtractorTest.kt`
+- `app/src/test/java/com/omnidocs/app/rag/ChunkingServiceTest.kt`
+- `app/src/test/java/com/omnidocs/app/rag/RagPromptBuilderTest.kt`
+- `app/src/test/java/com/omnidocs/app/rag/RetrievalServiceTest.kt`
+- `app/src/test/java/com/omnidocs/app/search/VectorSearchRankingTest.kt`
 - `docs/current-state.md`
 - `docs/architecture-audit.md`
 - `docs/gap-matrix.md`
@@ -93,7 +138,7 @@
 ---
 
 ## 4. Tests Run & Build Verification
-- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 108 tests passed, 0 failures).
+- **Unit Tests**: `./gradlew :app:testDebugUnitTest` (All 114 tests passed, 0 failures).
 - **Compilation**: `./gradlew :app:assembleDebug` (Build successful).
 - **On-Device Target**: Deployed and verified on Xiaomi 13 Ultra (`29eb447c`).
 

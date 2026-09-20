@@ -13,13 +13,19 @@ import com.omnidocs.app.ai.AutoTagger
 import com.omnidocs.app.ai.EvidenceExtractor
 import com.omnidocs.app.ai.ExtractedConcept
 import com.omnidocs.app.ai.NoteIntelligenceService
+import com.omnidocs.app.ai.ThermalBudgetManager
+import com.omnidocs.app.ai.ThermalStatus
 import com.omnidocs.app.ui.screens.editor.IntelligenceMessage
+import com.omnidocs.app.search.Tokenizer
 import com.omnidocs.app.util.MarkdownCodec
 import com.omnidocs.app.util.sanitizeForHtml
 import com.omnidocs.app.voice.AudioPlaybackController
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
@@ -46,7 +52,8 @@ class EditorViewModel @Inject constructor(
     private val evidenceExtractor: EvidenceExtractor,
     private val recordingDao: RecordingDao,
     private val audioPlaybackController: AudioPlaybackController,
-    private val contentBlockDao: ContentBlockDao
+    private val contentBlockDao: ContentBlockDao,
+    thermalBudgetManager: ThermalBudgetManager? = null
 ) : ViewModel() {
 
     private val _currentNote = MutableStateFlow<Note?>(null)
@@ -78,11 +85,12 @@ class EditorViewModel @Inject constructor(
 
     val wordCount: StateFlow<Int> = _content.map { html ->
         val text = stripHtml(html)
-        if (text.isBlank()) 0 else text.split(Regex("\\s+")).size
+        calculateWordCount(text)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val readingTimeMinutes: StateFlow<Int> = wordCount.map { words ->
-        if (words == 0) 0 else maxOf(1, words / 200) // 200 WPM average
+    val readingTimeMinutes: StateFlow<Int> = _content.map { html ->
+        val text = stripHtml(html)
+        calculateReadingTime(text)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     private val _currentLanguage = MutableStateFlow("en")
@@ -110,12 +118,39 @@ class EditorViewModel @Inject constructor(
     private val _aiPreview = MutableStateFlow<AiPreviewState?>(null)
     val aiPreview: StateFlow<AiPreviewState?> = _aiPreview.asStateFlow()
 
+    private var aiPreviewJob: Job? = null
+    // Per-op intelligence jobs: a shared job let explain/extract abort an
+    // in-flight ask, and a cancelled job's finally could wipe a newer stream.
+    private var askJob: Job? = null
+    private var explainJob: Job? = null
+    private var conceptsJob: Job? = null
+    private var askGeneration = 0
+    private var explainGeneration = 0
+    private var conceptsGeneration = 0
+
+    /** Clear shared intelligence UI state only when no intelligence op is active. */
+    private fun clearIntelligenceUiIfIdle() {
+        if (askJob?.isActive == true || explainJob?.isActive == true || conceptsJob?.isActive == true) return
+        _isIntelligenceLoading.value = false
+        _intelligenceStreaming.value = ""
+    }
+
     // ── Note Intelligence ──────────────────────────────────────────────
     private val _intelligenceMessages = MutableStateFlow<List<IntelligenceMessage>>(emptyList())
     val intelligenceMessages: StateFlow<List<IntelligenceMessage>> = _intelligenceMessages.asStateFlow()
 
     private val _isIntelligenceLoading = MutableStateFlow(false)
     val isIntelligenceLoading: StateFlow<Boolean> = _isIntelligenceLoading.asStateFlow()
+
+    /** True when the device is thermally throttled: answers will be slow. */
+    val isDeviceWarm: StateFlow<Boolean> =
+        thermalBudgetManager?.currentThermalStatus
+            ?.map { it.ordinal >= ThermalStatus.MODERATE.ordinal }
+            ?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+            ?: MutableStateFlow(false)
+
+    private val _intelligenceStreaming = MutableStateFlow("")
+    val intelligenceStreaming: StateFlow<String> = _intelligenceStreaming.asStateFlow()
 
     private val _intelligenceConcepts = MutableStateFlow<List<ExtractedConcept>>(emptyList())
     val intelligenceConcepts: StateFlow<List<ExtractedConcept>> = _intelligenceConcepts.asStateFlow()
@@ -382,10 +417,8 @@ class EditorViewModel @Inject constructor(
         // on exit. Converting never replaces richHtmlSnapshot, so the fidelity
         // guard is preserved.
         val html = MarkdownCodec.markdownToHtml(text)
-        if (html.isNotBlank()) {
-            _contentSource.value = ContentSource.PROGRAMMATIC
-            _content.value = html
-        }
+        _contentSource.value = ContentSource.PROGRAMMATIC
+        _content.value = html
         isDirty = true
     }
 
@@ -541,15 +574,21 @@ class EditorViewModel @Inject constructor(
             isLoading = true
         )
 
-        viewModelScope.launch {
+        aiPreviewJob?.cancel()
+        aiPreviewJob = viewModelScope.launch {
             try {
                 val result = aiService.summarize(text, _currentLanguage.value)
+                currentCoroutineContext().ensureActive()
                 _aiPreview.value = _aiPreview.value?.copy(
-                    result = result ?: "AI returned no result. The model may not be downloaded.",
+                    result = result ?: "No AI model is downloaded. Please download an on-device model in Settings.",
                     isLoading = false,
-                    error = if (result == null) "AI returned no result" else null
+                    error = if (result == null) "No on-device AI model is downloaded. Go to Settings > AI Models to download a local model." else null
                 )
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                throw e
             } catch (e: Exception) {
+                currentCoroutineContext().ensureActive()
                 _aiPreview.value = _aiPreview.value?.copy(
                     isLoading = false,
                     error = e.message ?: "AI operation failed"
@@ -570,15 +609,21 @@ class EditorViewModel @Inject constructor(
             isLoading = true
         )
 
-        viewModelScope.launch {
+        aiPreviewJob?.cancel()
+        aiPreviewJob = viewModelScope.launch {
             try {
                 val result = aiService.proofread(text, _currentLanguage.value)
+                currentCoroutineContext().ensureActive()
                 _aiPreview.value = _aiPreview.value?.copy(
-                    result = result ?: "AI returned no result. The model may not be downloaded.",
+                    result = result ?: "No AI model is downloaded. Please download an on-device model in Settings.",
                     isLoading = false,
-                    error = if (result == null) "AI returned no result" else null
+                    error = if (result == null) "No on-device AI model is downloaded. Go to Settings > AI Models to download a local model." else null
                 )
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                throw e
             } catch (e: Exception) {
+                currentCoroutineContext().ensureActive()
                 _aiPreview.value = _aiPreview.value?.copy(
                     isLoading = false,
                     error = e.message ?: "AI operation failed"
@@ -599,15 +644,21 @@ class EditorViewModel @Inject constructor(
             isLoading = true
         )
 
-        viewModelScope.launch {
+        aiPreviewJob?.cancel()
+        aiPreviewJob = viewModelScope.launch {
             try {
                 val result = aiService.rewrite(text, _currentLanguage.value)
+                currentCoroutineContext().ensureActive()
                 _aiPreview.value = _aiPreview.value?.copy(
-                    result = result ?: "AI returned no result. The model may not be downloaded.",
+                    result = result ?: "No AI model is downloaded. Please download an on-device model in Settings.",
                     isLoading = false,
-                    error = if (result == null) "AI returned no result" else null
+                    error = if (result == null) "No on-device AI model is downloaded. Go to Settings > AI Models to download a local model." else null
                 )
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                throw e
             } catch (e: Exception) {
+                currentCoroutineContext().ensureActive()
                 _aiPreview.value = _aiPreview.value?.copy(
                     isLoading = false,
                     error = e.message ?: "AI operation failed"
@@ -670,6 +721,9 @@ class EditorViewModel @Inject constructor(
     }
 
     fun dismissAiPreview() {
+        aiPreviewJob?.cancel()
+        aiPreviewJob = null
+        aiService.stopCurrentGeneration()
         _aiPreview.value = null
     }
 
@@ -681,21 +735,36 @@ class EditorViewModel @Inject constructor(
 
         _intelligenceMessages.value = _intelligenceMessages.value + IntelligenceMessage("user", question)
         _isIntelligenceLoading.value = true
+        _intelligenceStreaming.value = ""
 
-        viewModelScope.launch {
+        askJob?.cancel()
+        val myGeneration = ++askGeneration
+        askJob = viewModelScope.launch {
+            val collected = StringBuilder()
             try {
-                val answer = noteIntelligenceService.askAboutNote(
+                val history = _intelligenceMessages.value.dropLast(1).map { it.role to it.content }
+                noteIntelligenceService.askAboutNoteStream(
                     noteContent = stripHtml(noteContent),
                     question = question,
-                    language = _currentLanguage.value
-                )
+                    language = _currentLanguage.value,
+                    conversationHistory = history
+                ).collect { token ->
+                    collected.append(token)
+                    _intelligenceStreaming.value = collected.toString()
+                }
+                val answer = collected.toString().ifBlank {
+                    "No answer was generated. Check a model is downloaded in Settings, then try again."
+                }
                 _intelligenceMessages.value = _intelligenceMessages.value +
                     IntelligenceMessage("assistant", answer)
+            } catch (e: CancellationException) {
+                // Stopped by user; partial streaming text is discarded
             } catch (e: Exception) {
                 _intelligenceMessages.value = _intelligenceMessages.value +
                     IntelligenceMessage("assistant", "Error: ${e.message ?: "Unknown error"}")
             } finally {
-                _isIntelligenceLoading.value = false
+                // A stale (cancelled) run must not wipe a newer ask's UI state.
+                if (myGeneration == askGeneration) clearIntelligenceUiIfIdle()
             }
         }
     }
@@ -708,7 +777,9 @@ class EditorViewModel @Inject constructor(
             IntelligenceMessage("user", "Explain: \"$selectedText\"")
         _isIntelligenceLoading.value = true
 
-        viewModelScope.launch {
+        explainJob?.cancel()
+        val myGeneration = ++explainGeneration
+        explainJob = viewModelScope.launch {
             try {
                 val explanation = noteIntelligenceService.explainText(
                     fullNote = stripHtml(noteContent),
@@ -717,11 +788,13 @@ class EditorViewModel @Inject constructor(
                 )
                 _intelligenceMessages.value = _intelligenceMessages.value +
                     IntelligenceMessage("assistant", explanation)
+            } catch (e: CancellationException) {
+                // Stopped by user
             } catch (e: Exception) {
                 _intelligenceMessages.value = _intelligenceMessages.value +
                     IntelligenceMessage("assistant", "Error: ${e.message ?: "Unknown error"}")
             } finally {
-                _isIntelligenceLoading.value = false
+                if (myGeneration == explainGeneration) clearIntelligenceUiIfIdle()
             }
         }
     }
@@ -731,7 +804,9 @@ class EditorViewModel @Inject constructor(
         if (noteContent.isBlank()) return
 
         _isIntelligenceLoading.value = true
-        viewModelScope.launch {
+        conceptsJob?.cancel()
+        val myGeneration = ++conceptsGeneration
+        conceptsJob = viewModelScope.launch {
             try {
                 val concepts = noteIntelligenceService.extractConcepts(
                     noteContent = stripHtml(noteContent),
@@ -739,10 +814,12 @@ class EditorViewModel @Inject constructor(
                 )
                 _intelligenceConcepts.value = concepts
                 _showConceptDialog.value = true
+            } catch (e: CancellationException) {
+                // Stopped by user
             } catch (e: Exception) {
                 _snackbarEvent.tryEmit("Failed to extract concepts: ${e.message}")
             } finally {
-                _isIntelligenceLoading.value = false
+                if (myGeneration == conceptsGeneration) clearIntelligenceUiIfIdle()
             }
         }
     }
@@ -767,7 +844,22 @@ class EditorViewModel @Inject constructor(
         _showConceptDialog.value = false
     }
 
+    fun stopIntelligence() {
+        askJob?.cancel()
+        explainJob?.cancel()
+        conceptsJob?.cancel()
+        askJob = null
+        explainJob = null
+        conceptsJob = null
+        noteIntelligenceService.stopIntelligence()
+        _isIntelligenceLoading.value = false
+        _intelligenceStreaming.value = ""
+    }
+
     fun clearIntelligenceChat() {
+        // Clearing mid-stream must stop generation, or the orphaned stream
+        // appends an answer to the fresh (empty) chat afterwards.
+        stopIntelligence()
         _intelligenceMessages.value = emptyList()
     }
 
@@ -785,7 +877,52 @@ class EditorViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        askJob?.cancel()
+        explainJob?.cancel()
+        conceptsJob?.cancel()
+        aiPreviewJob?.cancel()
+        noteIntelligenceService.stopIntelligence()
         audioPlaybackController.stop()
+    }
+
+    companion object {
+        private val UNSPACED_SCRIPT_REGEX = Regex("[一-鿿㐀-䶿぀-ヿ]")
+
+        fun calculateWordCount(text: String): Int {
+            if (text.isBlank()) return 0
+            var unspacedCount = 0
+            val spacedBuilder = StringBuilder()
+            for (ch in text) {
+                if (UNSPACED_SCRIPT_REGEX.matches(ch.toString())) {
+                    unspacedCount++
+                    spacedBuilder.append(' ')
+                } else {
+                    spacedBuilder.append(ch)
+                }
+            }
+            val spacedWords = spacedBuilder.toString().trim().split(Regex("\\s+")).count { it.isNotBlank() }
+            return unspacedCount + spacedWords
+        }
+
+        fun calculateReadingTime(text: String): Int {
+            if (text.isBlank()) return 0
+            var unspacedCount = 0
+            val spacedBuilder = StringBuilder()
+            for (ch in text) {
+                if (UNSPACED_SCRIPT_REGEX.matches(ch.toString())) {
+                    unspacedCount++
+                    spacedBuilder.append(' ')
+                } else {
+                    spacedBuilder.append(ch)
+                }
+            }
+            val spacedWords = spacedBuilder.toString().trim().split(Regex("\\s+")).count { it.isNotBlank() }
+            val totalTokens = unspacedCount + spacedWords
+            if (totalTokens == 0) return 0
+            // Reading rate: Spaced languages ~200 WPM, unspaced CJK ~350 characters/min
+            val minutes = (spacedWords / 200.0) + (unspacedCount / 350.0)
+            return maxOf(1, Math.round(minutes).toInt())
+        }
     }
 }
 

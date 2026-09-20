@@ -138,20 +138,21 @@ class ImagePreprocessor @Inject constructor(
 
     // ---- internal helpers ----
 
-    /** Downsample so the longest side does not exceed [MAX_DIMENSION]. */
+    /**
+     * Downsample so the longest side does not exceed [MAX_DIMENSION].
+     * Never recycles [bitmap]: the caller retains ownership (see MlKitOcrEngine
+     * contract) and may reuse it for preview or a second pass.
+     */
     private fun downsample(bitmap: Bitmap): Bitmap {
         val maxDim = maxOf(bitmap.width, bitmap.height)
         if (maxDim <= MAX_DIMENSION) return bitmap
         val scale = MAX_DIMENSION.toFloat() / maxDim
-        val scaled = Bitmap.createScaledBitmap(
+        return Bitmap.createScaledBitmap(
             bitmap,
-            (bitmap.width * scale).toInt(),
-            (bitmap.height * scale).toInt(),
+            (bitmap.width * scale).toInt().coerceAtLeast(1),
+            (bitmap.height * scale).toInt().coerceAtLeast(1),
             true
         )
-        // Recycle the original — it's no longer needed now that we have a downscaled copy
-        if (scaled != bitmap) bitmap.recycle()
-        return scaled
     }
 
     /** Luminosity from an ARGB pixel — skips alpha. */

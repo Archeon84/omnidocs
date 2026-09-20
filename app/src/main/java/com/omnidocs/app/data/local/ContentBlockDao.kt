@@ -12,6 +12,9 @@ interface ContentBlockDao {
     @Query("SELECT * FROM content_blocks WHERE noteId = :noteId ORDER BY blockIndex ASC")
     suspend fun getBlocksForNoteSync(noteId: String): List<ContentBlockEntity>
 
+    @Query("SELECT * FROM content_blocks WHERE noteId IN (:noteIds) ORDER BY noteId ASC, blockIndex ASC")
+    suspend fun getBlocksForNoteIds(noteIds: List<String>): List<ContentBlockEntity>
+
     @Query("SELECT * FROM content_blocks WHERE sourceDocumentId = :sourceDocId ORDER BY pageNumber ASC, blockIndex ASC")
     fun getBlocksForSourceDocument(sourceDocId: String): Flow<List<ContentBlockEntity>>
 

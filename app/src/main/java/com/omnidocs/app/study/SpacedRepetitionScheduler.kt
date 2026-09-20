@@ -73,4 +73,17 @@ class SpacedRepetitionScheduler @Inject constructor() {
     fun isDue(cardState: CardReviewState, nowMs: Long = System.currentTimeMillis()): Boolean {
         return cardState.nextReviewDateMs <= nowMs
     }
+
+    /**
+     * Human-readable interval string for SM-2 button labels (e.g. "<10m", "1d", "6d", "1mo").
+     */
+    fun formatIntervalDays(days: Int): String {
+        return when {
+            days <= 0 -> "<10m"
+            days == 1 -> "1d"
+            days < 30 -> "${days}d"
+            days < 365 -> "${days / 30}mo"
+            else -> "${days / 365}y"
+        }
+    }
 }

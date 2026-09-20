@@ -63,14 +63,19 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.omnidocs.app.ui.navigation.Screen
 import com.omnidocs.app.domain.model.Note
 import com.omnidocs.app.ui.screens.recordings.RecordingPlaybackChip
 import com.omnidocs.app.util.HtmlSanitizer
 import com.omnidocs.app.util.MarkdownCodec
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
 private const val TAG = "EditorScreen"
+
+/** Attached images are downsampled to this longest edge before embedding in the note. */
+private const val ATTACH_IMAGE_MAX_DIMENSION_PX = 1920
 
 /**
  * Derive a file extension from a content URI's MIME type.
@@ -99,6 +104,69 @@ private fun getExtensionFromUri(context: android.content.Context, uri: Uri, defa
             else -> "mp3"
         }
         else -> defaultExt
+    }
+}
+
+/** Plain stream copy; returns false when nothing could be read/written. */
+private fun copyUriToFile(context: android.content.Context, uri: Uri, dest: File): Boolean {
+    return try {
+        var copied = false
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { output ->
+                input.copyTo(output)
+                copied = true
+            }
+        }
+        copied && dest.length() > 0
+    } catch (e: Exception) {
+        android.util.Log.e(TAG, "Attachment copy failed", e)
+        false
+    }
+}
+
+/**
+ * Downsample an image URI to [ATTACH_IMAGE_MAX_DIMENSION_PX] longest edge and
+ * store it as JPEG 80. Returns false when the image can't be decoded (caller
+ * should fall back to [copyUriToFile]).
+ */
+private fun downsampleUriImageToFile(
+    context: android.content.Context,
+    uri: Uri,
+    dest: File,
+    maxDimension: Int = ATTACH_IMAGE_MAX_DIMENSION_PX
+): Boolean {
+    var bitmap: android.graphics.Bitmap? = null
+    var scaled: android.graphics.Bitmap? = null
+    return try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use {
+            android.graphics.BitmapFactory.decodeStream(it, null, bounds)
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
+
+        var sampleSize = 1
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        while (longest / sampleSize > maxDimension) sampleSize *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        bitmap = context.contentResolver.openInputStream(uri)?.use {
+            android.graphics.BitmapFactory.decodeStream(it, null, opts)
+        } ?: return false
+
+        scaled = com.omnidocs.app.ocr.downscaleForOcr(bitmap!!, maxDimension)
+        FileOutputStream(dest).use { out ->
+            scaled!!.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+        }
+        dest.length() > 0
+    } catch (e: Exception) {
+        android.util.Log.e(TAG, "Image downsample failed, falling back to copy", e)
+        false
+    } finally {
+        try {
+            scaled?.takeIf { it !== bitmap && !it.isRecycled }?.recycle()
+            bitmap?.takeIf { !it.isRecycled }?.recycle()
+        } catch (_: Exception) {
+            // Best-effort cleanup
+        }
     }
 }
 
@@ -155,6 +223,7 @@ fun EditorScreen(
     onOcrClick: () -> Unit,
     navController: NavController,
     highlightText: String? = null,
+    onStudyClick: (String) -> Unit = {},
     viewModel: EditorViewModel = hiltViewModel()
 ) {
     val currentNote by viewModel.currentNote.collectAsState()
@@ -172,6 +241,7 @@ fun EditorScreen(
     val canRedo by viewModel.canRedo.collectAsState()
     val aiPreviewState by viewModel.aiPreview.collectAsState()
     val aiModelName by viewModel.aiModelName.collectAsState()
+    val currentLanguage by viewModel.currentLanguage.collectAsState()
     var showAiMenu by remember { mutableStateOf(false) }
     var showLanguageMenu by remember { mutableStateOf(false) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
@@ -181,19 +251,22 @@ fun EditorScreen(
     var contentReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { contentReady = true }
 
-    // Intelligence state
-    val intelligenceMessages by viewModel.intelligenceMessages.collectAsState()
-    val isIntelligenceLoading by viewModel.isIntelligenceLoading.collectAsState()
-    val intelligenceConcepts by viewModel.intelligenceConcepts.collectAsState()
-    val showConceptDialog by viewModel.showConceptDialog.collectAsState()
+    // Intelligence state: collected inside panel hosts below, so streaming
+    // tokens recompose only the sheet — not the whole screen + WebView.
     var showIntelligencePanel by remember { mutableStateOf(false) }
     var selectedText by remember { mutableStateOf("") }
 
-    // OCR Provenance & Bounding Boxes state
+    // HTML -> Markdown is O(content length); derive once per content change,
+    // not on every recomposition (keystrokes, streaming, toolbar state).
+    val previewMarkdown = remember(content, markdownText, editorMode) {
+        viewModel.currentMarkdown()
+    }
+
+    // OCR Provenance & Bounding Boxes state (toolbar needs the cheap flags;
+    // block lists/selection are collected inside the inspector host).
     val contentBlocks by viewModel.contentBlocks.collectAsState()
     val hasOcrBlocks by viewModel.hasOcrBlocks.collectAsState()
     val showOcrInspector by viewModel.showOcrInspector.collectAsState()
-    val selectedBlockIndex by viewModel.selectedBlockIndex.collectAsState()
 
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
@@ -210,24 +283,26 @@ fun EditorScreen(
         if (noteId == null && title.isBlank() && content.isBlank()) {
             onNavigateBack()
         } else {
-            // In markdown mode, commit the markdown source back to rich HTML (or
-            // restore the unedited snapshot) before reading/saving the DOM.
-            if (viewModel.editorMode.value == EditorMode.MARKDOWN) {
-                viewModel.setEditorMode(EditorMode.RICH)
-            }
-            webViewRef?.evaluateJavascript("getContent()") { result ->
-                val content = if (result != null && result.length >= 2) {
-                    try {
-                        org.json.JSONObject("{\"value\":$result}").getString("value")
-                    } catch (_: Exception) {
+            if (viewModel.editorMode.value == EditorMode.RICH && webViewRef != null) {
+                webViewRef?.evaluateJavascript("getContent()") { result ->
+                    val domContent = if (result != null && result.length >= 2) {
+                        try {
+                            org.json.JSONObject("{\"value\":$result}").getString("value")
+                        } catch (_: Exception) {
+                            viewModel.content.value
+                        }
+                    } else {
                         viewModel.content.value
                     }
-                } else {
-                    viewModel.content.value
+                    viewModel.updateContent(domContent)
+                    viewModel.saveAndNavigate(onNavigateBack)
+                } ?: run {
+                    viewModel.saveAndNavigate(onNavigateBack)
                 }
-                viewModel.updateContent(content)
-                viewModel.saveAndNavigate(onNavigateBack)
-            } ?: run {
+            } else {
+                // In MARKDOWN or PREVIEW mode, viewModel.content.value is already kept
+                // in sync as the user types (via updateMarkdown). We must NOT query the
+                // WebView DOM here because it holds stale pre-markdown HTML.
                 viewModel.saveAndNavigate(onNavigateBack)
             }
         }
@@ -259,21 +334,46 @@ fun EditorScreen(
         }
     }
 
+    // Apply language and text direction (RTL for Arabic, auto for others)
+    LaunchedEffect(webViewRef, currentLanguage) {
+        webViewRef?.let { wv ->
+            val dir = if (currentLanguage == "ar") "rtl" else "auto"
+            wv.evaluateJavascript("setLanguage('$currentLanguage', '$dir')", null)
+        }
+    }
+
+    // Highlight and scroll to cited text if highlightText is provided
+    LaunchedEffect(webViewRef, highlightText, content) {
+        if (!highlightText.isNullOrBlank() && !highlightDismissed && content.isNotBlank()) {
+            webViewRef?.let { wv ->
+                val escaped = org.json.JSONObject.quote(highlightText)
+                wv.postDelayed({
+                    wv.evaluateJavascript("findAndScrollToText($escaped)", null)
+                }, 300)
+            }
+        }
+    }
+
     val imageLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
             val uuid = UUID.randomUUID()
-            val ext = getExtensionFromUri(context, it, "jpg")
+            val mime = context.contentResolver.getType(it) ?: ""
+            // Images are re-encoded downsampled (1920px / JPEG 80) so a 12MP
+            // photo doesn't bloat storage and the WebView never holds full-res.
+            val isImage = mime.startsWith("image/")
+            val ext = if (isImage) "jpg" else getExtensionFromUri(context, it, "jpg")
             val fileName = "image_${uuid}.$ext"
             val file = File(context.filesDir, "attachments/$fileName")
             file.parentFile?.mkdirs()
 
-            context.contentResolver.openInputStream(it)?.use { input ->
-                file.outputStream().use { output ->
-                    input.copyTo(output)
-                }
+            val stored = if (isImage) {
+                downsampleUriImageToFile(context, it, file) || copyUriToFile(context, it, file)
+            } else {
+                copyUriToFile(context, it, file)
             }
+            if (!stored) return@let
 
             val imageId = "img_${uuid.toString().take(8)}"
             val imageUri = FileProvider.getUriForFile(
@@ -284,7 +384,7 @@ fun EditorScreen(
             val imageHtml = """<div class='attachment' id='$imageId' contenteditable='false'>
 <img src='${imageUri}' alt='Attached image' style='max-width:100%; border-radius:8px;' />
 <br/>
-<button class='delete-btn' onclick='document.getElementById("$imageId").remove(); Android.onContentChanged(document.getElementById("editor").innerHTML);'>Delete</button>
+<span class='delete-btn' data-attachment-id='$imageId' role='button' tabindex='0'>Delete</span>
 </div><p></p>"""
             viewModel.pushUndoBeforeChange()
             viewModel.updateContent(viewModel.content.value + imageHtml)
@@ -318,7 +418,7 @@ fun EditorScreen(
 <p><strong>Audio:</strong></p>
 <audio controls src='${audioUri}'></audio>
 <br/>
-<button class='delete-btn' onclick='document.getElementById("$audioId").remove(); Android.onContentChanged(document.getElementById("editor").innerHTML);'>Delete</button>
+<span class='delete-btn' data-attachment-id='$audioId' role='button' tabindex='0'>Delete</span>
 </div><p></p>"""
                 viewModel.pushUndoBeforeChange()
                 viewModel.updateContent(viewModel.content.value + audioHtml)
@@ -443,6 +543,13 @@ fun EditorScreen(
                                 onClick = { showOverflowMenu = false; onOcrClick() },
                                 leadingIcon = { Icon(Icons.Default.DocumentScanner, null) }
                             )
+                            if (noteId != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Study flashcards") },
+                                    onClick = { showOverflowMenu = false; onStudyClick(noteId) },
+                                    leadingIcon = { Icon(Icons.Default.School, null) }
+                                )
+                            }
                             if (hasOcrBlocks) {
                                 DropdownMenuItem(
                                     text = { Text("OCR Bounding Boxes (${contentBlocks.size})") },
@@ -537,7 +644,10 @@ fun EditorScreen(
                             )
                         }
                         IconButton(
-                            onClick = { highlightDismissed = true },
+                            onClick = {
+                                highlightDismissed = true
+                                webViewRef?.evaluateJavascript("removeCitationHighlights()", null)
+                            },
                             modifier = Modifier.size(24.dp)
                         ) {
                             Icon(
@@ -588,9 +698,7 @@ fun EditorScreen(
                     onCodeClick = { webViewRef?.evaluateJavascript("formatCode()", null) },
                     onImageClick = { imageLauncher.launch("image/*") },
                     onAudioClick = { audioLauncher.launch("audio/*") },
-                    onToggleSections = { webViewRef?.evaluateJavascript("toggleAllCollapse()", null) },
-                    onIntelligenceClick = { showIntelligencePanel = !showIntelligencePanel },
-                    onConceptExtract = { viewModel.extractConcepts() }
+                    onToggleSections = { webViewRef?.evaluateJavascript("toggleAllCollapse()", null) }
                 )
             }
             }
@@ -638,6 +746,8 @@ fun EditorScreen(
                     EditorMode.RICH -> RichTextEditor(
                         content = content,
                         contentSource = contentSource,
+                        language = currentLanguage,
+                        highlightText = if (!highlightDismissed) highlightText else null,
                         onContentChange = { newContent, fromWebView ->
                             viewModel.updateContent(newContent, fromWebView)
                         },
@@ -652,10 +762,12 @@ fun EditorScreen(
                     EditorMode.MARKDOWN -> MarkdownEditor(
                         text = markdownText,
                         onTextChange = { viewModel.updateMarkdown(it) },
+                        highlightText = if (!highlightDismissed) highlightText else null,
                         modifier = Modifier.fillMaxSize()
                     )
                     EditorMode.PREVIEW -> MarkdownPreview(
-                        markdown = viewModel.currentMarkdown(),
+                        markdown = previewMarkdown,
+                        highlightText = if (!highlightDismissed) highlightText else null,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -708,6 +820,10 @@ fun EditorScreen(
     if (showAiMenu) {
         AiActionMenu(
             onDismiss = { showAiMenu = false },
+            onAskAboutNote = {
+                showAiMenu = false
+                showIntelligencePanel = true
+            },
             onSummarize = {
                 viewModel.aiSummarize()
                 showAiMenu = false
@@ -719,6 +835,10 @@ fun EditorScreen(
             onRewrite = {
                 viewModel.aiRewrite()
                 showAiMenu = false
+            },
+            onExtractConcepts = {
+                viewModel.extractConcepts()
+                showAiMenu = false
             }
         )
     }
@@ -729,7 +849,8 @@ fun EditorScreen(
             state = state,
             modelName = aiModelName,
             onApply = { viewModel.applyAiResult() },
-            onDismiss = { viewModel.dismissAiPreview() }
+            onDismiss = { viewModel.dismissAiPreview() },
+            onGoToSettings = { navController.navigate(Screen.Settings.route) }
         )
     }
 
@@ -821,39 +942,86 @@ fun EditorScreen(
         )
     }
 
-    // Intelligence panel - slides up from bottom
-    AnimatedVisibility(
-        visible = showIntelligencePanel,
-        enter = slideInVertically(initialOffsetY = { it }),
-        exit = slideOutVertically(targetOffsetY = { it })
-    ) {
-        IntelligencePanel(
-            messages = intelligenceMessages,
-            isLoading = isIntelligenceLoading,
-            onAsk = { viewModel.askAboutNote(it) },
+    // Intelligence panel - Modal Bottom Sheet (state isolated in host)
+    if (showIntelligencePanel) {
+        IntelligencePanelHost(
+            viewModel = viewModel,
             onDismiss = { showIntelligencePanel = false }
         )
     }
 
-    // Concept extraction dialog
-    if (showConceptDialog) {
+    // Concept extraction dialog (state isolated in host)
+    ConceptDialogHost(viewModel = viewModel)
+
+    // OCR Bounding Box Inspector Sheet (block selection isolated in host)
+    if (showOcrInspector) {
+        OcrInspectorHost(
+            viewModel = viewModel,
+            imageUrl = currentNote?.imageUrl,
+            contentBlocks = contentBlocks
+        )
+    }
+}
+
+/**
+ * Collects intelligence flows in its own scope so per-token streaming updates
+ * recompose only the sheet, not EditorScreen and its WebView.
+ */
+@Composable
+private fun IntelligencePanelHost(
+    viewModel: EditorViewModel,
+    onDismiss: () -> Unit
+) {
+    val messages by viewModel.intelligenceMessages.collectAsState()
+    val isLoading by viewModel.isIntelligenceLoading.collectAsState()
+    val streamingText by viewModel.intelligenceStreaming.collectAsState()
+    val isDeviceWarm by viewModel.isDeviceWarm.collectAsState()
+    IntelligencePanel(
+        messages = messages,
+        isLoading = isLoading,
+        onAsk = { viewModel.askAboutNote(it) },
+        onDismiss = onDismiss,
+        onClear = { viewModel.clearIntelligenceChat() },
+        streamingText = streamingText,
+        onStop = { viewModel.stopIntelligence() },
+        isDeviceWarm = isDeviceWarm
+    )
+}
+
+/**
+ * Collects concept-dialog flows in its own scope.
+ */
+@Composable
+private fun ConceptDialogHost(viewModel: EditorViewModel) {
+    val showDialog by viewModel.showConceptDialog.collectAsState()
+    if (showDialog) {
+        val concepts by viewModel.intelligenceConcepts.collectAsState()
         ConceptDialog(
-            concepts = intelligenceConcepts,
+            concepts = concepts,
             onCreateNote = { name, desc -> viewModel.createNoteFromConcept(name, desc) },
             onDismiss = { viewModel.dismissConceptDialog() }
         )
     }
+}
 
-    // OCR Bounding Box Inspector Sheet
-    if (showOcrInspector) {
-        OcrBoundingBoxInspectorSheet(
-            imageUrl = currentNote?.imageUrl,
-            contentBlocks = contentBlocks,
-            selectedIndex = selectedBlockIndex,
-            onSelectBlock = { viewModel.selectBlock(it) },
-            onDismiss = { viewModel.closeOcrInspector() }
-        )
-    }
+/**
+ * Collects block-selection flow in its own scope so tapping bounding boxes
+ * recomposes only the sheet.
+ */
+@Composable
+private fun OcrInspectorHost(
+    viewModel: EditorViewModel,
+    imageUrl: String?,
+    contentBlocks: List<com.omnidocs.app.data.local.entity.ContentBlockEntity>
+) {
+    val selectedIndex by viewModel.selectedBlockIndex.collectAsState()
+    OcrBoundingBoxInspectorSheet(
+        imageUrl = imageUrl,
+        contentBlocks = contentBlocks,
+        selectedIndex = selectedIndex,
+        onSelectBlock = { viewModel.selectBlock(it) },
+        onDismiss = { viewModel.closeOcrInspector() }
+    )
 }
 
 @Composable
@@ -874,9 +1042,7 @@ fun FormattingToolbar(
     onCodeClick: () -> Unit,
     onImageClick: () -> Unit = {},
     onAudioClick: () -> Unit = {},
-    onToggleSections: () -> Unit = {},
-    onIntelligenceClick: () -> Unit = {},
-    onConceptExtract: () -> Unit = {}
+    onToggleSections: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -997,22 +1163,6 @@ fun FormattingToolbar(
                 isActive = false,
                 onClick = onToggleSections
             )
-
-            ToolbarDivider()
-
-            // Group 6: AI Intelligence
-            FormatIconButton(
-                icon = Icons.Default.AutoAwesome,
-                contentDescription = "Ask AI",
-                isActive = false,
-                onClick = onIntelligenceClick
-            )
-            FormatIconButton(
-                icon = Icons.Default.Lightbulb,
-                contentDescription = "Extract Concepts",
-                isActive = false,
-                onClick = onConceptExtract
-            )
         }
     }
 }
@@ -1089,9 +1239,11 @@ private fun FormatIconButton(
 @OptIn(ExperimentalMaterial3Api::class)
 fun AiActionMenu(
     onDismiss: () -> Unit,
+    onAskAboutNote: () -> Unit,
     onSummarize: () -> Unit,
     onProofread: () -> Unit,
-    onRewrite: () -> Unit
+    onRewrite: () -> Unit,
+    onExtractConcepts: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState()
 
@@ -1100,31 +1252,107 @@ fun AiActionMenu(
         sheetState = sheetState
     ) {
         Column(modifier = Modifier.padding(bottom = 32.dp)) {
-            Text(
-                text = "AI Assistant",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "AI Assistant",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "On-device intelligence actions for this note",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // 1. Ask about this note (Hero action)
+            ListItem(
+                headlineContent = {
+                    Text(
+                        "Ask about this note",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                },
+                supportingContent = {
+                    Text("Chat, search facts & ask questions about this note")
+                },
+                leadingContent = {
+                    Icon(
+                        Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                modifier = Modifier.clickable { onDismiss(); onAskAboutNote() }
             )
+
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            )
+
+            // 2. Summarize
             ListItem(
                 headlineContent = { Text("Summarize") },
+                supportingContent = { Text("Generate key takeaways and structured summary") },
                 leadingContent = {
                     Icon(Icons.AutoMirrored.Filled.FormatListBulleted, null)
                 },
                 modifier = Modifier.clickable { onDismiss(); onSummarize() }
             )
+
+            // 3. Proofread
             ListItem(
                 headlineContent = { Text("Proofread") },
+                supportingContent = { Text("Fix grammar, spelling, and punctuation errors") },
                 leadingContent = {
                     Icon(Icons.Default.Check, null)
                 },
                 modifier = Modifier.clickable { onDismiss(); onProofread() }
             )
+
+            // 4. Rewrite
             ListItem(
                 headlineContent = { Text("Rewrite") },
+                supportingContent = { Text("Improve clarity and professional tone") },
                 leadingContent = {
                     Icon(Icons.Default.Edit, null)
                 },
                 modifier = Modifier.clickable { onDismiss(); onRewrite() }
+            )
+
+            // 5. Extract Concepts
+            ListItem(
+                headlineContent = { Text("Extract Concepts") },
+                supportingContent = { Text("Identify key topics and create linked notes") },
+                leadingContent = {
+                    Icon(Icons.Default.Lightbulb, null)
+                },
+                modifier = Modifier.clickable { onDismiss(); onExtractConcepts() }
             )
         }
     }
@@ -1135,7 +1363,8 @@ fun AiPreviewDialog(
     state: AiPreviewState,
     modelName: String = "",
     onApply: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onGoToSettings: () -> Unit = {}
 ) {
     val operationLabel = when (state.operation) {
         AiOperation.SUMMARIZE -> "Summarizing"
@@ -1207,6 +1436,17 @@ fun AiPreviewDialog(
                 TextButton(onClick = onApply) {
                     Text("Apply")
                 }
+            } else if (state.error != null && (state.error.contains("Settings", ignoreCase = true) || state.error.contains("model", ignoreCase = true))) {
+                Button(
+                    onClick = {
+                        onDismiss()
+                        onGoToSettings()
+                    }
+                ) {
+                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("AI Settings")
+                }
             }
         },
         dismissButton = {
@@ -1227,6 +1467,8 @@ fun AiPreviewDialog(
 fun RichTextEditor(
     content: String,
     contentSource: ContentSource,
+    language: String = "en",
+    highlightText: String? = null,
     onContentChange: (String, Boolean) -> Unit,
     onFormatStateChange: (FormatState) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit = {},
@@ -1240,6 +1482,29 @@ fun RichTextEditor(
     var pendingContent by remember { mutableStateOf<String?>(null) }
     val colorScheme = MaterialTheme.colorScheme
     val fontScale = LocalDensity.current.fontScale
+
+    // Highlight and scroll to cited text once page and content are ready
+    LaunchedEffect(isPageReady, highlightText, content) {
+        if (isPageReady && !highlightText.isNullOrBlank() && content.isNotBlank()) {
+            webView?.let { wv ->
+                val escaped = org.json.JSONObject.quote(highlightText)
+                wv.postDelayed({
+                    wv.evaluateJavascript("findAndScrollToText($escaped)", null)
+                }, 100)
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                webView?.stopLoading()
+                webView?.loadUrl("about:blank")
+                webView?.destroy()
+            } catch (_: Exception) {}
+            webView = null
+        }
+    }
 
     // Buffer content changes until WebView is ready; push immediately if ready.
     // Only push PROGRAMMATIC changes (load/OCR/AI/template) back into the WebView.
@@ -1300,10 +1565,12 @@ fun RichTextEditor(
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
-                        // Apply theme colors as soon as the page loads
+                        // Apply theme colors and language/direction as soon as the page loads
                         view?.let {
                             val themeJson = buildEditorThemeJson(colorScheme)
                             it.evaluateJavascript("setTheme($themeJson)", null)
+                            val dir = if (language == "ar") "rtl" else "auto"
+                            it.evaluateJavascript("setLanguage('$language', '$dir')", null)
                         }
                         isPageReady = true
                     }
@@ -1387,12 +1654,33 @@ fun RichTextEditor(
 private fun MarkdownEditor(
     text: String,
     onTextChange: (String) -> Unit,
+    highlightText: String? = null,
     modifier: Modifier = Modifier
 ) {
     val fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+    var textFieldValue by remember(text, highlightText) {
+        val selection = if (!highlightText.isNullOrBlank()) {
+            val idx = text.indexOf(highlightText, ignoreCase = true)
+            if (idx != -1) {
+                androidx.compose.ui.text.TextRange(idx, idx + highlightText.length)
+            } else {
+                val words = highlightText.trim().split(Regex("""\s+""")).take(6).joinToString(" ")
+                val wordIdx = if (words.isNotBlank()) text.indexOf(words, ignoreCase = true) else -1
+                if (wordIdx != -1) androidx.compose.ui.text.TextRange(wordIdx, wordIdx + words.length)
+                else androidx.compose.ui.text.TextRange(text.length)
+            }
+        } else {
+            androidx.compose.ui.text.TextRange(text.length)
+        }
+        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(text = text, selection = selection))
+    }
+
     OutlinedTextField(
-        value = text,
-        onValueChange = onTextChange,
+        value = textFieldValue,
+        onValueChange = {
+            textFieldValue = it
+            if (it.text != text) onTextChange(it.text)
+        },
         modifier = modifier
             .fillMaxSize()
             .padding(horizontal = 12.dp, vertical = 4.dp),
@@ -1411,17 +1699,35 @@ private fun MarkdownEditor(
 @Composable
 private fun MarkdownPreview(
     markdown: String,
+    highlightText: String? = null,
     modifier: Modifier = Modifier
 ) {
     AndroidView(
         factory = { context ->
             WebView(context).apply {
                 settings.javaScriptEnabled = true
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (!highlightText.isNullOrBlank()) {
+                            val escaped = org.json.JSONObject.quote(highlightText)
+                            view?.postDelayed({
+                                view.evaluateJavascript("findAndScrollToText($escaped)", null)
+                            }, 100)
+                        }
+                    }
+                }
                 val htmlTemplate = context.assets.open("editor.html").bufferedReader().use { it.readText() }
                 val rendered = MarkdownCodec.markdownToHtml(markdown)
                 val html = htmlTemplate.replace("<!-- CONTENT_PLACEHOLDER -->", rendered)
                     .replace("contenteditable=\"true\"", "contenteditable=\"false\"")
                 loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        update = { wv ->
+            if (!highlightText.isNullOrBlank()) {
+                val escaped = org.json.JSONObject.quote(highlightText)
+                wv.evaluateJavascript("findAndScrollToText($escaped)", null)
             }
         },
         modifier = modifier.semantics {

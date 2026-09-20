@@ -40,5 +40,6 @@ object DatabaseModule {
     @Provides @Singleton fun provideSourceDocumentDao(db: NotesDatabase): SourceDocumentDao = db.sourceDocumentDao()
     @Provides @Singleton fun provideContentBlockDao(db: NotesDatabase): ContentBlockDao = db.contentBlockDao()
     @Provides @Singleton fun provideAiArtifactDao(db: NotesDatabase): AiArtifactDao = db.aiArtifactDao()
+    @Provides @Singleton fun provideFlashcardDao(db: NotesDatabase): FlashcardDao = db.flashcardDao()
 }
 

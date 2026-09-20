@@ -1,0 +1,31 @@
+--------- beginning of main
+08-19 23:50:53.431  2095  2243 D SDM     : HWDeviceDRM::SetupConcurrentWriteback: Tear down the Concurrent Writeback topology
+08-19 23:50:53.433  2857  7018 D FileUtils: Rounded bytes from 15930339328 to 16000000000
+08-19 23:50:53.440 18105   418 D MemorySizeMonitor: Current memory: 77839KB, ratio: 0%, total: 15556972KB
+08-19 23:50:53.440 18105   418 W MemorySizeMonitor: Memory threshold exceeded continuously! duration=21667562ms
+08-19 23:50:53.440 18105   418 D MemorySizeMonitor: Skip report due to report interval (50000ms < 60000ms)
+08-19 23:50:53.442  3437  4867 D libsensor-parseRGB: the value of RGB [29.151898 29.065243 29.013934]
+08-19 23:50:53.456  2430  2786 E HWComposer: getLuts: getLuts failed for display 4630946545580055171: UNSUPPORTED (8)
+08-19 23:50:53.486  2019  4701 I sensors-hal: handle_sns_std_sensor_event:65, light_event: ts=393791112749474, lux: 88.3
+08-19 23:50:53.487  2197  2197 D SRE     : sensorCallback mDisplayId = 0 dataCallback value=<  88.2500,   0.0000,   0.0000>,time=393791112749474, sensor=5, temperature(K)=   0.0000
+08-19 23:50:53.487  2197  2197 D SRE     : setSREStrength mDisplayId = 0, mLastLux = 88, lux = 88, mSREEnabled = 1, mLastFreezeStatus = 0, freeze = 0
+08-19 23:50:53.613  2095  2808 I vendor.qti.hardware.display.composer-service: FrameNotifyProcess Sensor: notify citsensorservice to trigger cwb
+08-19 23:50:53.614  3437  4866 I libsensor-parseRGB: request dump start for mRequestDisplayId 0
+08-19 23:50:53.614  3437  4866 D vendor.xiaomi.sensor.citsensorservice@2.0-service: handle id:21 wxh:1536x3200 uwxuh:1440x3200 size: 14745600 fd:16 fd_meta:17 flags:0x228 usage:0x33  format:0x3 layer_count: 1 reserved_size = 0
+08-19 23:50:53.615  2095  2767 W SDM     : HWCSession::GetDisplayIndex: Display index not found for display 3.
+08-19 23:50:53.615  2095  2767 D SDM     : HWCSession::SetCWBOutputBuffer: CWB config passed by cwb_client : tappoint 1  CWB_ROI : (473.000000 173.000000 714.000000 414.000000). Display 0
+08-19 23:50:53.630  2095  2243 D SDM     : HWDeviceDRM::SetupConcurrentWriteback: Tear down the Concurrent Writeback topology
+08-19 23:50:53.637  2095  4896 D SDM     : HWCSession::NotifyCWBStatus: Notify the client about buffer status 0. Display: 0
+08-19 23:50:53.638  3437  4873 I libsensor-displayalgo: the value of channelCali C:5990.394580,R:3731.285489,G:1576.475015,B:784.855825,scales C:1.101559,R:1.094795,G:1.235807,B:1.074103
+08-19 23:50:53.638  3437  4873 D libsensor-displayalgo: brightness:379.000000,R:1668.272714,G:1657.382383,B:1650.952453,EVENT C:11317.500000,R:6359.500000,G:3541.500000,B:1702.500000, lux: 92.818222,cct:5168.588867, irPara: 0
+08-19 23:50:53.638  2095  4896 I SDM     : HWCSession::ProcessCWBStatus: CWB queue is empty. display_index: 0
+08-19 23:50:53.647  3437  4867 D libsensor-parseRGB: the value of RGB [29.151898 29.065243 29.013934]
+08-19 23:50:53.672  2430  2786 E HWComposer: getLuts: getLuts failed for display 4630946545580055171: UNSUPPORTED (8)
+08-19 23:50:53.686  2019  4701 I sensors-hal: handle_sns_std_sensor_event:65, light_event: ts=393791312749317, lux: 88.3
+08-19 23:50:53.687  2197  2197 D SRE     : sensorCallback mDisplayId = 0 dataCallback value=<  88.2500,   0.0000,   0.0000>,time=393791312749317, sensor=5, temperature(K)=   0.0000
+08-19 23:50:53.687  2197  2197 D SRE     : setSREStrength mDisplayId = 0, mLastLux = 88, lux = 88, mSREEnabled = 1, mLastFreezeStatus = 0, freeze = 0
+08-19 23:50:53.704  2430  2430 D MI-SF   : isTpIdleScene ,mAverageFrameRate is 96, 0 
+08-19 23:50:53.704  2430  2430 D MI-SF   : modeGroup0 mIsSupportAutomodeForMaxFpsSetting is 1(0), getCurrentBrightness() = 1517(528), mIsKeepAutoMode 0 isAutoModeAllowed() 1
+08-19 23:50:53.704  2430  2430 D RefreshRateSelector: fixedMode_group: 0, isFindModeGroup 0
+08-19 23:50:53.704  2430  2430 D RefreshRateSelector: find max refresh rate:120, mode Group:0
+08-19 23:50:53.722  3453  3453 I adbd    : in ShellService: export ANDROID_LOG_TAGS=''; exec logcat '-t' '30'

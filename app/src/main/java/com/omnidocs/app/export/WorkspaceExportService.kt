@@ -68,12 +68,19 @@ class WorkspaceExportService @Inject constructor(
             }
             writeZipEntry(zos, "manifest.json", manifest.toString(2))
 
-            // 2. Notes (Markdown + HTML)
+            // 2. Notes (Markdown + HTML). Titles are not unique: two notes can
+            //    sanitize to the same filename, and ZipOutputStream throws on a
+            //    duplicate entry, aborting the entire export. Deduplicate with a
+            //    numeric suffix when a collision occurs.
+            val usedMdNames = mutableSetOf<String>()
+            val usedHtmlNames = mutableSetOf<String>()
             for (note in notes) {
-                val safeTitle = sanitizeFilename(note.title.ifBlank { note.id })
+                val base = sanitizeFilename(note.title.ifBlank { note.id })
+                val safeTitle = uniqueName(base, usedMdNames)
+                val safeHtmlTitle = uniqueName(base, usedHtmlNames)
                 val mdContent = buildMarkdownWithFrontmatter(note)
                 writeZipEntry(zos, "notes/$safeTitle.md", mdContent)
-                writeZipEntry(zos, "notes/html/$safeTitle.html", note.content)
+                writeZipEntry(zos, "notes/html/$safeHtmlTitle.html", note.content)
             }
 
             // 3. Calendar (.ics)
@@ -116,6 +123,7 @@ class WorkspaceExportService @Inject constructor(
                             prompt = "What is discussed in \"${note.title}\"?",
                             answer = note.plainText.take(250),
                             sourceSnippet = note.plainText.take(150),
+                            sourceTitle = note.title,
                             tags = listOf("note_review")
                         )
                     )
@@ -196,7 +204,16 @@ class WorkspaceExportService @Inject constructor(
     }
 
     private fun sanitizeFilename(name: String): String {
-        return name.replace(Regex("[^a-zA-Z0-9._-]"), "_").take(60)
+        val sanitized = name.replace(Regex("[^a-zA-Z0-9._-]"), "_").take(60)
+        return sanitized.ifBlank { "untitled" }
+    }
+
+    /** Returns base, or base_2 / base_3 ... when base was already used in this archive. */
+    private fun uniqueName(base: String, used: MutableSet<String>): String {
+        if (used.add(base)) return base
+        var counter = 2
+        while (!used.add("${base}_$counter")) counter++
+        return "${base}_$counter"
     }
 
     private fun escapeYaml(text: String): String {

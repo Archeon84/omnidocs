@@ -44,7 +44,13 @@ class IndexingAgent @Inject constructor(
             if (context.isCancelled()) {
                 return AgentResult.PermanentFailure("Indexing cancelled during block processing")
             }
-            val obj = jsonArray.getJSONObject(i)
+            // One malformed block must not discard the whole batch.
+            val obj = try {
+                jsonArray.getJSONObject(i)
+            } catch (e: Exception) {
+                android.util.Log.w("IndexingAgent", "Skipping malformed block at index $i", e)
+                continue
+            }
             val blockId = UUID.randomUUID().toString()
             val content = obj.optString("content", "")
             if (content.isBlank()) continue
@@ -53,14 +59,14 @@ class IndexingAgent @Inject constructor(
                 id = blockId,
                 sourceDocumentId = sourceDocumentId,
                 noteId = noteId,
-                blockIndex = obj.optInt("blockIndex", i),
+                blockIndex = obj.optIntLenient("blockIndex") ?: i,
                 blockType = obj.optString("blockType", "paragraph"),
                 content = content,
-                pageNumber = if (obj.has("pageNumber")) obj.getInt("pageNumber") else null,
-                startOffset = if (obj.has("startOffset")) obj.getInt("startOffset") else null,
-                endOffset = if (obj.has("endOffset")) obj.getInt("endOffset") else null,
+                pageNumber = obj.optIntLenient("pageNumber"),
+                startOffset = obj.optIntLenient("startOffset"),
+                endOffset = obj.optIntLenient("endOffset"),
                 boundingBoxJson = obj.optString("boundingBoxJson").takeIf { it.isNotBlank() },
-                confidence = if (obj.has("confidence")) obj.getDouble("confidence").toFloat() else null,
+                confidence = obj.optDoubleLenient("confidence")?.toFloat(),
                 createdAt = now
             )
             contentBlocks.add(block)
@@ -71,42 +77,28 @@ class IndexingAgent @Inject constructor(
             contentBlockDao.insertBlocks(contentBlocks)
         }
 
-        // 2. Compute embeddings for blocks & note
+        // 2. Embed note passages using NoteBlockAdapter via embedAndStoreNotePassages.
+        // Legacy full-note vectors ("note:<id>:<model>") are superseded by passages.
         var embeddingCount = 0
         val activeModel = try {
             embeddingService.activeModelName()
         } catch (e: Exception) {
+            android.util.Log.w("IndexingAgent", "Active model lookup failed, tagging n-gram", e)
             "ngram-hash-v1"
         }
 
-        // Embed top structural content blocks
-        for (block in contentBlocks.take(20)) {
-            if (context.isCancelled()) break
-            try {
-                embeddingService.embedAndStore(
-                    sourceType = "content_block",
-                    sourceId = block.id,
-                    text = block.content,
-                    modelName = activeModel
-                )
-                embeddingCount++
-            } catch (e: Exception) {
-                // Log and continue gracefully
-            }
-        }
-
-        // Embed overall note
+        // Embed note passages
         if (fullText.isNotBlank()) {
             try {
-                embeddingService.embedAndStore(
-                    sourceType = "note",
-                    sourceId = noteId,
-                    text = fullText,
+                val stored = embeddingService.embedAndStoreNotePassages(
+                    noteId = noteId,
+                    title = "",
+                    content = fullText,
                     modelName = activeModel
                 )
-                embeddingCount++
+                embeddingCount = stored.size
             } catch (e: Exception) {
-                // Non-fatal
+                android.util.Log.w("IndexingAgent", "Note-level passage embedding failed for note $noteId", e)
             }
         }
 

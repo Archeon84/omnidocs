@@ -24,10 +24,10 @@ object HtmlSanitizer {
             "a"
         )
         .addAttributes(
-            "p", "style", "class",
-            "div", "style", "class",
-            "span", "style", "class",
-            "blockquote", "style", "class",
+            "p", "style", "class", "dir",
+            "div", "style", "class", "id", "contenteditable", "dir", "data-attachment-id",
+            "span", "style", "class", "data-attachment-id", "role", "tabindex", "dir",
+            "blockquote", "style", "class", "dir",
             "code", "style", "class",
             "pre", "style", "class",
             "h1", "style", "class",

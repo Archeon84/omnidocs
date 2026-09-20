@@ -45,9 +45,19 @@ class RecordingStorage @Inject constructor(
      * as the filename to keep note attachment references valid after a reinstall.
      */
     fun saveAudioWithKey(audioData: ByteArray, storageKey: String): String {
-        File(recordingsDir, storageKey).writeBytes(audioData)
-        Log.d(TAG, "Restored audio: $storageKey (${audioData.size} bytes)")
-        return storageKey
+        // storageKey comes from backup files (attacker-influenced): strip any
+        // path components and verify containment, or "../../x" escapes recordings/.
+        val safeName = File(storageKey).name
+        require(safeName.isNotBlank() && safeName != "." && safeName != "..") {
+            "Invalid storage key: $storageKey"
+        }
+        val dest = File(recordingsDir, safeName)
+        require(dest.canonicalPath.startsWith(recordingsDir.canonicalPath + File.separator)) {
+            "Storage key escapes recordings dir: $storageKey"
+        }
+        dest.writeBytes(audioData)
+        Log.d(TAG, "Restored audio: $safeName (${audioData.size} bytes)")
+        return safeName
     }
 
     /**

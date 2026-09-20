@@ -25,7 +25,8 @@ data class AgentContext(
     val workspaceId: String = "default",
     val privacyMode: PrivacyMode = PrivacyMode.LOCAL_ONLY,
     val modelPolicy: ModelPolicy = ModelPolicy(),
-    val isCancelled: () -> Boolean = { false }
+    val isCancelled: () -> Boolean = { false },
+    val onAnswerToken: (String) -> Unit = {}
 )
 
 /**

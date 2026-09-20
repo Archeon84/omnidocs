@@ -124,26 +124,7 @@ class DriveService @Inject constructor(
                 return@withContext true
             }
 
-            val jsonArray = JSONArray()
-
-            notes.forEach { note ->
-                val jsonObject = JSONObject().apply {
-                    put("id", note.id)
-                    put("title", note.title)
-                    put("content", note.content)
-                    put("plainText", note.plainText)
-                    put("isPinned", note.isPinned)
-                    put("language", note.language)
-                    put("createdAt", note.createdAt)
-                    put("updatedAt", note.updatedAt)
-                    put("imageUrl", note.imageUrl ?: "")
-                    put("attachments", note.attachments)
-                    put("isDeleted", note.isDeleted)
-                }
-                jsonArray.put(jsonObject)
-            }
-
-            val contentString = jsonArray.toString()
+            val contentString = NoteCloudCodec.encode(notes)
 
             // Find or create folder
             val folderId = findOrCreateFolder()
@@ -177,8 +158,17 @@ class DriveService @Inject constructor(
             }
 
             if (result != null) {
-                // Batch mark all synced notes in a single query
-                noteDao.markAsSynced(notes.map { it.id })
+                // Only mark rows that are byte-identical to the uploaded snapshot.
+                // Anything edited mid-upload keeps isSynced=0 and rides the next pass;
+                // the old code marked everything, silently dropping those edits.
+                val snapshot = notes.associate { it.id to it.updatedAt }
+                val current = noteDao.getNotesByIdsIncludeDeleted(snapshot.keys.toList())
+                val unchanged = current
+                    .filter { snapshot[it.id] == it.updatedAt }
+                    .map { it.id }
+                if (unchanged.isNotEmpty()) {
+                    noteDao.markAsSynced(unchanged)
+                }
                 true
             } else {
                 false
@@ -186,6 +176,23 @@ class DriveService @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "syncToCloud failed", e)
             false
+        }
+    }
+
+    suspend fun readNotesFromCloud(): String? = withContext(Dispatchers.IO) {
+        try {
+            val folderId = findOrCreateFolder()
+            val fileId = findFile(folderId)
+            if (fileId != null) {
+                makeRequest(
+                    "https://www.googleapis.com/drive/v3/files/$fileId?alt=media"
+                )
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "readNotesFromCloud failed", e)
+            null
         }
     }
 
@@ -200,35 +207,9 @@ class DriveService @Inject constructor(
                 )
 
                 if (result != null) {
-                    val jsonArray = JSONArray(result)
-
-                    for (i in 0 until jsonArray.length()) {
-                        val jsonObject = jsonArray.getJSONObject(i)
-                        val cloudId = jsonObject.getString("id")
-                        val cloudUpdatedAt = jsonObject.getLong("updatedAt")
-                        // Use includeDeleted to avoid restoring locally-deleted notes from cloud
-                        val localNote = noteDao.getNoteByIdIncludeDeleted(cloudId)
-
-                        // Conflict resolution: keep local if it's newer or equal
-                        if (localNote != null && localNote.updatedAt >= cloudUpdatedAt) {
-                            continue
-                        }
-
-                        val note = NoteEntity(
-                            id = cloudId,
-                            title = jsonObject.getString("title"),
-                            content = jsonObject.getString("content"),
-                            plainText = jsonObject.getString("plainText"),
-                            isPinned = jsonObject.getBoolean("isPinned"),
-                            language = jsonObject.getString("language"),
-                            createdAt = jsonObject.getLong("createdAt"),
-                            updatedAt = cloudUpdatedAt,
-                            imageUrl = jsonObject.optString("imageUrl", null),
-                            attachments = jsonObject.optString("attachments", "[]"),
-                            isDeleted = jsonObject.optBoolean("isDeleted", false),
-                            isSynced = true
-                        )
-                        noteDao.insertNote(note)
+                    val cloudNotes = NoteCloudCodec.decode(result)
+                    for (remote in cloudNotes) {
+                        applyRemoteNote(remote)
                     }
                     true
                 } else {
@@ -241,6 +222,37 @@ class DriveService @Inject constructor(
             Log.e(TAG, "syncFromCloud failed", e)
             false
         }
+    }
+
+    /**
+     * Merge a single remote note into the local database with last-write-wins semantics.
+     *
+     * - No local copy: insert remote as synced.
+     * - Either side deleted: the side with the newer effective timestamp wins.
+     * - Local has unsynced edits newer than remote: keep local, do NOT overwrite.
+     * - Otherwise (remote newer or equal): accept remote as synced.
+     */
+    internal suspend fun applyRemoteNote(remote: NoteEntity) {
+        val local = noteDao.getNoteByIdIncludeDeleted(remote.id) ?: run {
+            noteDao.insertNote(remote.copy(isSynced = true))
+            return
+        }
+        // Local wins ties (matches SyncQueueManager): same-millisecond edits
+        // and skewed clocks otherwise flap or destroy offline work.
+        if (local.isDeleted || remote.isDeleted) {
+            val localEffective = local.deletedAt ?: local.updatedAt
+            val remoteEffective = remote.deletedAt ?: remote.updatedAt
+            if (remoteEffective > localEffective) {
+                noteDao.insertNote(remote.copy(isSynced = true))
+            }
+            return
+        }
+        if (!local.isSynced && local.updatedAt >= remote.updatedAt) {
+            // Local unsynced edit is newer: preserve it; it will be pushed on next syncToCloud.
+            Log.d(TAG, "applyRemoteNote: keeping newer local edit for ${remote.id}")
+            return
+        }
+        noteDao.insertNote(remote.copy(isSynced = true))
     }
 
     private suspend fun findOrCreateFolder(): String {

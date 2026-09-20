@@ -172,6 +172,7 @@ fun OcrBoundingBoxInspectorSheet(
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(imageUrl)
+                            .size(1000)
                             .crossfade(true)
                             .build(),
                         contentDescription = "Document Scan",

@@ -1,6 +1,5 @@
 package com.omnidocs.app.agent
 
-import com.omnidocs.app.data.local.ContentBlockDao
 import com.omnidocs.app.data.local.EmbeddingDao
 import com.omnidocs.app.data.local.EvidenceLinkDao
 import com.omnidocs.app.data.local.NoteDao
@@ -15,8 +14,7 @@ import javax.inject.Singleton
 enum class IssueCategory {
     ORPHAN_NOTE,
     MISSING_EMBEDDING,
-    BROKEN_EVIDENCE_LINK,
-    UNINDEXED_BLOCK
+    BROKEN_EVIDENCE_LINK
 }
 
 enum class IssueSeverity {
@@ -52,7 +50,6 @@ data class HealthScanReport(
 class HealthCoordinator @Inject constructor(
     private val agentCoordinator: AgentCoordinator,
     private val noteDao: NoteDao,
-    private val contentBlockDao: ContentBlockDao,
     private val embeddingDao: EmbeddingDao,
     private val evidenceLinkDao: EvidenceLinkDao,
     private val orphanDetector: OrphanDetector,
@@ -100,11 +97,20 @@ class HealthCoordinator @Inject constructor(
         }
 
         var totalBlocksScanned = 0
+        // Expected row bytes for the active model tag ("<id>_<dim>" → dim*4).
+        // A row tagged with the active model but the wrong size is a poisoned
+        // fallback vector (dim mismatch → cosine 0 → invisible recall loss):
+        // treat it as missing so repair regenerates it truthfully.
+        val expectedBytes = activeModel.substringAfterLast("_", "").toIntOrNull()
+            ?.takeIf { it > 0 }?.times(4)
         for (note in allNotes) {
             val hasEmbedding = embeddingDao.getEmbeddingsBySource(
                 sourceType = "note",
                 sourceId = note.id
-            ).any { it.modelName == activeModel }
+            ).any {
+                it.modelName == activeModel &&
+                    (expectedBytes == null || it.embeddingVector.size == expectedBytes)
+            }
 
             if (!hasEmbedding && note.plainText.isNotBlank()) {
                 issues.add(
@@ -118,30 +124,6 @@ class HealthCoordinator @Inject constructor(
                         severity = IssueSeverity.MEDIUM
                     )
                 )
-            }
-
-            // Check Content Blocks
-            val blocks = contentBlockDao.getBlocksForNoteSync(note.id)
-            totalBlocksScanned += blocks.size
-            for (block in blocks) {
-                val blockEmbedded = embeddingDao.getEmbeddingsBySource(
-                    sourceType = "content_block",
-                    sourceId = block.id
-                ).any { it.modelName == activeModel }
-
-                if (!blockEmbedded && block.content.isNotBlank()) {
-                    issues.add(
-                        HealthIssue(
-                            id = UUID.randomUUID().toString(),
-                            category = IssueCategory.UNINDEXED_BLOCK,
-                            title = "Unindexed Block in ${note.title.ifBlank { "Untitled" }}",
-                            description = "Block '${block.content.take(30)}...' has no vector index.",
-                            affectedEntityId = block.id,
-                            repairActionName = "Index Block",
-                            severity = IssueSeverity.LOW
-                        )
-                    )
-                }
             }
         }
 
@@ -172,11 +154,6 @@ class HealthCoordinator @Inject constructor(
      */
     suspend fun repairIssues(issues: List<HealthIssue>): Int = withContext(Dispatchers.IO) {
         var repairedCount = 0
-        val activeModel = try {
-            embeddingService.activeModelName()
-        } catch (e: Exception) {
-            "ngram-hash-v1"
-        }
 
         for (issue in issues) {
             try {
@@ -184,18 +161,14 @@ class HealthCoordinator @Inject constructor(
                     IssueCategory.MISSING_EMBEDDING -> {
                         val note = noteDao.getNoteById(issue.affectedEntityId)
                         if (note != null && note.plainText.isNotBlank()) {
-                            embeddingService.embedAndStore(
-                                sourceType = "note",
-                                sourceId = note.id,
-                                text = "${note.title} ${note.plainText}",
-                                modelName = activeModel
+                            // Managed passage path (not a single legacy row):
+                            // per-chunk hashes, truthful model tags, and the
+                            // purge of superseded legacy rows come with it.
+                            embeddingService.embedAndStoreNotePassages(
+                                note.id, note.title, note.plainText
                             )
                             repairedCount++
                         }
-                    }
-                    IssueCategory.UNINDEXED_BLOCK -> {
-                        // Re-index single block
-                        repairedCount++
                     }
                     IssueCategory.ORPHAN_NOTE -> {
                         // Handled via user linking
@@ -206,7 +179,7 @@ class HealthCoordinator @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
-                // Non-fatal per-item repair catch
+                android.util.Log.w("HealthCoordinator", "Repair failed for ${issue.category}", e)
             }
         }
         repairedCount

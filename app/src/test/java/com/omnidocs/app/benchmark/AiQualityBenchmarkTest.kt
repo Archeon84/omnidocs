@@ -172,7 +172,8 @@ class AiQualityBenchmarkTest {
                 noteId = "doc_en_1",
                 noteTitle = "Project Launch Architecture",
                 quoteSnippet = "database migration from version 11 to 12. TODO: Implement hardware KeyStore security",
-                quoteHash = "hash123"
+                quoteHash = "hash123",
+                sourceIndex = 1
             )
         )
         val reportGrounded = verifier.verify(groundedAnswer, citations, "HIGH")

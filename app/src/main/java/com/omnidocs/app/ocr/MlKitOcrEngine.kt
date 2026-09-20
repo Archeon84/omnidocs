@@ -39,12 +39,16 @@ class MlKitOcrEngine @Inject constructor(
 
     override suspend fun recognizeText(uri: Uri, language: String): OcrResult? {
         return withContext(Dispatchers.IO) {
+            // Bitmaps WE decode here are owned by us and must be recycled after
+            // ML Kit finishes with them; caller-supplied bitmaps are never recycled.
+            var ownedBitmap: Bitmap? = null
             try {
                 val recognizer = getOrCreateRecognizer(language)
                 val image = if (uri.scheme == "file") {
                     val filePath = uri.path ?: throw IOException("File URI has no path: $uri")
-                    val bitmap = BitmapFactory.decodeFile(filePath)
+                    val bitmap = decodeSampledBitmap(filePath)
                         ?: throw IOException("Failed to decode bitmap from: $filePath")
+                    ownedBitmap = bitmap
                     InputImage.fromBitmap(bitmap, 0)
                 } else {
                     InputImage.fromFilePath(context, uri)
@@ -85,19 +89,65 @@ class MlKitOcrEngine @Inject constructor(
             } catch (e: Throwable) {
                 Log.e(TAG, "Recognition failed with throwable", e)
                 null
+            } finally {
+                try {
+                    ownedBitmap?.takeIf { !it.isRecycled }?.recycle()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to recycle decoded bitmap", e)
+                }
             }
         }
+    }
+
+    /**
+     * Two-pass decode: read bounds first, then decode with a power-of-2
+     * `inSampleSize` so the longest edge lands at or under [MAX_OCR_DIMENSION_PX],
+     * with a precise scale pass if the power-of-2 step still overshoots.
+     * A 12MP photo would otherwise decode to ~48MB ARGB_8888 plus ML Kit's copy.
+     */
+    private fun decodeSampledBitmap(filePath: String): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(filePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            Log.w(TAG, "Could not read image bounds: $filePath")
+            return null
+        }
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        if (longest <= MAX_OCR_DIMENSION_PX) {
+            return BitmapFactory.decodeFile(filePath)
+        }
+        var sampleSize = 1
+        while (longest / sampleSize > MAX_OCR_DIMENSION_PX) {
+            sampleSize *= 2
+        }
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeFile(filePath, opts)
+            ?: return BitmapFactory.decodeFile(filePath)
+        if (maxOf(decoded.width, decoded.height) <= MAX_OCR_DIMENSION_PX) {
+            return decoded
+        }
+        val scaled = downscaleForOcr(decoded)
+        if (scaled !== decoded) {
+            decoded.recycle()
+        }
+        return scaled
     }
 
     /**
      * Recognize text directly from a Bitmap (avoids file I/O round-trip).
      * Used by live camera OCR to avoid JPEG corruption issues.
      */
-    suspend fun recognizeBitmap(bitmap: Bitmap, rotationDegrees: Int, language: String): OcrResult? {
+    override suspend fun recognizeBitmap(bitmap: Bitmap, rotationDegrees: Int, language: String): OcrResult? {
         return withContext(Dispatchers.IO) {
+            // Downscale defensively: the caller may hand us a full-res camera frame.
+            // The copy is ours to recycle; the caller's bitmap is never touched.
+            val scaled = downscaleForOcr(bitmap)
             try {
                 val recognizer = getOrCreateRecognizer(language)
-                val image = InputImage.fromBitmap(bitmap, rotationDegrees)
+                val image = InputImage.fromBitmap(scaled, rotationDegrees)
 
                 val result = try {
                     recognizer.process(image).await()
@@ -133,6 +183,14 @@ class MlKitOcrEngine @Inject constructor(
             } catch (e: Throwable) {
                 Log.e(TAG, "recognizeBitmap: failed", e)
                 null
+            } finally {
+                if (scaled !== bitmap) {
+                    try {
+                        scaled.takeIf { !it.isRecycled }?.recycle()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to recycle scaled bitmap", e)
+                    }
+                }
             }
         }
     }

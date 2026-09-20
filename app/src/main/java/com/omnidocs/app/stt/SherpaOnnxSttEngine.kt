@@ -78,7 +78,20 @@ class SherpaOnnxSttEngine @Inject constructor(
     // long a single unbroken stretch of speech runs before it streams partials.
     private var segmentSamples = SAMPLE_RATE
 
-    private val audioQueue = LinkedBlockingQueue<FloatArray>()
+    companion object {
+        /**
+         * Cap on queued (not yet decoded) audio chunks. The old unbounded queue
+         * grew without limit during slow decodes; at 16kHz mono even a few
+         * minutes of backlog is tens of MB of FloatArrays. When full, the
+         * recording thread drops the oldest chunk (live audio matters more
+         * than stale backlog) and counts the drop for diagnostics.
+         */
+        private const val MAX_QUEUED_CHUNKS = 512
+    }
+
+    private val audioQueue = LinkedBlockingQueue<FloatArray>(MAX_QUEUED_CHUNKS)
+
+    private val droppedChunkCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
      * @param accuracyMode "fast" (default) or "accurate". Controls the Whisper max
@@ -295,7 +308,16 @@ class SherpaOnnxSttEngine @Inject constructor(
                             byteBuffer[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
                             byteBuffer[i * 2 + 1] = ((buffer[i].toInt() shr 8) and 0xFF).toByte()
                         }
-                        audioQueue.offer(floatBuffer.copyOf(shortsRead))
+                        if (!audioQueue.offer(floatBuffer.copyOf(shortsRead))) {
+                            // Decode is falling behind: drop oldest to stay bounded,
+                            // preferring live audio over stale backlog.
+                            audioQueue.poll()
+                            audioQueue.offer(floatBuffer.copyOf(shortsRead))
+                            val dropped = droppedChunkCount.incrementAndGet()
+                            if (dropped == 1 || dropped % 100 == 0) {
+                                Log.w(TAG, "Audio decode falling behind; dropped $dropped chunks total")
+                            }
+                        }
                         audioSink?.invoke(byteBuffer.copyOf(shortsRead * 2))
                     }
                 }
@@ -497,8 +519,21 @@ class SherpaOnnxSttEngine @Inject constructor(
 
         isRecording.set(false)
 
-        audioRecord?.stop()
-        audioRecord?.release()
+        // stop() throws IllegalStateException unless actively recording
+        // (init failure, double-stop, stop racing cancel) — never let it
+        // escape and strand the decode thread below.
+        try {
+            if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                audioRecord?.stop()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioRecord.stop failed", e)
+        }
+        try {
+            audioRecord?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioRecord.release failed", e)
+        }
         audioRecord = null
 
         // Wait for the decode thread to finish: it drains the queue, does the
@@ -563,9 +598,20 @@ class SherpaOnnxSttEngine @Inject constructor(
     override fun cancelListening() {
         isRecording.set(false)
 
-        // Stop mic first so decode thread drains remaining queue quickly
-        audioRecord?.stop()
-        audioRecord?.release()
+        // Stop mic first so decode thread drains remaining queue quickly.
+        // Guarded: stop() throws unless actively recording.
+        try {
+            if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                audioRecord?.stop()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioRecord.stop failed", e)
+        }
+        try {
+            audioRecord?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioRecord.release failed", e)
+        }
         audioRecord = null
 
         // Wait for decode thread to exit its loop and release its native streams.

@@ -16,6 +16,8 @@ import com.omnidocs.app.data.backup.BackupResult
 import com.omnidocs.app.data.backup.LocalBackupPreferences
 import com.omnidocs.app.data.backup.LocalBackupService
 import com.omnidocs.app.data.remote.DriveService
+import com.omnidocs.app.sync.DriveSyncPeer
+import com.omnidocs.app.sync.SyncQueueManager
 import com.omnidocs.app.ui.theme.AppTheme
 import com.omnidocs.app.ui.theme.ThemeManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,7 +37,9 @@ class SettingsViewModel @Inject constructor(
     private val llamaCppService: LlamaCppService,
     private val modelPreferences: ModelPreferences,
     private val localBackupService: LocalBackupService,
-    private val localBackupPreferences: LocalBackupPreferences
+    private val localBackupPreferences: LocalBackupPreferences,
+    private val syncQueueManager: SyncQueueManager,
+    private val driveSyncPeer: DriveSyncPeer
 ) : ViewModel() {
 
     private val themeManager = ThemeManager(context)
@@ -90,8 +94,13 @@ class SettingsViewModel @Inject constructor(
             _isSyncing.value = true
             _syncMessage.value = null
             try {
-                val success = driveService.syncToCloud()
-                val msg = if (success) "Notes synced to Google Drive" else "Sync failed"
+                val stats = syncQueueManager.syncNow(driveSyncPeer)
+                val msg = when {
+                    stats.syncedCount > 0 -> "Synced ${stats.syncedCount} changes"
+                    stats.conflictCount > 0 -> "${stats.conflictCount} conflicts need review"
+                    stats.failedCount > 0 -> "Sync failed"
+                    else -> "Already up to date"
+                }
                 _syncMessage.value = msg
                 _snackbarEvent.tryEmit(msg)
             } catch (e: Exception) {

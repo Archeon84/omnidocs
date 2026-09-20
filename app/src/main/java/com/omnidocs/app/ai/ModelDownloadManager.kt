@@ -16,8 +16,11 @@ import com.omnidocs.app.stt.SttModelType
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private const val TAG = "ModelDownloadManager"
 
@@ -41,7 +44,9 @@ data class ModelInfo(
     val sha256: String? = null,
     val promptFormat: PromptFormat = PromptFormat.CHATML,
     val addBos: Boolean = false,
-    val isDownloaded: Boolean = false
+    val isDownloaded: Boolean = false,
+    /** True for reasoning models that emit <think> blocks unless told otherwise. */
+    val isThinkingModel: Boolean = false
 )
 
 @Singleton
@@ -76,7 +81,10 @@ class ModelDownloadManager @Inject constructor(
      * Re-validates hostname at each redirect hop against ALLOWED_DOWNLOAD_HOSTS.
      * Max 5 hops to prevent infinite redirect loops.
      */
-    private fun openConnectionWithRedirectValidation(initialUrl: URL): HttpURLConnection {
+    private fun openConnectionWithRedirectValidation(
+        initialUrl: URL,
+        extraHeaders: Map<String, String> = emptyMap()
+    ): HttpURLConnection {
         var currentUrl = initialUrl
         val maxRedirects = 5
 
@@ -88,6 +96,9 @@ class ModelDownloadManager @Inject constructor(
             val conn = currentUrl.openConnection() as HttpURLConnection
             conn.instanceFollowRedirects = false
             conn.setRequestProperty("User-Agent", "OmniDocs/1.0")
+            for ((key, value) in extraHeaders) {
+                conn.setRequestProperty(key, value)
+            }
             conn.connectTimeout = 30000
             conn.readTimeout = 60000
             conn.connect()
@@ -108,32 +119,46 @@ class ModelDownloadManager @Inject constructor(
 
     val availableModels = listOf(
         ModelInfo(
-            id = "qwen3_1.7b",
-            name = "Qwen3 1.7B (Q4_K_M)",
-            description = "Balanced model for summarization, proofreading, and rewriting. Fast and capable.",
+            id = "qwen3.5_2b",
+            name = "Qwen3.5 2B (Default)",
+            description = "Default balanced model for on-device RAG Q&A, summarization, and note intelligence.",
+            size = "1.28 GB",
+            downloadUrl = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+            fileName = "Qwen3.5-2B-Q4_K_M.gguf",
+            promptFormat = PromptFormat.CHATML,
+            addBos = false,
+            // Device-proven (2026-09-07 logcat): emits <think> blocks without
+            // the hint, burning the token budget on reasoning (200s/5k-char
+            // thinking traces, blank answers after filtering). Keep /no_think.
+            isThinkingModel = true
+        ),
+        ModelInfo(
+            id = "phi4_mini_3.8b",
+            name = "Phi-4 mini 3.8B (Pro)",
+            description = "Pro on-device model with state-of-the-art math, code and complex factual reasoning.",
+            size = "2.49 GB",
+            downloadUrl = "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf",
+            fileName = "Phi-4-mini-instruct-Q4_K_M.gguf",
+            promptFormat = PromptFormat.PHI4,
+            addBos = false
+        ),
+        ModelInfo(
+            id = "qwen2.5_1.5b",
+            name = "Qwen2.5 1.5B (Light)",
+            description = "Balanced lightweight model for fast on-device RAG Q&A, summarization, and proofreading.",
             size = "1.11 GB",
-            downloadUrl = "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf",
-            fileName = "Qwen3-1.7B-Q4_K_M.gguf",
+            downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            fileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
             promptFormat = PromptFormat.CHATML,
             addBos = false
         ),
         ModelInfo(
-            id = "llama3.2_3b",
-            name = "Llama 3.2 3B (Q4_K_M)",
-            description = "Best quality model from Meta. Larger but more capable for complex tasks.",
-            size = "2.02 GB",
-            downloadUrl = "https://huggingface.co/unsloth/Llama-3.2-3B-GGUF/resolve/main/Llama-3.2-3B-Q4_K_M.gguf",
-            fileName = "Llama-3.2-3B-Q4_K_M.gguf",
-            promptFormat = PromptFormat.LLAMA3,
-            addBos = true
-        ),
-        ModelInfo(
-            id = "qwen3_0.6b",
-            name = "Qwen3 0.6B (Q4_K_M)",
+            id = "qwen2.5_0.5b",
+            name = "Qwen2.5 0.5B (Compact)",
             description = "Smallest and fastest model. Great for quick tasks on lower-end devices.",
-            size = "397 MB",
-            downloadUrl = "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf",
-            fileName = "Qwen3-0.6B-Q4_K_M.gguf",
+            size = "491 MB",
+            downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            fileName = "qwen2.5-0.5b-instruct-q4_k_m.gguf",
             promptFormat = PromptFormat.CHATML,
             addBos = false
         )
@@ -205,7 +230,10 @@ class ModelDownloadManager @Inject constructor(
             size = "~126 MB",
             downloadUrl = "https://huggingface.co/cstr/multilingual-e5-small-GGUF/resolve/main/multilingual-e5-small-q8_0.gguf",
             fileName = "multilingual-e5-small-q8_0.gguf",
-            sha256 = "dc5a4599f11a6f5f27ecd20f8ebcf218407d51129522e5fccb900ffab8afb96a"
+            // Verified 2026-09-07: upstream republished the file under resolve/main
+            // (131,624,960 bytes); the previous hash looped every install into a
+            // download → mismatch → delete cycle with no UI signal.
+            sha256 = "0a34067a40f25d3149b36885faa62bee0e5284d0f9edc102acfc00e115d953e8"
         )
     )
 
@@ -228,23 +256,73 @@ class ModelDownloadManager @Inject constructor(
      * when none is configured), and publishes progress to [state]. Used by both
      * the generative and embedding model registries.
      */
+    /** One mutex per destination file: two concurrent downloads of the same
+     * model used to interleave into one .tmp and poison it (then trusted). */
+    private val downloadMutexes = ConcurrentHashMap<String, Mutex>()
+
     private suspend fun downloadSingleGguf(model: ModelInfo, state: MutableStateFlow<DownloadState>) {
+        val fileMutex = downloadMutexes.getOrPut(model.fileName) { Mutex() }
+        fileMutex.withLock {
+            downloadSingleGgufLocked(model, state)
+        }
+    }
+
+    private suspend fun downloadSingleGgufLocked(model: ModelInfo, state: MutableStateFlow<DownloadState>) {
         withContext(Dispatchers.IO) {
+            var connection: HttpURLConnection? = null
             try {
                 Log.d(TAG, "Starting download for ${model.name}")
                 state.value = DownloadState.Downloading(model.id, 0f)
                 downloadCancelled = false
+                ModelDownloadService.start(context, model.name)
 
                 val file = File(modelsDir, model.fileName)
                 val tmpFile = File(modelsDir, "${model.fileName}.tmp")
-                // Remove any leftover .tmp from a previous interrupted download
-                if (tmpFile.exists()) tmpFile.delete()
+
+                // Skip when a verified complete file is already in place.
+                if (file.exists() && isCompleteAndVerified(file, model.sha256)) {
+                    Log.d(TAG, "File already downloaded and verified for ${model.name}")
+                    state.value = DownloadState.Completed(model.id)
+                    if (tmpFile.exists()) tmpFile.delete()
+                    return@withContext
+                }
+
+                // Recognize pre-existing files without a (valid) checksum sidecar
+                // — older builds, sideloads, healed sidecars. Hash once instead
+                // of re-downloading hundreds of MB; without this the UI reports
+                // "not downloaded" forever despite the file sitting on disk.
+                // Skipped when a .tmp resume candidate exists (interrupted
+                // download takes the resume path below instead).
+                if (file.exists() && file.length() > 0L && !tmpFile.exists()) {
+                    try {
+                        Log.d(TAG, "Verifying pre-existing file for ${model.name}")
+                        val actual = calculateSha256(file)
+                        if (model.sha256 == null || actual.equals(model.sha256, ignoreCase = true)) {
+                            Log.d(TAG, "Pre-existing file verified for ${model.name}, saving sidecar")
+                            saveChecksum(file, actual)
+                            state.value = DownloadState.Completed(model.id)
+                            return@withContext
+                        }
+                        Log.w(TAG, "Pre-existing file corrupt for ${model.name}, re-downloading")
+                        file.delete()
+                        deleteChecksum(file)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not verify pre-existing file for ${model.name}", e)
+                    }
+                }
+
+                // Resume: keep a leftover .tmp and continue where it stopped
+                // instead of re-downloading gigabytes from byte 0.
+                val resumeOffset = if (tmpFile.exists()) tmpFile.length() else 0L
 
                 val url = URL(model.downloadUrl)
 
-                Log.d(TAG, "Connecting to ${model.downloadUrl}")
-                val connection = try {
-                    openConnectionWithRedirectValidation(url)
+                Log.d(TAG, "Connecting to ${model.downloadUrl} (resume from $resumeOffset)")
+                connection = try {
+                    openConnectionWithRedirectValidation(
+                        url,
+                        if (resumeOffset > 0) mapOf("Range" to "bytes=$resumeOffset-") else emptyMap()
+                    )
                 } catch (e: SecurityException) {
                     state.value = DownloadState.Error(model.id, e.message ?: "URL validation failed")
                     return@withContext
@@ -253,22 +331,41 @@ class ModelDownloadManager @Inject constructor(
                 val responseCode = connection.responseCode
                 Log.d(TAG, "Response code: $responseCode")
 
-                if (responseCode != HttpURLConnection.HTTP_OK) {
+                val resumed = responseCode == HttpURLConnection.HTTP_PARTIAL
+                if (!resumed && resumeOffset > 0) {
+                    // Server ignored Range: stale prefix is useless, restart clean.
+                    Log.w(TAG, "Server does not support resume; restarting download from byte 0")
+                    tmpFile.delete()
+                }
+                if (responseCode != HttpURLConnection.HTTP_OK && !resumed) {
                     state.value = DownloadState.Error(model.id, "Server returned $responseCode")
                     return@withContext
                 }
 
-                val fileSize = connection.contentLength.toLong()
-                Log.d(TAG, "File size: $fileSize bytes")
+                val startOffset = if (resumed) resumeOffset else 0L
+                val remaining = connection.contentLength.toLong()
+                val fileSize = if (resumed && remaining > 0) startOffset + remaining else remaining
+                Log.d(TAG, "File size: $fileSize bytes (resumed=$resumed)")
 
-                // Stream SHA-256 during download — avoids re-reading the full file afterwards
+                // Stream SHA-256 during download — avoids re-reading the full file afterwards.
+                // When resuming, hash the existing prefix first so the final digest
+                // covers the whole file.
                 val digest = MessageDigest.getInstance("SHA-256")
-
-                connection.inputStream.use { input ->
-                    FileOutputStream(tmpFile).use { output ->
+                if (resumed) {
+                    FileInputStream(tmpFile).use { prefix ->
                         val buffer = ByteArray(8192)
                         var bytesRead: Int
-                        var totalBytes = 0L
+                        while (prefix.read(buffer).also { bytesRead = it } != -1) {
+                            digest.update(buffer, 0, bytesRead)
+                        }
+                    }
+                }
+
+                connection.inputStream.use { input ->
+                    FileOutputStream(tmpFile, resumed).use { output ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        var totalBytes = startOffset
                         var lastProgress = -1f
                         var lastEmitTime = 0L
 
@@ -295,6 +392,16 @@ class ModelDownloadManager @Inject constructor(
                                     lastEmitTime = now
                                 }
                             }
+                        }
+
+                        // Truncated stream: keep the .tmp for resume, do NOT promote.
+                        if (fileSize > 0 && totalBytes != fileSize) {
+                            Log.e(TAG, "Incomplete download for ${model.name}: $totalBytes/$fileSize bytes")
+                            state.value = DownloadState.Error(
+                                model.id,
+                                "Download incomplete ($totalBytes of $fileSize bytes) — retry to resume"
+                            )
+                            return@withContext
                         }
                     }
                 }
@@ -333,8 +440,27 @@ class ModelDownloadManager @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed for ${model.name}", e)
                 state.value = DownloadState.Error(model.id, e.message ?: "Download failed")
+            } finally {
+                try {
+                    connection?.disconnect()
+                } catch (_: Exception) {
+                }
             }
         }
+    }
+
+    /**
+     * True when [file] exists and its saved sidecar matches [expectedSha256]
+     * (or any sidecar exists when no checksum is configured). Lets repeat
+     * taps complete instantly instead of re-downloading gigabytes.
+     */
+    private fun isCompleteAndVerified(file: File, expectedSha256: String?): Boolean {
+        if (!file.exists() || file.length() == 0L) return false
+        val saved = loadChecksum(file) ?: return false
+        if (expectedSha256 != null) {
+            return saved.equals(expectedSha256, ignoreCase = true)
+        }
+        return true
     }
 
     /**
@@ -355,6 +481,7 @@ class ModelDownloadManager @Inject constructor(
     fun deleteModel(model: ModelInfo) {
         // Signal any in-progress download to abort
         downloadCancelled = true
+        ModelDownloadService.stop(context)
 
         val file = File(modelsDir, model.fileName)
         if (file.exists()) {
@@ -383,40 +510,70 @@ class ModelDownloadManager @Inject constructor(
      * Downloads as tar.bz2, extracts to models directory.
      */
     suspend fun downloadSttModel(model: SttModelInfo) {
+        // Serialize same-file downloads (see downloadSingleGguf).
+        downloadMutexes.getOrPut("stt:${model.fileName}") { Mutex() }.withLock {
+            downloadSttModelLocked(model)
+        }
+    }
+
+    private suspend fun downloadSttModelLocked(model: SttModelInfo) {
         withContext(Dispatchers.IO) {
+            var connection: HttpURLConnection? = null
             try {
                 Log.d(TAG, "Starting STT model download: ${model.name}")
                 _sttDownloadState.value = DownloadState.Downloading(model.id, 0f)
                 downloadCancelled = false
+                ModelDownloadService.start(context, model.name)
 
                 val tmpFile = File(modelsDir, "${model.fileName}.tmp")
-                if (tmpFile.exists()) tmpFile.delete()
+                // Resume interrupted downloads instead of restarting from byte 0.
+                val resumeOffset = if (tmpFile.exists()) tmpFile.length() else 0L
 
                 val url = URL(model.downloadUrl)
 
-                val connection = try {
-                    openConnectionWithRedirectValidation(url)
+                connection = try {
+                    openConnectionWithRedirectValidation(
+                        url,
+                        if (resumeOffset > 0) mapOf("Range" to "bytes=$resumeOffset-") else emptyMap()
+                    )
                 } catch (e: SecurityException) {
                     _sttDownloadState.value = DownloadState.Error(model.id, e.message ?: "URL validation failed")
                     return@withContext
                 }
 
                 val responseCode = connection.responseCode
-                if (responseCode != HttpURLConnection.HTTP_OK) {
+                val resumed = responseCode == HttpURLConnection.HTTP_PARTIAL
+                if (!resumed && resumeOffset > 0) {
+                    Log.w(TAG, "Server does not support resume; restarting STT download from byte 0")
+                    tmpFile.delete()
+                }
+                if (responseCode != HttpURLConnection.HTTP_OK && !resumed) {
                     _sttDownloadState.value = DownloadState.Error(model.id, "Server returned $responseCode")
                     return@withContext
                 }
 
-                val fileSize = connection.contentLength.toLong()
+                val startOffset = if (resumed) resumeOffset else 0L
+                val remaining = connection.contentLength.toLong()
+                val fileSize = if (resumed && remaining > 0) startOffset + remaining else remaining
 
-                // Stream SHA-256 during download for integrity verification
+                // Stream SHA-256 during download for integrity verification.
+                // On resume, hash the existing prefix first.
                 val digest = MessageDigest.getInstance("SHA-256")
-
-                connection.inputStream.use { input ->
-                    FileOutputStream(tmpFile).use { output ->
+                if (resumed) {
+                    FileInputStream(tmpFile).use { prefix ->
                         val buffer = ByteArray(8192)
                         var bytesRead: Int
-                        var totalBytes = 0L
+                        while (prefix.read(buffer).also { bytesRead = it } != -1) {
+                            digest.update(buffer, 0, bytesRead)
+                        }
+                    }
+                }
+
+                connection.inputStream.use { input ->
+                    FileOutputStream(tmpFile, resumed).use { output ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        var totalBytes = startOffset
                         var lastProgress = -1f
                         var lastEmitTime = 0L
 
@@ -439,6 +596,16 @@ class ModelDownloadManager @Inject constructor(
                                     lastEmitTime = now
                                 }
                             }
+                        }
+
+                        // Truncated stream: keep .tmp for resume, do NOT extract.
+                        if (fileSize > 0 && totalBytes != fileSize) {
+                            Log.e(TAG, "Incomplete STT download for ${model.name}: $totalBytes/$fileSize bytes")
+                            _sttDownloadState.value = DownloadState.Error(
+                                model.id,
+                                "Download incomplete ($totalBytes of $fileSize bytes) — retry to resume"
+                            )
+                            return@withContext
                         }
                     }
                 }
@@ -485,6 +652,11 @@ class ModelDownloadManager @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "STT model download failed: ${model.name}", e)
                 _sttDownloadState.value = DownloadState.Error(model.id, e.message ?: "Download failed")
+            } finally {
+                try {
+                    connection?.disconnect()
+                } catch (_: Exception) {
+                }
             }
         }
     }

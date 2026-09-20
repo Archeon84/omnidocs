@@ -8,6 +8,9 @@ import androidx.room.PrimaryKey
     tableName = "embeddings",
     indices = [
         Index(value = ["sourceType", "sourceId"]),
+        Index(value = ["sourceType", "modelName"]),
+        Index(value = ["sourceId"]),
+        Index(value = ["modelName"]),
         Index(value = ["chunkHash"])
     ]
 )

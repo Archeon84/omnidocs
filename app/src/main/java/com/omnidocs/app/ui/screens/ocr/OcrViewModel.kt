@@ -7,8 +7,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.ai.NllbTranslationService
+import com.omnidocs.app.ocr.OCR_JPEG_QUALITY
 import com.omnidocs.app.ocr.OcrEngineFactory
 import com.omnidocs.app.ocr.OcrHtmlBuilder
+import com.omnidocs.app.ocr.downscaleForOcr
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -118,12 +120,20 @@ class OcrViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _ocrError.value = null
+            var scaledForOcr: Bitmap? = null
             try {
-                // Save bitmap to temp file
+                // Downscale off the main thread first: a 12MP camera frame is
+                // ~48MB, and neither the cache file nor ML Kit needs full res.
+                scaledForOcr = withContext(Dispatchers.Default) {
+                    downscaleForOcr(bitmap)
+                }
+                val scaled = scaledForOcr ?: bitmap
+
+                // Persist a compact preview for the UI gallery strip
                 val file = withContext(Dispatchers.IO) {
                     val tempFile = File(context.cacheDir, "temp_ocr_image.jpg")
                     FileOutputStream(tempFile).use { out ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                        scaled.compress(Bitmap.CompressFormat.JPEG, OCR_JPEG_QUALITY, out)
                     }
                     tempFile
                 }
@@ -131,9 +141,10 @@ class OcrViewModel @Inject constructor(
                 val uri = Uri.fromFile(file)
                 _selectedImageUri.value = uri
 
-                // Recognize text
+                // Recognize directly from the bitmap: no full-res JPEG
+                // compress -> write -> re-decode round-trip.
                 val engine = engineFactory.getEngine()
-                val result = engine.recognizeText(uri, _ocrLanguage.value)
+                val result = engine.recognizeBitmap(scaled, 0, _ocrLanguage.value)
 
                 if (result != null) {
                     _originalText.value = result.text
@@ -153,6 +164,10 @@ class OcrViewModel @Inject constructor(
                 _recognizedText.value = ""
                 _recognizedHtml.value = ""
             } finally {
+                val owned = scaledForOcr
+                if (owned != null && owned !== bitmap && !owned.isRecycled) {
+                    owned.recycle()
+                }
                 _isLoading.value = false
             }
         }

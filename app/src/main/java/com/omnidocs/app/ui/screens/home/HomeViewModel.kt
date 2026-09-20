@@ -18,14 +18,17 @@ import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.docimport.DocumentConverterFactory
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.search.Tokenizer
 import com.omnidocs.app.search.VectorSearch
 import com.omnidocs.app.ui.components.IngestionReviewState
 import com.omnidocs.app.ui.theme.AppTheme
 import com.omnidocs.app.ui.theme.ThemeManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,6 +45,18 @@ data class PendingImportReview(
     val extractedTasks: List<String>,
     val reviewState: IngestionReviewState
 )
+
+private const val SEARCH_DEBOUNCE_MS = 300L
+private const val MIN_SEARCH_CHARS = 2
+
+fun isMeaningfulSearchQuery(query: String): Boolean {
+    val trimmed = query.trim()
+    if (trimmed.length >= MIN_SEARCH_CHARS) return true
+    if (trimmed.length == 1) {
+        return Tokenizer.isCjk(trimmed)
+    }
+    return false
+}
 
 @ExperimentalCoroutinesApi
 @HiltViewModel
@@ -83,15 +98,28 @@ class HomeViewModel @Inject constructor(
     private val _isProcessingImport = MutableStateFlow(false)
     val isProcessingImport: StateFlow<Boolean> = _isProcessingImport.asStateFlow()
 
+    private val _importingFileName = MutableStateFlow<String?>(null)
+    val importingFileName: StateFlow<String?> = _importingFileName.asStateFlow()
+
+    private var importJob: Job? = null
+
     private val _snackbarEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val snackbarEvent: SharedFlow<String> = _snackbarEvent.asSharedFlow()
 
     private val _loadError = MutableStateFlow<String?>(null)
     val loadError: StateFlow<String?> = _loadError.asStateFlow()
 
+    val dueCardsCount: StateFlow<Int> = repository.countDueFlashcardsFlow()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     val notes: StateFlow<List<Note>> = _searchQuery
+        // Don't run a full hybrid search per keystroke: wait for a typing
+        // pause (instant when cleared), skip duplicate emissions, and only
+        // search once the query is meaningful (1 char matches everything).
+        .debounce { query -> if (query.isBlank()) 0 else SEARCH_DEBOUNCE_MS }
+        .distinctUntilChanged()
         .flatMapLatest { query ->
-            if (query.isEmpty()) {
+            if (!isMeaningfulSearchQuery(query)) {
                 _matchDetails.value = emptyMap()
                 repository.getAllNotes().map { list ->
                     list.sortedWith(
@@ -187,10 +215,12 @@ class HomeViewModel @Inject constructor(
      * Executes the Import to Knowledge agent pipeline and prompts user review.
      */
     fun importFile(uri: Uri, mimeType: String) {
-        viewModelScope.launch {
+        importJob?.cancel()
+        importJob = viewModelScope.launch {
             _isProcessingImport.value = true
             try {
                 val fileName = getFileName(uri)
+                _importingFileName.value = fileName
                 val result: ImportPipelineResult = importPipelineCoordinator.runImportPipeline(
                     uri = uri.toString(),
                     mimeType = mimeType,
@@ -221,10 +251,40 @@ class HomeViewModel @Inject constructor(
                 } else {
                     _snackbarEvent.tryEmit(result.errorMessage ?: "Could not import this file format")
                 }
+            } catch (e: CancellationException) {
+                _snackbarEvent.tryEmit("Import cancelled")
             } catch (e: Exception) {
                 _snackbarEvent.tryEmit("Import failed: ${e.message}")
             } finally {
+                _importingFileName.value = null
                 _isProcessingImport.value = false
+            }
+        }
+    }
+
+    /**
+     * Cancel an in-flight import: stops the coroutine and flags the pipeline
+     * job so agents halt at the next step boundary. Partial work (note row,
+     * blocks) may already exist — the review sheet's Discard path cleans up.
+     */
+    fun cancelImport() {
+        importJob?.cancel()
+        importJob = null
+        viewModelScope.launch {
+            try {
+                importPipelineCoordinator.cancelActiveImport()
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Failed to cancel import job", e)
+            }
+            // Remove a note row saved before the cancel landed — unless it's
+            // already sitting in the review sheet (then Discard owns cleanup).
+            try {
+                val noteId = importPipelineCoordinator.takeCreatedNoteId()
+                if (noteId != null && _pendingReview.value?.noteId != noteId) {
+                    repository.discardUnsyncedNote(noteId)
+                }
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Failed to clean up cancelled import", e)
             }
         }
     }
@@ -298,14 +358,32 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Discard an import from the review sheet: hard-deletes the just-imported
+     * note (plus blocks/embeddings/source docs) so "Discard" no longer leaves
+     * the file saved as a note. Falls back to a soft delete when the row
+     * already synced (shouldn't happen this early, but never lose data).
+     */
     fun dismissImportReview() {
         val pending = _pendingReview.value ?: return
+        _pendingReview.value = null
         viewModelScope.launch {
-            val note = repository.getNoteById(pending.noteId)
-            if (note != null) {
-                _importResult.tryEmit(note)
+            val discarded = try {
+                repository.discardUnsyncedNote(pending.noteId)
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Failed to discard import ${pending.noteId}", e)
+                false
             }
-            _pendingReview.value = null
+            if (!discarded) {
+                try {
+                    repository.getNoteById(pending.noteId)?.let { note ->
+                        repository.deleteNote(note)
+                    }
+                } catch (e: Exception) {
+                    Log.e("HomeViewModel", "Fallback soft-delete failed for ${pending.noteId}", e)
+                }
+            }
+            _snackbarEvent.tryEmit("Import discarded")
         }
     }
 
@@ -399,7 +477,10 @@ class HomeViewModel @Inject constructor(
 
     private fun shareText(content: String, fileName: String, mimeType: String) {
         try {
-            val cacheFile = File(context.cacheDir, fileName)
+            // Must live under a FileProvider root (see file_paths.xml):
+            // cache root itself is NOT shared.
+            val sharedDir = File(context.cacheDir, "shared_notes").also { it.mkdirs() }
+            val cacheFile = File(sharedDir, fileName)
             cacheFile.writeText(content)
             val uri = FileProvider.getUriForFile(
                 context,

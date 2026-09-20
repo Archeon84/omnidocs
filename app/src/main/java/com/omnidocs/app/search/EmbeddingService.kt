@@ -4,9 +4,12 @@ import android.util.Log
 import com.omnidocs.app.ai.EmbeddingEngine
 import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelPreferences
+import com.omnidocs.app.ai.NativeMemoryManager
+import com.omnidocs.app.ai.NativeModelSlot
 import com.omnidocs.app.ai.resolveActiveEmbeddingModel
 import com.omnidocs.app.data.local.EmbeddingDao
 import com.omnidocs.app.data.local.entity.EmbeddingEntity
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.sqrt
@@ -15,6 +18,12 @@ private const val TAG = "EmbeddingService"
 private const val EMBEDDING_DIM = 128 // n-gram fallback embedding dimension
 private const val NGRAM_SIZE = 3
 const val NGRAM_MODEL_NAME = "ngram-hash-v1"
+
+/** TTL for cached query embeddings (ms). Queries are short-lived per session. */
+private const val QUERY_CACHE_TTL_MS = 60_000L
+private const val QUERY_CACHE_MAX_ENTRIES = 32
+/** Cap for cached deserialized row vectors (evicted wholesale when full). */
+private const val VECTOR_CACHE_MAX_ENTRIES = 4000
 
 /**
  * Generates and stores text embeddings for semantic search.
@@ -30,8 +39,22 @@ class EmbeddingService @Inject constructor(
     private val embeddingDao: EmbeddingDao,
     private val embeddingEngine: EmbeddingEngine,
     private val modelDownloadManager: ModelDownloadManager,
-    private val modelPreferences: ModelPreferences
+    private val modelPreferences: ModelPreferences,
+    private val noteBlockAdapter: com.omnidocs.app.ai.NoteBlockAdapter,
+    private val nativeMemoryManager: NativeMemoryManager
 ) {
+    /** Cache key: (lowercase query, model name). Value: (vector, timestamp). */
+    private data class CacheEntry(val vector: FloatArray, val createdAt: Long)
+
+    private val queryCache = ConcurrentHashMap<String, CacheEntry>()
+    /**
+     * Deserialized row vectors keyed by row id. Entries self-invalidate: a
+     * reindex REPLACEs the row with a newer createdAt, so a key match on
+     * (id, createdAt) guarantees freshness. Callers must NOT mutate the
+     * returned array (shared reference).
+     */
+    private data class VectorCacheEntry(val createdAt: Long, val vector: FloatArray)
+    private val vectorCache = ConcurrentHashMap<String, VectorCacheEntry>()
     /**
      * Name of the embedding model that is currently active: the downloaded
      * embedding model's id, or [NGRAM_MODEL_NAME] when none is available.
@@ -40,40 +63,25 @@ class EmbeddingService @Inject constructor(
         val model = resolveActiveEmbeddingModel(modelPreferences, modelDownloadManager)
             ?: return NGRAM_MODEL_NAME
         // Include dimension so queries match the dim-suffixed stored rows.
-        val loaded = embeddingEngine.isLoaded() || embeddingEngine.load(
-            modelDownloadManager.getModelPath(model)
-        )
+        // Slot-serialized: loading embeddings while STT/LLM holds memory risks OOM.
+        val loaded = embeddingEngine.isLoaded() || nativeMemoryManager.withSlot(
+            NativeModelSlot.EMBEDDINGS,
+            NativeMemoryManager.OWNER_EMBEDDINGS
+        ) {
+            embeddingEngine.load(modelDownloadManager.getModelPath(model))
+        }
         val dim = if (loaded) embeddingEngine.dim() else 0
         return if (dim > 0) "${model.id}_$dim" else model.id
     }
 
     /**
-     * Chunk text into overlapping word passages for granular semantic retrieval.
-     */
-    fun chunkText(text: String, chunkSizeWords: Int = 180, overlapWords: Int = 35): List<String> {
-        val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (words.isEmpty()) return emptyList()
-        if (words.size <= chunkSizeWords) return listOf(text.trim())
-
-        val chunks = mutableListOf<String>()
-        var start = 0
-        val step = (chunkSizeWords - overlapWords).coerceAtLeast(1)
-
-        while (start < words.size) {
-            val end = (start + chunkSizeWords).coerceAtMost(words.size)
-            val chunk = words.subList(start, end).joinToString(" ")
-            if (chunk.isNotBlank()) {
-                chunks.add(chunk)
-            }
-            if (end >= words.size) break
-            start += step
-        }
-        return chunks
-    }
-
-    /**
-     * Chunk a note into multiple passages and store embeddings for each passage.
-     * Replaces previous embeddings for this note with the current model.
+     * Chunk a note into structure-aware passages using [NoteBlockAdapter] and store
+     * embeddings for each passage.
+     *
+     * Incremental: per-chunk [chunkHash] comparison skips re-embedding unchanged
+     * passages (autosave fires every few seconds), upserts changed ones, and
+     * deletes tail rows when the note shrinks. Rows from other models are left
+     * alone. An emptied note deletes its rows so stale vectors never linger.
      */
     suspend fun embedAndStoreNotePassages(
         noteId: String,
@@ -81,39 +89,87 @@ class EmbeddingService @Inject constructor(
         content: String,
         modelName: String? = null
     ): List<EmbeddingEntity> {
-        val fullText = "$title\n\n$content".trim()
-        if (fullText.isBlank()) return emptyList()
+        if (content.isBlank()) {
+            embeddingDao.deleteEmbeddingsBySource("note", noteId)
+            return emptyList()
+        }
 
-        val chunks = chunkText(fullText)
+        // Use NoteBlockAdapter for Markdown-aware semantic chunking
+        val segments = noteBlockAdapter.chunkText(noteId, title, content)
+        if (segments.isEmpty()) {
+            embeddingDao.deleteEmbeddingsBySource("note", noteId)
+            return emptyList()
+        }
+
+        val resolvedModel = modelName ?: activeModelName()
+        val existing = embeddingDao.getEmbeddingsBySource("note", noteId)
+            .filter { it.modelName == resolvedModel && isPassageRow(it.id, noteId) }
+            .associateBy({ it.id }, { it.chunkHash })
+        val liveIds = mutableSetOf<String>()
+
         val entities = mutableListOf<EmbeddingEntity>()
-
-        for ((index, chunk) in chunks.withIndex()) {
-            val (vector, usedModelName) = embedInternal(chunk, isQuery = false)
-            val resolvedModel = modelName ?: usedModelName
-            val entity = EmbeddingEntity(
-                id = "note:$noteId:$index:$resolvedModel",
-                sourceType = "note",
-                sourceId = noteId,
-                chunkHash = chunk.hashCode().toString(),
-                modelName = resolvedModel,
-                embeddingVector = serializeVector(vector),
-                createdAt = System.currentTimeMillis()
+        for ((index, segment) in segments.withIndex()) {
+            val id = "note:$noteId:$index:$resolvedModel"
+            liveIds.add(id)
+            val hash = segment.content.hashCode().toString()
+            if (existing[id] == hash) continue // unchanged passage: keep stored vector
+            val (vector, _) = embedInternal(segment.content, isQuery = false)
+            entities.add(
+                EmbeddingEntity(
+                    id = id,
+                    sourceType = "note",
+                    sourceId = noteId,
+                    chunkHash = hash,
+                    modelName = resolvedModel,
+                    embeddingVector = serializeVector(vector),
+                    createdAt = System.currentTimeMillis()
+                )
             )
-            entities.add(entity)
         }
 
         if (entities.isNotEmpty()) {
-            // Remove previous embeddings for this note before saving new passage set
-            embeddingDao.deleteEmbeddingsBySource("note", noteId)
             embeddingDao.insertEmbeddings(entities)
         }
-        return entities
+        val staleIds = existing.keys.filter { it !in liveIds }
+        // Purge legacy full-text rows ("note:<id>:<model>"): superseded by
+        // passages now that replacements exist, and never invalidated on edit
+        // — they rank notes on content the note no longer has.
+        val legacyIds = embeddingDao.getEmbeddingsBySource("note", noteId)
+            .filter { isLegacyRow(it.id, noteId) }
+            .map { it.id }
+        val deadIds = (staleIds + legacyIds).distinct()
+        if (deadIds.isNotEmpty()) {
+            embeddingDao.deleteEmbeddingsByIds(deadIds)
+        }
+        return embeddingDao.getEmbeddingsBySource("note", noteId)
+            .filter { it.modelName == resolvedModel && isPassageRow(it.id, noteId) }
+    }
+
+    /** True for passage rows ("note:<id>:<index>:<model>"); excludes the legacy
+     * full-text row ("note:<id>:<model>") written by other indexers. */
+    private fun isPassageRow(rowId: String, noteId: String): Boolean {
+        val prefix = "note:$noteId:"
+        if (!rowId.startsWith(prefix)) return false
+        val rest = rowId.removePrefix(prefix).split(":")
+        return rest.size == 2 && rest[0].all { it.isDigit() }
+    }
+
+    /** True for legacy full-text rows ("note:<id>:<model>", single segment). */
+    private fun isLegacyRow(rowId: String, noteId: String): Boolean {
+        val prefix = "note:$noteId:"
+        if (!rowId.startsWith(prefix)) return false
+        return rowId.removePrefix(prefix).split(":").size == 1
     }
 
     /**
      * Generate and store an embedding for a text chunk (document context: uses
      * the "passage:" prefix required by e5-family models). Idempotent: the row id
      * is deterministic so re-saving a note upserts instead of accumulating rows.
+     *
+     * The row is ALWAYS tagged with the model that actually produced the
+     * vector ([usedModelName]), never the caller's assumption: filing a
+     * 128-dim n-gram fallback under a real-model tag silently poisons the
+     * semantic leg (dim mismatch → cosine 0 → invisible recall loss).
      */
     suspend fun embedAndStore(
         sourceType: String,
@@ -124,13 +180,16 @@ class EmbeddingService @Inject constructor(
         if (text.isBlank()) return null
 
         val (vector, usedModelName) = embedInternal(text, isQuery = false)
+        if (modelName != null && modelName != usedModelName) {
+            Log.w(TAG, "embedAndStore: caller assumed $modelName but vector is $usedModelName; tagging truthfully")
+        }
 
         val entity = EmbeddingEntity(
-            id = "$sourceType:$sourceId:${modelName ?: usedModelName}",
+            id = "$sourceType:$sourceId:$usedModelName",
             sourceType = sourceType,
             sourceId = sourceId,
             chunkHash = text.hashCode().toString(),
-            modelName = modelName ?: usedModelName,
+            modelName = usedModelName,
             embeddingVector = serializeVector(vector),
             createdAt = System.currentTimeMillis()
         )
@@ -142,9 +201,29 @@ class EmbeddingService @Inject constructor(
     /**
      * Embed a query string ("query:" prefix for e5 models). Returns a vector of
      * the active model's dimension, or the n-gram fallback dimension.
+     * Results are cached for 60s to avoid redundant inference on repeated/similar queries.
      */
     suspend fun generateEmbedding(text: String): FloatArray {
-        return embedInternal(text, isQuery = true).first
+        val modelName = activeModelName()
+        val cacheKey = "${text.lowercase().trim()}|$modelName"
+        val now = System.currentTimeMillis()
+
+        queryCache[cacheKey]?.let { entry ->
+            if (now - entry.createdAt < QUERY_CACHE_TTL_MS) {
+                // Defensive copy: the cached array is shared state.
+                return entry.vector.copyOf()
+            }
+        }
+
+        val vector = embedInternal(text, isQuery = true).first
+
+        // Evict oldest if over capacity
+        if (queryCache.size >= QUERY_CACHE_MAX_ENTRIES) {
+            val oldest = queryCache.entries.minByOrNull { it.value.createdAt }?.key
+            oldest?.let { queryCache.remove(it) }
+        }
+        queryCache[cacheKey] = CacheEntry(vector, now)
+        return vector
     }
 
     /**
@@ -169,7 +248,12 @@ class EmbeddingService @Inject constructor(
 
         val modelPath = modelDownloadManager.getModelPath(model)
         Log.d(TAG, "embedInternal: loading model from $modelPath")
-        val loaded = embeddingEngine.isLoaded() || embeddingEngine.load(modelPath)
+        val loaded = embeddingEngine.isLoaded() || nativeMemoryManager.withSlot(
+            NativeModelSlot.EMBEDDINGS,
+            NativeMemoryManager.OWNER_EMBEDDINGS
+        ) {
+            embeddingEngine.load(modelPath)
+        }
         if (!loaded) {
             Log.w(TAG, "Embedding model failed to load from $modelPath, falling back to n-gram")
             return ngramEmbedding(text) to NGRAM_MODEL_NAME
@@ -250,6 +334,21 @@ class EmbeddingService @Inject constructor(
             buffer.putFloat(v)
         }
         return buffer.array()
+    }
+
+    /**
+     * Deserialize byte array back to float array, cached by row id.
+     * Avoids re-deserializing the whole table on every keystroke search.
+     * Do NOT mutate the returned array.
+     */
+    fun cachedVector(id: String, createdAt: Long, bytes: ByteArray): FloatArray {
+        vectorCache[id]?.let { entry ->
+            if (entry.createdAt == createdAt) return entry.vector
+        }
+        val vector = deserializeVector(bytes)
+        if (vectorCache.size >= VECTOR_CACHE_MAX_ENTRIES) vectorCache.clear()
+        vectorCache[id] = VectorCacheEntry(createdAt, vector)
+        return vector
     }
 
     /**

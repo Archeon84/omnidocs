@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <atomic>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -18,6 +19,25 @@ static const llama_vocab* vocab = nullptr;
 static bool is_initialized = false;
 static bool backend_initialized = false;
 static bool g_add_bos = false; // Set per model: Qwen3=false, Llama3=true
+static std::atomic<bool> g_stop{false};
+// Set when the most recent generate/stream prompt exceeded the context guard
+// and was truncated (head kept). Surfaced to Kotlin so callers can warn;
+// Kotlin-side PromptBudget should normally prevent this.
+static std::atomic<bool> g_last_prompt_truncated{false};
+// Why the most recent generation loop ended. Surfaced to Kotlin so callers
+// can distinguish a natural EOS finish from a mid-sentence cut (token budget,
+// context ceiling, user stop) and say so in the UI instead of presenting a
+// partial answer as complete.
+static std::atomic<int> g_last_stop_reason{0};
+// Keep in sync with LlamaCppService.StopReason.
+static const int STOP_UNKNOWN = 0;
+static const int STOP_MAX_TOKENS = 1;
+static const int STOP_CTX_FULL = 2;
+static const int STOP_EOS = 3;
+static const int STOP_USER = 4;
+static const int STOP_DECODE_ERROR = 5;
+static const int STOP_TIMEOUT = 6;
+static const int STOP_EXCEPTION = 7;
 
 // Embedding model/context — a SEPARATE GGUF from the generative model above.
 // Both share the process-wide llama backend (llama_backend_init once), so the
@@ -122,14 +142,17 @@ extern "C" {
 
             // Create context
             auto ctx_params = llama_context_default_params();
-            ctx_params.n_ctx = 2048;
+            ctx_params.n_ctx = 8192;
             ctx_params.n_batch = 512;
             ctx_params.n_ubatch = 512;
+            ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
+            ctx_params.type_k = GGML_TYPE_Q8_0;
+            ctx_params.type_v = GGML_TYPE_Q8_0;
             // Auto-detect CPU cores; leave 1-2 free for the OS/UI thread.
             // hardware_concurrency() returns 0 on failure — fall back to 4.
             unsigned int hw_threads = std::thread::hardware_concurrency();
             int n_threads = hw_threads > 2 ? hw_threads - 2 : (hw_threads > 0 ? hw_threads : 4);
-            LOGI("Using %d threads (hw=%u)", n_threads, hw_threads);
+            LOGI("Using %d threads (hw=%u, n_ctx=8192, flash_attn=auto, kv=Q8_0)", n_threads, hw_threads);
             ctx_params.n_threads = n_threads;
 
             ctx = llama_init_from_model(model, ctx_params);
@@ -165,6 +188,10 @@ extern "C" {
             LOGE("nativeGenerate: mutex timeout, previous call stuck");
             return env->NewStringUTF("");
         }
+        // Reset AFTER holding the lock: resetting before lets a concurrent
+        // nativeStop() (user tapping Stop while queued) be silently erased.
+        g_stop.store(false);
+        g_last_stop_reason.store(STOP_UNKNOWN);
 
         if (!is_initialized || !model || !ctx || !vocab) {
             LOGE("Model not initialized");
@@ -209,32 +236,33 @@ extern "C" {
                 return env->NewStringUTF("");
             }
 
-            // Context limit guard (n_ctx = 2048): truncate prompt if too long to prevent decode crash
-            const int max_ctx = 2048;
+            // Context limit guard (dynamic from initialized context, default 8192)
+            const int max_ctx = ctx ? static_cast<int>(llama_n_ctx(ctx)) : 8192;
             const int max_prompt_tokens = max_ctx - 128;
             if (n_tokenized > max_prompt_tokens) {
                 LOGI("Prompt tokens (%d) exceed safe limit (%d), truncating tokens", n_tokenized, max_prompt_tokens);
                 n_tokenized = max_prompt_tokens;
                 tokens.resize(n_tokenized);
+                g_last_prompt_truncated.store(true);
+            } else {
+                g_last_prompt_truncated.store(false);
             }
 
             // ── Evaluate prompt ──────────────────────────────────────────────
-            // Clear KV cache so each generate() call starts fresh — otherwise
-            // residual KV entries from a prior call pollute the new inference.
             llama_memory_clear(llama_get_memory(ctx), true);
 
-            // Decode the prompt in chunks to avoid long stalls on large prompts.
-            // A single llama_decode with 600+ tokens on a phone CPU can take
-            // minutes; splitting into small chunks keeps each decode under a
-            // few seconds and prevents the C++ timeout from firing.
-            // NOTE: On mid-range phones, even 256 tokens can stall for 60s+.
-            // 64 tokens keeps each llama_decode call under ~5s on most devices.
             constexpr int PROMPT_CHUNK_SIZE = 64;
             {
                 int n_past = 0;
                 auto t_decode_start = std::chrono::steady_clock::now();
 
                 while (n_past < n_tokenized) {
+                    if (g_stop.load()) {
+                        LOGI("Prompt decode cancelled via g_stop");
+                        env->ReleaseStringUTFChars(prompt, promptStr);
+                        return env->NewStringUTF("");
+                    }
+
                     int chunk_size = n_tokenized - n_past;
                     if (chunk_size > PROMPT_CHUNK_SIZE) {
                         chunk_size = PROMPT_CHUNK_SIZE;
@@ -255,8 +283,6 @@ extern "C" {
                         batch.seq_id[i][0] = 0;
                         batch.logits[i] = 0;
                     }
-                    // Set logits flag on the LAST token of the LAST chunk
-                    // only — that's the token whose logits we sample from.
                     if (n_past + chunk_size == n_tokenized) {
                         batch.logits[chunk_size - 1] = 1;
                     }
@@ -282,8 +308,6 @@ extern "C" {
                     n_past += chunk_size;
                     llama_batch_free(batch);
 
-                    // Safety: if prompt decode exceeds 120s total, abort to
-                    // prevent the Kotlin coroutine from being stuck forever.
                     if (total_decode_ms > 120000) {
                         LOGE("Prompt decode timed out after %lldms (%d/%d tokens)",
                              total_decode_ms, n_past, n_tokenized);
@@ -301,12 +325,8 @@ extern "C" {
             LOGI("Prompt decoded, generating response (max %d tokens)...", maxTokens);
 
             // ── Sampler chain ────────────────────────────────────────────────
-            // Order: top_k → top_p → temp → dist matches the official
-            // llama.cpp sampling chain. The dist (distribution) sampler is
-            // REQUIRED — it performs the actual token sampling from the
-            // probability distribution. Without it, llama_sampler_sample() aborts.
             auto sparams = llama_sampler_chain_default_params();
-            sparams.no_perf = true; // we don't read the internal performance counters
+            sparams.no_perf = true;
             sampler = llama_sampler_chain_init(sparams);
             if (!sampler) {
                 LOGE("Failed to create sampler chain");
@@ -326,39 +346,37 @@ extern "C" {
             int n_past = n_tokenized;
 
             for (int i = 0; i < maxTokens; i++) {
-                // Ensure we never exceed context size (2048) to prevent assertion / memory corruption
-                if (n_past >= max_ctx - 2) {
-                    LOGI("Generation reached context ceiling (%d tokens)", n_past);
+                if (g_stop.load()) {
+                    LOGI("Generation cancelled via g_stop after %d tokens", tokens_generated);
+                    g_last_stop_reason.store(STOP_USER);
                     break;
                 }
 
-                // C++-side safety timeout: 180 seconds total generation time
-                // (increased from 90s because Qwen3 generates thinking tokens
-                // that eat into the time budget before the actual answer)
+                if (n_past >= max_ctx - 2) {
+                    LOGI("Generation reached context ceiling (%d tokens)", n_past);
+                    g_last_stop_reason.store(STOP_CTX_FULL);
+                    break;
+                }
+
                 auto t_now = std::chrono::steady_clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(t_now - t_start).count();
                 if (elapsed > 180000) {
                     LOGI("Generation timed out at %d tokens (%lldms)", tokens_generated, elapsed);
+                    g_last_stop_reason.store(STOP_TIMEOUT);
                     break;
                 }
 
-                // Sample next token from logits at the last decoded position
                 llama_token new_token = llama_sampler_sample(sampler, ctx, -1);
 
-                // Check for end-of-generation (e.g. <|im_end|> or <|endoftext|>)
                 if (llama_vocab_is_eog(vocab, new_token)) {
                     LOGI("Hit EOG after %d tokens (%lldms)", tokens_generated, elapsed);
+                    g_last_stop_reason.store(STOP_EOS);
                     break;
                 }
 
-                // Convert token to text — use the fixed buffer pattern:
-                //   n < 0  → buffer too small, required size is -n
-                //   n == 0 → empty piece (skip silently)
-                //   n > 0  → valid text of length n
                 char buf[256];
                 int n = llama_token_to_piece(vocab, new_token, buf, sizeof(buf), 0, true);
                 if (n < 0) {
-                    // Buffer too small — allocate exact size
                     std::vector<char> big_buf(static_cast<size_t>(-n) + 1);
                     n = llama_token_to_piece(vocab, new_token, big_buf.data(), big_buf.size(), 0, true);
                     if (n > 0) {
@@ -369,9 +387,6 @@ extern "C" {
                 }
                 tokens_generated++;
 
-                // Decode this token to advance the KV cache for the next iteration.
-                // Explicitly set pos/n_seq_id/seq_id — llama_batch_init uses malloc
-                // and the batch pre-processor skips auto-generation when pointers are non-null.
                 gen_batch.n_tokens = 1;
                 gen_batch.token[0] = new_token;
                 gen_batch.pos[0] = n_past;
@@ -382,16 +397,19 @@ extern "C" {
 
                 if (llama_decode(ctx, gen_batch)) {
                     LOGE("Failed to decode token at position %d", i);
+                    g_last_stop_reason.store(STOP_DECODE_ERROR);
                     break;
                 }
 
-                // Log progress every 32 tokens so logcat shows we're alive
                 if ((i + 1) % 32 == 0) {
                     auto t_progress = std::chrono::steady_clock::now();
                     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_progress - t_start).count();
                     LOGI("Progress: %d/%d tokens, %zu chars, %lldms elapsed",
                          i + 1, maxTokens, response.length(), ms);
                 }
+            }
+            if (g_last_stop_reason.load() == STOP_UNKNOWN && tokens_generated >= maxTokens) {
+                g_last_stop_reason.store(STOP_MAX_TOKENS);
             }
 
             auto t_end = std::chrono::steady_clock::now();
@@ -405,20 +423,265 @@ extern "C" {
                  tokens_generated, total_ms,
                  tokens_generated > 0 ? total_ms / tokens_generated : 0,
                  response.length());
-            if (!response.empty()) {
-                LOGI("Response preview: %.120s", response.c_str());
-            }
 
             return env->NewStringUTF(response.c_str());
 
         } catch (const std::exception& e) {
             LOGE("Exception generating response: %s", e.what());
-            // Free resources that may have been allocated before the exception
+            g_last_stop_reason.store(STOP_EXCEPTION);
             if (gen_batch.token) llama_batch_free(gen_batch);
             if (sampler)         llama_sampler_free(sampler);
             env->ReleaseStringUTFChars(prompt, promptStr);
             return env->NewStringUTF("");
         }
+    }
+
+    JNIEXPORT void JNICALL
+    Java_com_omnidocs_app_ai_LlamaCppService_nativeGenerateStream(
+        JNIEnv* env,
+        jobject thiz,
+        jstring prompt,
+        jint maxTokens,
+        jobject callback
+    ) {
+        std::unique_lock<std::timed_mutex> lock(g_llama_mutex, std::defer_lock);
+        if (!acquire_mutex(lock, std::chrono::seconds(10))) {
+            LOGE("nativeGenerateStream: mutex timeout");
+            if (callback) {
+                jclass callbackCls = env->GetObjectClass(callback);
+                jmethodID onEndMethod = env->GetMethodID(callbackCls, "onEnd", "()V");
+                if (onEndMethod) env->CallVoidMethod(callback, onEndMethod);
+            }
+            return;
+        }
+
+        // See nativeGenerate: reset only once the lock is held so a queued
+        // Stop tap is not erased.
+        g_stop.store(false);
+        g_last_stop_reason.store(STOP_UNKNOWN);
+
+        if (!is_initialized || !model || !ctx || !vocab || !callback) {
+            LOGE("Model not initialized or callback is null");
+            if (callback) {
+                jclass callbackCls = env->GetObjectClass(callback);
+                jmethodID onEndMethod = env->GetMethodID(callbackCls, "onEnd", "()V");
+                if (onEndMethod) env->CallVoidMethod(callback, onEndMethod);
+            }
+            return;
+        }
+
+        jclass callbackCls = env->GetObjectClass(callback);
+        jmethodID onTokenMethod = env->GetMethodID(callbackCls, "onToken", "(Ljava/lang/String;)V");
+        jmethodID onEndMethod = env->GetMethodID(callbackCls, "onEnd", "()V");
+
+        if (!onTokenMethod || !onEndMethod) {
+            LOGE("Failed to find callback methods");
+            return;
+        }
+
+        const char* promptStr = env->GetStringUTFChars(prompt, nullptr);
+        LOGI("Starting streaming generation for prompt: %.80s...", promptStr);
+
+        llama_sampler* sampler = nullptr;
+        struct llama_batch gen_batch = {};
+
+        try {
+            const bool add_bos = g_add_bos;
+
+            int n_tokens = llama_tokenize(
+                vocab, promptStr, strlen(promptStr), nullptr, 0, add_bos, true);
+            if (n_tokens < 0) n_tokens = -n_tokens;
+
+            if (n_tokens == 0) {
+                LOGE("Failed to tokenize prompt for streaming");
+                env->ReleaseStringUTFChars(prompt, promptStr);
+                env->CallVoidMethod(callback, onEndMethod);
+                return;
+            }
+
+            auto tokens = std::vector<llama_token>(n_tokens);
+            int n_tokenized = llama_tokenize(
+                vocab, promptStr, strlen(promptStr),
+                tokens.data(), tokens.size(), add_bos, true);
+            if (n_tokenized < 0) {
+                LOGE("Failed to tokenize prompt for streaming (pass 2)");
+                env->ReleaseStringUTFChars(prompt, promptStr);
+                env->CallVoidMethod(callback, onEndMethod);
+                return;
+            }
+
+            // Context limit guard (dynamic from initialized context, default 8192)
+            const int max_ctx = ctx ? static_cast<int>(llama_n_ctx(ctx)) : 8192;
+            const int max_prompt_tokens = max_ctx - 128;
+            if (n_tokenized > max_prompt_tokens) {
+                n_tokenized = max_prompt_tokens;
+                tokens.resize(n_tokenized);
+                g_last_prompt_truncated.store(true);
+            } else {
+                g_last_prompt_truncated.store(false);
+            }
+
+            llama_memory_clear(llama_get_memory(ctx), true);
+
+            constexpr int PROMPT_CHUNK_SIZE = 64;
+            int n_past = 0;
+            while (n_past < n_tokenized) {
+                if (g_stop.load()) {
+                    LOGI("Stream prompt decode cancelled via g_stop");
+                    env->ReleaseStringUTFChars(prompt, promptStr);
+                    env->CallVoidMethod(callback, onEndMethod);
+                    return;
+                }
+
+                int chunk_size = n_tokenized - n_past;
+                if (chunk_size > PROMPT_CHUNK_SIZE) chunk_size = PROMPT_CHUNK_SIZE;
+
+                auto batch = llama_batch_init(chunk_size, 0, 1);
+                if (!batch.token || !batch.pos || !batch.n_seq_id || !batch.seq_id || !batch.logits) {
+                    llama_batch_free(batch);
+                    env->ReleaseStringUTFChars(prompt, promptStr);
+                    env->CallVoidMethod(callback, onEndMethod);
+                    return;
+                }
+                batch.n_tokens = chunk_size;
+                for (int i = 0; i < chunk_size; i++) {
+                    batch.token[i] = tokens[n_past + i];
+                    batch.pos[i] = n_past + i;
+                    batch.n_seq_id[i] = 1;
+                    batch.seq_id[i][0] = 0;
+                    batch.logits[i] = 0;
+                }
+                if (n_past + chunk_size == n_tokenized) {
+                    batch.logits[chunk_size - 1] = 1;
+                }
+
+                int32_t ret = llama_decode(ctx, batch);
+                if (ret) {
+                    LOGE("Streaming chunk decode failed at offset %d", n_past);
+                    llama_batch_free(batch);
+                    env->ReleaseStringUTFChars(prompt, promptStr);
+                    env->CallVoidMethod(callback, onEndMethod);
+                    return;
+                }
+                n_past += chunk_size;
+                llama_batch_free(batch);
+            }
+
+            auto sparams = llama_sampler_chain_default_params();
+            sparams.no_perf = true;
+            sampler = llama_sampler_chain_init(sparams);
+            if (!sampler) {
+                env->ReleaseStringUTFChars(prompt, promptStr);
+                env->CallVoidMethod(callback, onEndMethod);
+                return;
+            }
+            llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
+            llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.9f, 1));
+            llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
+            llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
+
+            gen_batch = llama_batch_init(1, 0, 1);
+            int tokens_generated = 0;
+            n_past = n_tokenized;
+
+            for (int i = 0; i < maxTokens; i++) {
+                if (g_stop.load()) {
+                    LOGI("Stream generation stopped by user after %d tokens", tokens_generated);
+                    g_last_stop_reason.store(STOP_USER);
+                    break;
+                }
+
+                if (n_past >= max_ctx - 2) {
+                    LOGI("Stream hit context ceiling (%d tokens)", n_past);
+                    g_last_stop_reason.store(STOP_CTX_FULL);
+                    break;
+                }
+
+                llama_token new_token = llama_sampler_sample(sampler, ctx, -1);
+                if (llama_vocab_is_eog(vocab, new_token)) {
+                    g_last_stop_reason.store(STOP_EOS);
+                    break;
+                }
+
+                char buf[256];
+                int n = llama_token_to_piece(vocab, new_token, buf, sizeof(buf), 0, true);
+                // n == sizeof(buf) means exact fit with NO room for the NUL
+                // terminator: buf[n] would write 1 past the stack array.
+                if (n < 0 || n >= (int)sizeof(buf)) {
+                    size_t need = (n < 0) ? (static_cast<size_t>(-n) + 1)
+                                          : (static_cast<size_t>(n) + 1);
+                    std::vector<char> big_buf(need);
+                    n = llama_token_to_piece(vocab, new_token, big_buf.data(), big_buf.size(), 0, true);
+                    if (n > 0 && (size_t)n < big_buf.size()) {
+                        big_buf[n] = '\0';
+                        jstring tokenJ = env->NewStringUTF(big_buf.data());
+                        env->CallVoidMethod(callback, onTokenMethod, tokenJ);
+                        env->DeleteLocalRef(tokenJ);
+                    }
+                } else if (n > 0) {
+                    buf[n] = '\0';
+                    jstring tokenJ = env->NewStringUTF(buf);
+                    env->CallVoidMethod(callback, onTokenMethod, tokenJ);
+                    env->DeleteLocalRef(tokenJ);
+                }
+                tokens_generated++;
+
+                gen_batch.n_tokens = 1;
+                gen_batch.token[0] = new_token;
+                gen_batch.pos[0] = n_past;
+                gen_batch.n_seq_id[0] = 1;
+                gen_batch.seq_id[0][0] = 0;
+                gen_batch.logits[0] = 1;
+                n_past++;
+
+                if (llama_decode(ctx, gen_batch)) {
+                    LOGE("Stream token decode failed at %d", i);
+                    g_last_stop_reason.store(STOP_DECODE_ERROR);
+                    break;
+                }
+            }
+            if (g_last_stop_reason.load() == STOP_UNKNOWN && tokens_generated >= maxTokens) {
+                g_last_stop_reason.store(STOP_MAX_TOKENS);
+            }
+
+            llama_batch_free(gen_batch);
+            llama_sampler_free(sampler);
+            env->ReleaseStringUTFChars(prompt, promptStr);
+            env->CallVoidMethod(callback, onEndMethod);
+
+        } catch (const std::exception& e) {
+            LOGE("Exception in streaming generation: %s", e.what());
+            g_last_stop_reason.store(STOP_EXCEPTION);
+            if (gen_batch.token) llama_batch_free(gen_batch);
+            if (sampler)         llama_sampler_free(sampler);
+            env->ReleaseStringUTFChars(prompt, promptStr);
+            env->CallVoidMethod(callback, onEndMethod);
+        }
+    }
+
+    JNIEXPORT void JNICALL
+    Java_com_omnidocs_app_ai_LlamaCppService_nativeStop(
+        JNIEnv* env,
+        jobject thiz
+    ) {
+        LOGI("nativeStop called");
+        g_stop.store(true);
+    }
+
+    JNIEXPORT jboolean JNICALL
+    Java_com_omnidocs_app_ai_LlamaCppService_nativeWasPromptTruncated(
+        JNIEnv* env,
+        jobject thiz
+    ) {
+        return g_last_prompt_truncated.load() ? JNI_TRUE : JNI_FALSE;
+    }
+
+    JNIEXPORT jint JNICALL
+    Java_com_omnidocs_app_ai_LlamaCppService_nativeLastStopReason(
+        JNIEnv* env,
+        jobject thiz
+    ) {
+        return g_last_stop_reason.load();
     }
 
     JNIEXPORT void JNICALL

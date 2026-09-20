@@ -50,11 +50,9 @@
 -keep class net.sqlcipher.** { *; }
 -dontwarn net.sqlcipher.**
 
-# ---- OkHttp ----
+# ---- OkHttp (ships its own consumer R8 rules; keeps would pin ~1MB unshrunk) ----
 -dontwarn okhttp3.**
 -dontwarn okio.**
--keep class okhttp3.** { *; }
--keep interface okhttp3.** { *; }
 
 # ---- ML Kit ----
 -keep class com.google.mlkit.** { *; }
@@ -74,6 +72,12 @@
 -keep class com.itextpdf.** { *; }
 -dontwarn com.itextpdf.**
 
+# ---- Desktop-JVM classes referenced by PDFBox/POI transitive code ----
+# (never loaded on Android; R8 missing_rules.txt confirms the full set)
+-dontwarn java.awt.**
+-dontwarn javax.imageio.**
+-dontwarn org.slf4j.impl.**
+
 # ---- Apache POI + transitive deps (log4j, bnd, findbugs) ----
 -keep class org.apache.poi.** { *; }
 -dontwarn org.apache.poi.**
@@ -88,8 +92,7 @@
 -keep class org.jsoup.** { *; }
 -dontwarn org.jsoup.**
 
-# ---- Coil ----
--keep class coil.** { *; }
+# ---- Coil (R8 full-mode compatible out of the box, no keeps needed) ----
 -dontwarn coil.**
 
 # ---- WebView / JavaScript Bridge ----
@@ -101,8 +104,7 @@
 -keep class androidx.datastore.** { *; }
 -dontwarn androidx.datastore.**
 
-# ---- Compose / Material3 ----
--keep class androidx.compose.** { *; }
+# ---- Compose / Material3 (libraries ship their own consumer R8 rules) ----
 -dontwarn androidx.compose.**
 
 # ---- Keep enum members (used in when() exhaustiveness) ----
@@ -126,6 +128,17 @@
 
 # ---- Keep custom Application class ----
 -keep class * extends android.app.Application { *; }
+
+# ---- WorkManager (workers are instantiated by class name via reflection) ----
+-keep class * extends androidx.work.Worker {
+    public <init>(android.content.Context,androidx.work.WorkerParameters);
+}
+-keep class * extends androidx.work.CoroutineWorker {
+    public <init>(android.content.Context,androidx.work.WorkerParameters);
+}
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context,androidx.work.WorkerParameters);
+}
 
 # ---- OmniDocs Evidence-First Domain & Agent Tool Models ----
 -keep class com.omnidocs.app.study.** { *; }

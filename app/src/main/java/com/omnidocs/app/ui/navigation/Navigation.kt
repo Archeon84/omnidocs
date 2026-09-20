@@ -82,8 +82,8 @@ fun NotesNavHost(
             popExitTransition = { screenPopExitTransition() }
         ) {
             HomeScreen(
-                onNoteClick = { noteId ->
-                    navController.navigate(Screen.Editor.createRoute(noteId))
+                onNoteClick = { noteId, highlight ->
+                    navController.navigate(Screen.Editor.createRoute(noteId, highlight))
                 },
                 onNewNote = {
                     navController.navigate(Screen.Editor.createRoute())
@@ -108,6 +108,12 @@ fun NotesNavHost(
                 },
                 onAskNotesClick = {
                     navController.navigate(Screen.Ask.route)
+                },
+                onScanDoc = {
+                    navController.navigate(Screen.Ocr.route)
+                },
+                onStudyClick = {
+                    navController.navigate(Screen.Study.createRoute(null))
                 }
             )
         }
@@ -196,6 +202,9 @@ fun NotesNavHost(
                 onOcrClick = {
                     navController.navigate(Screen.Ocr.route)
                 },
+                onStudyClick = { id ->
+                    navController.navigate(Screen.Study.createRoute(id))
+                },
                 navController = navController
             )
         }
@@ -209,11 +218,21 @@ fun NotesNavHost(
         ) {
             OcrScreen(
                 onTextExtracted = { text ->
-                    // Pass text back to editor via savedStateHandle
-                    navController.previousBackStackEntry
-                        ?.savedStateHandle
-                        ?.set("ocrText", text)
-                    navController.popBackStack()
+                    val prevRoute = navController.previousBackStackEntry?.destination?.route
+                    if (prevRoute?.startsWith("editor") == true) {
+                        // Pass text back to existing editor via savedStateHandle
+                        navController.previousBackStackEntry
+                            ?.savedStateHandle
+                            ?.set("ocrText", text)
+                        navController.popBackStack()
+                    } else {
+                        // Launched from HomeScreen: pop OCR and navigate to Editor with extracted text
+                        navController.popBackStack()
+                        navController.navigate(Screen.Editor.createRoute())
+                        navController.currentBackStackEntry
+                            ?.savedStateHandle
+                            ?.set("ocrText", text)
+                    }
                 },
                 onNavigateBack = {
                     navController.popBackStack()
@@ -314,7 +333,8 @@ fun NotesNavHost(
         ) {
             RecordingsScreen(
                 onBack = { navController.popBackStack() },
-                onNoteClick = { noteId -> navController.navigate(Screen.Editor.createRoute(noteId)) }
+                onNoteClick = { noteId -> navController.navigate(Screen.Editor.createRoute(noteId)) },
+                onRecordClick = { navController.navigate(Screen.Voice.route) }
             )
         }
 

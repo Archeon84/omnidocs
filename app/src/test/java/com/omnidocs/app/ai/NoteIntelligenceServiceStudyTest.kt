@@ -57,5 +57,34 @@ class NoteIntelligenceServiceStudyTest {
         val definitionCard = deck.cards.find { it.type == StudyCardType.DEFINITION }
         assertNotNull(definitionCard)
         assertTrue(definitionCard!!.prompt.contains("Android KeyStore") || definitionCard.prompt.contains("SQLCipher"))
+        assertEquals("Database Security Architecture", definitionCard.sourceTitle)
+        assertFalse(definitionCard.sourceSnippet.orEmpty().contains("[Truncated"))
+    }
+
+    @Test
+    fun testGenerateStudyDeck_largeContentDoesNotLeakTruncationArtifact() = runBlocking {
+        `when`(modelDownloadManager.getDownloadedModels()).thenReturn(emptyList())
+
+        val longContent = buildString {
+            appendLine("Core Concept: The foundation of modern computing architecture.")
+            for (i in 1..200) {
+                appendLine("Section $i: Detailed technical notes explaining architecture principles in deep depth.")
+            }
+        }
+        assertTrue(longContent.length > 4000)
+
+        val deck = service.generateStudyDeck(
+            noteId = "note_long_1",
+            noteTitle = "Long Architecture Document",
+            noteContent = longContent,
+            language = "en"
+        )
+
+        assertNotNull(deck)
+        assertTrue(deck.cards.isNotEmpty())
+        for (card in deck.cards) {
+            assertEquals("Long Architecture Document", card.sourceTitle)
+            assertFalse("Card snippet must not contain truncation warning", card.sourceSnippet.orEmpty().contains("[Truncated"))
+        }
     }
 }

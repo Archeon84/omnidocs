@@ -8,7 +8,9 @@ import androidx.room.PrimaryKey
     tableName = "notes",
     indices = [
         Index(value = ["isPinned", "updatedAt"]),
-        Index(value = ["isSynced"])
+        Index(value = ["isSynced"]),
+        Index(value = ["isDeleted", "updatedAt"]),
+        Index(value = ["isDeleted", "isPinned", "updatedAt"])
     ]
 )
 data class NoteEntity(

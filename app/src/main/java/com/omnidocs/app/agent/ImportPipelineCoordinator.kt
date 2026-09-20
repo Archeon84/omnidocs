@@ -2,7 +2,11 @@ package com.omnidocs.app.agent
 
 import com.omnidocs.app.data.local.NoteDao
 import com.omnidocs.app.data.local.entity.NoteEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
@@ -38,6 +42,25 @@ class ImportPipelineCoordinator @Inject constructor(
     private val indexingAgent: IndexingAgent,
     private val noteDao: NoteDao
 ) {
+    private val _activeJobId = MutableStateFlow<String?>(null)
+    /** Job ID of the currently running import, null when idle. Drives cancel UI. */
+    val activeJobId: StateFlow<String?> = _activeJobId.asStateFlow()
+
+    /** Note row saved by the active import (if it reached step 5). For cancel cleanup. */
+    private var createdNoteId: String? = null
+
+    /** Flag the active import as cancelled (takes effect at step boundaries). */
+    suspend fun cancelActiveImport() {
+        _activeJobId.value?.let { agentCoordinator.cancelJob(it) }
+    }
+
+    /** Take (and clear) the note ID saved by the active import, if any. */
+    fun takeCreatedNoteId(): String? {
+        val id = createdNoteId
+        createdNoteId = null
+        return id
+    }
+
     /**
      * Executes the end-to-end import to knowledge pipeline.
      */
@@ -50,9 +73,13 @@ class ImportPipelineCoordinator @Inject constructor(
         // Create parent job
         val job = agentCoordinator.createJob(
             jobType = "WORKFLOW_IMPORT_TO_KNOWLEDGE",
-            inputRefsJson = "{\"uri\":\"$uri\",\"mimeType\":\"$mimeType\",\"fileName\":\"$fileName\"}"
+            inputRefsJson = "{\"uri\":\"${escapeJsonString(uri)}\"," +
+                "\"mimeType\":\"${escapeJsonString(mimeType)}\"," +
+                "\"fileName\":\"${escapeJsonString(fileName)}\"}"
         )
         val jobId = job.id
+        _activeJobId.value = jobId
+        createdNoteId = null
 
         try {
             // Step 1: Capture (0% -> 20%)
@@ -132,6 +159,7 @@ class ImportPipelineCoordinator @Inject constructor(
                 imageUrl = null
             )
             noteDao.insertNote(noteEntity)
+            createdNoteId = noteId
 
             val indexingInput = AgentInput(
                 type = "INDEXING_INPUT",
@@ -144,7 +172,7 @@ class ImportPipelineCoordinator @Inject constructor(
             )
             val indexingResult = agentCoordinator.runAgent(jobId, indexingAgent, indexingInput, privacyMode)
             if (indexingResult !is AgentResult.Success) {
-                // Non-fatal: note was saved even if indexing failed
+                android.util.Log.w("ImportPipeline", "Indexing failed: note saved but unindexed")
             }
 
             agentCoordinator.updateProgress(jobId, 100)
@@ -166,9 +194,16 @@ class ImportPipelineCoordinator @Inject constructor(
                 blockCount = blockCount,
                 taskCount = taskCount
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val message = e.message ?: e.javaClass.simpleName
             failure(jobId, "Import pipeline exception: $message")
+        } finally {
+            agentCoordinator.clearJobCancellation(jobId)
+            if (_activeJobId.value == jobId) {
+                _activeJobId.value = null
+            }
         }
     }
 

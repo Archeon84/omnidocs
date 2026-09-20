@@ -4,14 +4,66 @@ import com.omnidocs.app.data.local.AgentEventDao
 import com.omnidocs.app.data.local.AgentJobDao
 import com.omnidocs.app.data.local.entity.AgentEventEntity
 import com.omnidocs.app.data.local.entity.AgentJobEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** Minimal JSON string escaper for audit/event payloads (quotes, backslash, control chars). */
+internal fun escapeJsonString(raw: String): String = buildString(raw.length + 16) {
+    for (c in raw) {
+        when (c) {
+            '"' -> append("\\\"")
+            '\\' -> append("\\\\")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
+        }
+    }
+}
+
+/**
+ * Lenient number readers: `has(key)` proves presence, not type, and LLM JSON
+ * frequently delivers numbers as strings ("12", "high", 1.0, true). These
+ * coerce instead of throwing, so one bad element can't abort a whole step.
+ */
+internal fun JSONObject.optIntLenient(key: String): Int? {
+    if (isNull(key)) return null
+    return when (val v = opt(key)) {
+        is Number -> v.toInt()
+        is String -> v.toIntOrNull() ?: v.toDoubleOrNull()?.toInt()
+        is Boolean -> if (v) 1 else 0
+        else -> null
+    }
+}
+
+internal fun JSONObject.optLongLenient(key: String): Long? {
+    if (isNull(key)) return null
+    return when (val v = opt(key)) {
+        is Number -> v.toLong()
+        is String -> v.toLongOrNull() ?: v.toDoubleOrNull()?.toLong()
+        is Boolean -> if (v) 1L else 0L
+        else -> null
+    }
+}
+
+internal fun JSONObject.optDoubleLenient(key: String): Double? {
+    if (isNull(key)) return null
+    return when (val v = opt(key)) {
+        is Number -> v.toDouble()
+        is String -> v.toDoubleOrNull()
+        is Boolean -> if (v) 1.0 else 0.0
+        else -> null
+    }
+}
 
 /**
  * Central orchestrator managing agent job lifecycles, state transitions,
@@ -24,6 +76,13 @@ class AgentCoordinator @Inject constructor(
     private val policyGuard: PolicyGuard
 ) {
     private val activeCancellations = ConcurrentHashMap<String, AtomicBoolean>()
+
+    /**
+     * Sticky cancellation requests. Per-step flags in [activeCancellations] are
+     * removed after each step, so a cancel landing BETWEEN steps was silently
+     * lost; this set survives until the pipeline explicitly clears it.
+     */
+    private val cancelledJobs = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * Creates a new durable agent job in QUEUED status.
@@ -67,9 +126,18 @@ class AgentCoordinator @Inject constructor(
         input: AgentInput,
         privacyMode: PrivacyMode = PrivacyMode.LOCAL_ONLY,
         modelPolicy: ModelPolicy = ModelPolicy(),
-        requiresCloud: Boolean = false
+        requiresCloud: Boolean = false,
+        onAnswerToken: (String) -> Unit = {}
     ): AgentResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
+
+        // Abort the whole pipeline when the caller's coroutine was cancelled.
+        coroutineContext.ensureActive()
+
+        // Re-seed a flag cancelled between steps (the per-step entry was removed).
+        if (cancelledJobs.contains(jobId)) {
+            activeCancellations.getOrPut(jobId) { AtomicBoolean(false) }.set(true)
+        }
 
         // 1. Policy Guard Evaluation
         when (val policy = policyGuard.evaluate(privacyMode, modelPolicy, requiresCloud)) {
@@ -98,7 +166,8 @@ class AgentCoordinator @Inject constructor(
             jobId = jobId,
             privacyMode = privacyMode,
             modelPolicy = modelPolicy,
-            isCancelled = { cancellationFlag.get() }
+            isCancelled = { cancellationFlag.get() },
+            onAnswerToken = onAnswerToken
         )
 
         // 3. Execute Agent
@@ -132,6 +201,8 @@ class AgentCoordinator @Inject constructor(
                 }
             }
             result
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             val durationMs = System.currentTimeMillis() - startTime
             val message = e.message ?: e.javaClass.simpleName
@@ -147,9 +218,21 @@ class AgentCoordinator @Inject constructor(
      * Signals cancellation for an active job.
      */
     suspend fun cancelJob(jobId: String) = withContext(Dispatchers.IO) {
+        cancelledJobs.add(jobId)
         activeCancellations[jobId]?.set(true)
         markJobCancelled(jobId)
         recordEvent(jobId, "coordinator", "JOB_CANCELLED", "{}")
+    }
+
+    /**
+     * Clears cancellation state when a pipeline finishes (all terminal paths).
+     * Must be called in a finally block by every pipeline coordinator, or the
+     * sticky set leaks entries (keyed by unique jobId, so the leak is bounded
+     * but the noise is not).
+     */
+    fun clearJobCancellation(jobId: String) {
+        cancelledJobs.remove(jobId)
+        activeCancellations.remove(jobId)
     }
 
     /**

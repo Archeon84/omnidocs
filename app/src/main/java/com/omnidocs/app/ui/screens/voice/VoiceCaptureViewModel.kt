@@ -2,6 +2,7 @@ package com.omnidocs.app.ui.screens.voice
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.omnidocs.app.ai.ModelPreferences
 import com.omnidocs.app.data.local.RecordingDao
 import com.omnidocs.app.data.local.TranscriptSegmentDao
 import com.omnidocs.app.data.local.entity.RecordingEntity
@@ -10,7 +11,11 @@ import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.util.sanitizeForHtml
 import com.omnidocs.app.voice.VoiceCaptureManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
@@ -20,13 +25,15 @@ class VoiceCaptureViewModel @Inject constructor(
     private val voiceCaptureManager: VoiceCaptureManager,
     private val repository: NotesRepository,
     private val recordingDao: RecordingDao,
-    private val transcriptSegmentDao: TranscriptSegmentDao
+    private val transcriptSegmentDao: TranscriptSegmentDao,
+    private val modelPreferences: ModelPreferences
 ) : ViewModel() {
 
     val transcript: StateFlow<String> = voiceCaptureManager.transcript
     val isListening: StateFlow<Boolean> = voiceCaptureManager.isListening
     val error: StateFlow<String?> = voiceCaptureManager.error
     val liveAudioLevel: StateFlow<Float> = voiceCaptureManager.liveAudioLevel
+    val engineType: StateFlow<String> = voiceCaptureManager.engineType
 
     private val _isStructuring = MutableStateFlow(false)
     val isStructuring: StateFlow<Boolean> = _isStructuring.asStateFlow()
@@ -37,32 +44,128 @@ class VoiceCaptureViewModel @Inject constructor(
     private val _savedNoteId = MutableStateFlow<String?>(null)
     val savedNoteId: StateFlow<String?> = _savedNoteId.asStateFlow()
 
-    fun startListening(languageCode: String = "en") {
+    /**
+     * Single source of truth with Settings → Speech Language: seeded from the
+     * persisted preference on open, and every overlay change writes straight
+     * back. The STT engine re-initializes from the preference on each capture
+     * start, so the new choice takes effect immediately.
+     */
+    private val _selectedLanguageCode = MutableStateFlow("")
+    val selectedLanguageCode: StateFlow<String> = _selectedLanguageCode.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _selectedLanguageCode.value = modelPreferences.sttLanguage.first()
+        }
+    }
+
+    fun setLanguage(code: String) {
+        _selectedLanguageCode.value = code
+        viewModelScope.launch {
+            modelPreferences.setSttLanguage(code)
+        }
+    }
+
+    /** Elapsed ms of the current capture session (ticks while listening). */
+    private val _elapsedMs = MutableStateFlow(0L)
+    val elapsedMs: StateFlow<Long> = _elapsedMs.asStateFlow()
+
+    private var timerJob: Job? = null
+
+    /** True once any capture started this overlay session (for empty-take guidance). */
+    private val _hasRecorded = MutableStateFlow(false)
+    val hasRecorded: StateFlow<Boolean> = _hasRecorded.asStateFlow()
+
+    /**
+     * User-edited transcript override. Null means "follow the live manager
+     * stream". A new capture session clears the override because the manager
+     * stream is the source of truth for appended speech.
+     */
+    private val _editedTranscript = MutableStateFlow<String?>(null)
+
+    /** Text shown in the box and used at save time. */
+    val displayTranscript: StateFlow<String> =
+        combine(transcript, _editedTranscript) { live, edited -> edited ?: live }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    fun updateEditedTranscript(text: String) {
+        _editedTranscript.value = text
+    }
+
+    fun startListening() {
         // Do NOT clear the transcript here: "Record More" must append to the
         // previous session's text. The manager starts fresh on its own when
         // nothing was recorded yet, and dismiss() resets the whole session.
-        voiceCaptureManager.startListening(languageCode)
+        // A fresh session invalidates any manual edit (see _editedTranscript).
+        _editedTranscript.value = null
+        _hasRecorded.value = true
+        _elapsedMs.value = 0L
+        voiceCaptureManager.startListening(_selectedLanguageCode.value)
+        timerJob?.cancel()
+        val startedAt = System.currentTimeMillis()
+        timerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(250)
+                _elapsedMs.value = System.currentTimeMillis() - startedAt
+            }
+        }
     }
 
     fun stopListening() {
+        timerJob?.cancel()
+        timerJob = null
         voiceCaptureManager.stopListening()
     }
 
-    fun confirmAndSave(language: String = "en") {
-        val rawText = transcript.value
-        if (rawText.isBlank()) return
+    /** Discard the current take and reset the session, staying in the overlay. */
+    fun startOver() {
+        timerJob?.cancel()
+        timerJob = null
+        voiceCaptureManager.stopListening()
+        voiceCaptureManager.clearTranscript()
+        _editedTranscript.value = null
+        _elapsedMs.value = 0L
+        _hasRecorded.value = false
+    }
 
-        _isStructuring.value = true
-        viewModelScope.launch {
+    private var saveJob: Job? = null
+
+    fun confirmAndSave() {
+        saveNote(structured = true)
+    }
+
+    /** Save immediately without LLM structuring (instant when no model is downloaded). */
+    fun saveRaw() {
+        saveNote(structured = false)
+    }
+
+    fun cancelSaving() {
+        saveJob?.cancel()
+        saveJob = null
+        _isStructuring.value = false
+    }
+
+    private fun saveNote(structured: Boolean) {
+        val rawText = displayTranscript.value
+        if (rawText.isBlank()) return
+        val language = _selectedLanguageCode.value
+
+        saveJob?.cancel()
+        _isStructuring.value = structured
+        saveJob = viewModelScope.launch {
             try {
-                val structured = voiceCaptureManager.structureTranscript(rawText, language)
-                _structuredContent.value = structured
+                val content = if (structured) {
+                    voiceCaptureManager.structureTranscript(rawText, language)
+                        .also { _structuredContent.value = it }
+                } else {
+                    rawSaveContent(rawText)
+                }
 
                 val title = generateTitle(rawText)
 
                 val note = repository.createNote(
                     title = title,
-                    content = structured,
+                    content = content,
                     plainText = rawText,
                     language = language
                 )
@@ -71,14 +174,15 @@ class VoiceCaptureViewModel @Inject constructor(
                 saveRecordingAndSegments(note.id, rawText, language)
 
                 _savedNoteId.value = note.id
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // If structuring fails, save raw text with HTML-escaped content
                 val title = generateTitle(rawText)
-                val escapedText = sanitizeForHtml(rawText).replace("\n", "<br/>")
 
                 val note = repository.createNote(
                     title = title,
-                    content = "<p>$escapedText</p>",
+                    content = rawSaveContent(rawText),
                     plainText = rawText,
                     language = language
                 )
@@ -90,6 +194,11 @@ class VoiceCaptureViewModel @Inject constructor(
                 _isStructuring.value = false
             }
         }
+    }
+
+    private fun rawSaveContent(rawText: String): String {
+        val escapedText = sanitizeForHtml(rawText).replace("\n", "<br/>")
+        return "<p>$escapedText</p>"
     }
 
     /**
@@ -136,6 +245,14 @@ class VoiceCaptureViewModel @Inject constructor(
     }
 
     fun dismiss() {
+        timerJob?.cancel()
+        timerJob = null
+        saveJob?.cancel()
+        saveJob = null
+        _isStructuring.value = false
+        _editedTranscript.value = null
+        _elapsedMs.value = 0L
+        _hasRecorded.value = false
         voiceCaptureManager.clearTranscript()
         _structuredContent.value = null
         _savedNoteId.value = null

@@ -64,7 +64,7 @@ class ContradictionDetector @Inject constructor(
         }
 
         for ((claimA, claimB) in pairs.take(maxPairs)) {
-            val result = compareClaims(model.promptFormat, claimA, claimB)
+            val result = compareClaims(model, claimA, claimB)
             if (result != null) {
                 contradictions.add(result)
             }
@@ -75,7 +75,7 @@ class ContradictionDetector @Inject constructor(
     }
 
     private suspend fun compareClaims(
-        format: com.omnidocs.app.ai.PromptFormat,
+        model: com.omnidocs.app.ai.ModelInfo,
         claimA: ClaimEntity,
         claimB: ClaimEntity
     ): Contradiction? {
@@ -99,7 +99,7 @@ Rules:
             "Do these claims contradict each other?"
 
         return try {
-            val prompt = PromptBuilder.buildPrompt(format, systemPrompt, userPrompt)
+            val prompt = PromptBuilder.buildPrompt(model.promptFormat, systemPrompt, userPrompt, model)
             val result = llamaCppService.generate(prompt, maxTokens = 300) ?: return null
             val cleaned = AiOutputProcessor.process(result)
             val jsonStr = cleaned.replace(Regex("```json\\s*"), "").replace(Regex("```\\s*"), "").trim()

@@ -17,6 +17,7 @@ data class Flashcard(
     val correctOptionIndex: Int? = null,
     val explanation: String? = null,
     val sourceSnippet: String? = null,
+    val sourceTitle: String? = null,
     val isUncertain: Boolean = false,
     val tags: List<String> = emptyList()
 )

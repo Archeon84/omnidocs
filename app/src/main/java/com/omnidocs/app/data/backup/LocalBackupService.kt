@@ -40,7 +40,7 @@ import javax.inject.Singleton
 import androidx.room.withTransaction
 
 private const val TAG = "LocalBackupService"
-private const val SCHEMA_VERSION = 2
+private const val SCHEMA_VERSION = 3
 
 private val MAGIC_HEADER = "OMNI_ENC_V1".toByteArray(Charsets.UTF_8)
 private const val SALT_LENGTH_BYTES = 16
@@ -49,14 +49,24 @@ private const val TAG_LENGTH_BITS = 128
 private const val PBKDF2_ITERATIONS = 65536
 private const val KEY_LENGTH_BITS = 256
 
+// Restore hard limits: a crafted backup selected by the user must not be able to
+// exhaust the heap (fully buffered JSON entries) or fill storage (audio/attachments).
+private const val MAX_ZIP_ENTRIES = 10_000
+private const val MAX_JSON_ENTRY_BYTES = 64L * 1024 * 1024      // 64 MB per JSON entry
+private const val MAX_BINARY_ENTRY_BYTES = 512L * 1024 * 1024   // 512 MB per media entry
+private const val MAX_TOTAL_RESTORE_BYTES = 2L * 1024 * 1024 * 1024 // 2 GB expanded total
+
 // Knowledge-layer tables backed up generically (every column, one JSON array per
 // table). notes/recordings have dedicated entity code (conflict resolution +
 // deletedAt preservation); notes_fts is a virtual table rebuilt by the notes
 // triggers. Adding a table here automatically includes it in backups.
+// source_documents/content_blocks carry provenance; agent_jobs/agent_events/
+// ai_artifacts carry agent history; ai_runs covers the rest of the AI pipeline.
 private val KNOWLEDGE_TABLES = listOf(
     "transcript_segments", "speakers", "claims", "evidence_links",
     "action_items", "entities", "entity_mentions", "note_links",
-    "embeddings", "ai_runs", "note_versions", "audit_events", "saved_searches"
+    "embeddings", "ai_runs", "note_versions", "audit_events", "saved_searches",
+    "source_documents", "content_blocks", "agent_jobs", "agent_events", "ai_artifacts"
 )
 
 /**
@@ -244,6 +254,26 @@ class LocalBackupService @Inject constructor(
                             Log.w(TAG, "Missing audio for ${r.storageKey}")
                         }
                     }
+
+                    // Editor attachments (images/audio embedded in notes live under
+                    // filesDir/attachments). Without this the backup loses every
+                    // attached media file even though the note rows restore fine.
+                    val attachmentsDir = File(context.filesDir, "attachments")
+                    if (attachmentsDir.isDirectory) {
+                        attachmentsDir.listFiles()?.forEach { attachment ->
+                            if (attachment.isFile) {
+                                zip.putNextEntry(ZipEntry("attachments/${attachment.name}"))
+                                attachment.inputStream().use { input ->
+                                    val buffer = ByteArray(8192)
+                                    var read: Int
+                                    while (input.read(buffer).also { read = it } != -1) {
+                                        zip.write(buffer, 0, read)
+                                    }
+                                }
+                                zip.closeEntry()
+                            }
+                        }
+                    }
                 }
             }
 
@@ -423,7 +453,10 @@ class LocalBackupService @Inject constructor(
                             updatedAt = o.getLong("updatedAt"),
                             imageUrl = o.optString("imageUrl", "").ifEmpty { null },
                             attachments = o.optString("attachments", "[]"),
-                            isSynced = true,
+                            // Dirty on purpose: the cloud never acknowledged this
+                            // row. Marking it synced would skip the next upload
+                            // and strand restored data off-cloud until a later edit.
+                            isSynced = false,
                             isDeleted = o.optBoolean("isDeleted", false),
                             deletedAt = backupDeletedAt,
                             tags = o.optString("tags", "[]"),
@@ -515,19 +548,40 @@ class LocalBackupService @Inject constructor(
         onAudioRestored: () -> Unit
     ) {
         var entry: ZipEntry?
+        var entryCount = 0
+        var totalBytes = 0L
         while (zip.nextEntry.also { entry = it } != null) {
             val e = entry ?: continue
+            // Enforce entry-count and cumulative expanded-size limits so a crafted
+            // ZIP (zip bomb) cannot exhaust the heap or storage during restore.
+            if (++entryCount > MAX_ZIP_ENTRIES) {
+                throw IllegalStateException("Backup contains too many entries (limit $MAX_ZIP_ENTRIES)")
+            }
             val name = e.name
+            val isJson = name.endsWith(".json")
+            val maxEntryBytes = if (isJson) MAX_JSON_ENTRY_BYTES else MAX_BINARY_ENTRY_BYTES
+            val bytes = readAllBytes(zip, maxEntryBytes)
+            totalBytes += bytes.size
+            if (totalBytes > MAX_TOTAL_RESTORE_BYTES) {
+                throw IllegalStateException("Backup exceeds total restore size limit ($MAX_TOTAL_RESTORE_BYTES bytes)")
+            }
             when {
-                name.endsWith(".json") ->
-                    jsonEntries[name] = readAllBytes(zip)
+                isJson ->
+                    jsonEntries[name] = bytes
                 name.startsWith("recordings/") -> {
                     val storageKey = safeFileName(name.substringAfterLast('/'))
                     if (storageKey.isNotEmpty() && storageKey != "..") {
-                        val bytes = readAllBytes(zip)
                         recordingStorage.saveAudioWithKey(bytes, storageKey)
                         restoredKeys.add(storageKey)
                         onAudioRestored()
+                    }
+                }
+                name.startsWith("attachments/") -> {
+                    val fileName = safeFileName(name.removePrefix("attachments/"))
+                    if (fileName.isNotEmpty() && fileName != "..") {
+                        val dir = File(context.filesDir, "attachments")
+                        dir.mkdirs()
+                        FileOutputStream(File(dir, fileName)).use { it.write(bytes) }
                     }
                 }
             }
@@ -550,11 +604,14 @@ class LocalBackupService @Inject constructor(
         zip.closeEntry()
     }
 
-    private fun readAllBytes(input: java.io.InputStream): ByteArray {
+    private fun readAllBytes(input: java.io.InputStream, maxBytes: Long = Long.MAX_VALUE): ByteArray {
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(8192)
         var read: Int
         while (input.read(buffer).also { read = it } != -1) {
+            if (out.size() + read > maxBytes) {
+                throw IllegalStateException("Backup entry exceeds maximum allowed size ($maxBytes bytes)")
+            }
             out.write(buffer, 0, read)
         }
         return out.toByteArray()

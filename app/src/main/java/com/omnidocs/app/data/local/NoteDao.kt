@@ -37,6 +37,9 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE id IN (:ids) AND isDeleted = 0")
     suspend fun getNotesByIdsSync(ids: List<String>): List<NoteEntity>
 
+    @Query("SELECT * FROM notes WHERE id IN (:ids)")
+    suspend fun getNotesByIdsIncludeDeleted(ids: List<String>): List<NoteEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNote(note: NoteEntity)
 
@@ -45,14 +48,18 @@ interface NoteDao {
 
     /** Soft-delete: mark as deleted instead of removing from the database.
      *  Records the deletion timestamp so backup restore can tell a deletion that
-     *  happened AFTER a backup (must stay deleted) from one that predates it. */
-    @Query("UPDATE notes SET isDeleted = 1, deletedAt = :deletedAt WHERE id = :id")
+     *  happened AFTER a backup (must stay deleted) from one that predates it.
+     *  Clears isSynced so the tombstone is pushed to the cloud on the next sync
+     *  (syncToCloud skips upload entirely when every row still reports isSynced=1). */
+    @Query("UPDATE notes SET isDeleted = 1, deletedAt = :deletedAt, isSynced = 0 WHERE id = :id")
     suspend fun deleteNoteById(id: String, deletedAt: Long)
 
-    /** Flip only the pinned flag — never touches content/updatedAt, so toggling
-     * pin while the editor has unsaved changes cannot clobber them. */
-    @Query("UPDATE notes SET isPinned = (CASE WHEN isPinned = 1 THEN 0 ELSE 1 END) WHERE id = :id")
-    suspend fun togglePinById(id: String)
+    /** Flip only the pinned flag — never touches content, so toggling pin
+     * while the editor has unsaved changes cannot clobber them. Marks the row
+     * dirty (isSynced=0 + updatedAt bump) so the pin state actually syncs;
+     * without this the next pull overwrites the pin with the stale remote value. */
+    @Query("UPDATE notes SET isPinned = (CASE WHEN isPinned = 1 THEN 0 ELSE 1 END), isSynced = 0, updatedAt = :now WHERE id = :id")
+    suspend fun togglePinById(id: String, now: Long = System.currentTimeMillis())
 
     /** Hard-delete: permanently remove from the database */
     @Query("DELETE FROM notes WHERE id = :id")
@@ -61,12 +68,19 @@ interface NoteDao {
     @Query("DELETE FROM notes WHERE id IN (:ids)")
     suspend fun permanentlyDeleteNotesByIds(ids: List<String>)
 
-    @Query("SELECT * FROM notes WHERE isSynced = 0 AND isDeleted = 0")
-    suspend fun getUnsyncedNotes(): List<NoteEntity>
+    /** Unsynced rows including tombstones, so deletions propagate to peers. */
+    @Query("SELECT * FROM notes WHERE isSynced = 0")
+    suspend fun getUnsyncedNotesIncludingDeleted(): List<NoteEntity>
 
     @Query("UPDATE notes SET isSynced = 1 WHERE id = :id")
     suspend fun markAsSynced(id: String)
 
     @Query("UPDATE notes SET isSynced = 1 WHERE id IN (:ids)")
     suspend fun markAsSynced(ids: List<String>)
+
+    @Query("DELETE FROM notes WHERE isDeleted = 1 AND isSynced = 1 AND deletedAt < :cutoff")
+    suspend fun purgeDeletedNotesOlderThan(cutoff: Long)
+
+    @Query("SELECT id FROM notes WHERE isDeleted = 1 AND isSynced = 1 AND deletedAt < :cutoff")
+    suspend fun getPurgeableNoteIds(cutoff: Long): List<String>
 }

@@ -1,71 +1,24 @@
 package com.omnidocs.app.graph
 
+import com.omnidocs.app.search.Tokenizer
 import kotlin.math.ln
 
 /**
  * BM25 scoring utility for text relevance supporting English, Malay, and CJK multilingual text.
  * Used by [GraphEngine] and vector/hybrid search to score candidate document relevance.
  * Pure Kotlin, no Android dependencies.
+ *
+ * Tokenization lives in [Tokenizer] (shared with all other retrieval paths).
  */
 object Bm25Scorer {
 
     private const val K1 = 1.5f
     private const val B = 0.75f
 
-    private val STOP_WORDS = setOf(
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "to", "of", "in", "for",
-        "on", "with", "at", "by", "from", "as", "into", "through", "during",
-        "before", "after", "and", "but", "or", "nor", "not", "so", "yet",
-        "both", "either", "neither", "each", "every", "all", "any", "few",
-        "more", "most", "other", "some", "such", "no", "only", "own", "same",
-        "than", "too", "very", "just", "that", "this", "these", "those",
-        "i", "me", "my", "we", "our", "you", "your", "he", "him", "his",
-        "she", "her", "it", "its", "they", "them", "their", "what", "which",
-        "who", "whom", "when", "where", "why", "how", "if", "then", "else",
-        "because", "about", "also", "like", "over", "such", "even", "new",
-        "one", "two", "first", "now", "well", "back", "much", "go", "see",
-        "know", "get", "make", "say", "think", "take", "come", "could",
-        "want", "look", "use", "find", "give", "tell", "work", "call",
-        "try", "ask", "need", "feel", "become", "leave", "put", "mean",
-        "keep", "let", "begin", "seem", "help", "show", "hear", "play",
-        "run", "move", "live", "believe", "bring", "happen", "must", "really"
-    )
-
     /**
      * Tokenize text into lowercase terms, supporting Latin words and CJK unigrams/bigrams.
      */
-    fun tokenize(text: String): List<String> {
-        val tokens = mutableListOf<String>()
-        val cleaned = text.lowercase()
-
-        // 1. Extract space-separated Latin/alphanumeric words
-        val latinWords = cleaned.replace(Regex("[^a-z0-9\\s]"), " ")
-            .split(Regex("\\s+"))
-            .filter { it.length > 2 && it !in STOP_WORDS }
-        tokens.addAll(latinWords)
-
-        // 2. Extract CJK unigrams and bigrams for Chinese, Japanese, and Korean
-        val cjkChars = StringBuilder()
-        for (char in cleaned) {
-            val code = char.code
-            val isCjk = code in 0x4E00..0x9FFF || code in 0x3040..0x30FF || code in 0xAC00..0xD7AF
-            if (isCjk) {
-                tokens.add(char.toString())
-                cjkChars.append(char)
-            }
-        }
-
-        // CJK Bigrams
-        if (cjkChars.length >= 2) {
-            for (i in 0 until cjkChars.length - 1) {
-                tokens.add(cjkChars.substring(i, i + 2))
-            }
-        }
-
-        return tokens
-    }
+    fun tokenize(text: String): List<String> = Tokenizer.tokenize(text)
 
     /**
      * Compute IDF (inverse document frequency) for all terms across a corpus.

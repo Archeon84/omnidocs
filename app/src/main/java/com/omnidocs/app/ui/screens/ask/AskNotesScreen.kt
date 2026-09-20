@@ -7,16 +7,23 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.filled.Source
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -32,13 +39,16 @@ fun AskNotesScreen(
 ) {
     val messages by viewModel.messages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val streamingText by viewModel.streamingText.collectAsState()
     val error by viewModel.error.collectAsState()
+    val isDeviceWarm by viewModel.isDeviceWarm.collectAsState()
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
     // Auto-scroll to the newest round as answers arrive.
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    LaunchedEffect(messages.size, streamingText.length) {
+        val last = messages.size - 1 + (if (isLoading) 1 else 0)
+        if (last >= 0) listState.animateScrollToItem(last)
     }
 
     Scaffold(
@@ -110,7 +120,12 @@ fun AskNotesScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     items(messages) { msg ->
-                        AskRound(message = msg, onSourceClick = onSourceClick)
+                        AskRound(
+                            message = msg,
+                            onSourceClick = onSourceClick,
+                            onRetry = { viewModel.retry(msg) },
+                            onContinue = { viewModel.continueAnswer(msg) }
+                        )
                     }
                     error?.let {
                         item {
@@ -123,20 +138,59 @@ fun AskNotesScreen(
                     }
                     if (isLoading) {
                         item {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "Retrieving evidence and verifying claims...",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                            if (streamingText.isNotBlank()) {
+                                // Live streaming answer
+                                Card(
+                                    shape = RoundedCornerShape(
+                                        topStart = 4.dp, topEnd = 14.dp,
+                                        bottomStart = 14.dp, bottomEnd = 14.dp
+                                    ),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                ) {
+                                    Text(
+                                        text = streamingText,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "Retrieving evidence and verifying claims...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
                         }
                     }
+                }
+            }
+
+            // Warm-device notice: a long spinner reads as "warm phone", not "broken".
+            if (isDeviceWarm) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Warning, null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Device is warm — answers may be slower than usual",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
@@ -154,16 +208,25 @@ fun AskNotesScreen(
                     shape = RoundedCornerShape(24.dp)
                 )
                 Spacer(Modifier.width(8.dp))
-                FilledIconButton(
-                    onClick = {
-                        if (input.isNotBlank() && !isLoading) {
-                            viewModel.ask(input)
-                            input = ""
-                        }
-                    },
-                    enabled = input.isNotBlank() && !isLoading
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, "Send")
+                if (isLoading) {
+                    FilledIconButton(
+                        onClick = { viewModel.stop() },
+                        enabled = true
+                    ) {
+                        Icon(Icons.Default.Stop, "Stop")
+                    }
+                } else {
+                    FilledIconButton(
+                        onClick = {
+                            if (input.isNotBlank() && !isLoading) {
+                                viewModel.ask(input)
+                                input = ""
+                            }
+                        },
+                        enabled = input.isNotBlank() && !isLoading
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, "Send")
+                    }
                 }
             }
         }
@@ -171,7 +234,12 @@ fun AskNotesScreen(
 }
 
 @Composable
-private fun AskRound(message: GroundedAskMessage, onSourceClick: (noteId: String, snippet: String?) -> Unit) {
+private fun AskRound(
+    message: GroundedAskMessage,
+    onSourceClick: (noteId: String, snippet: String?) -> Unit,
+    onRetry: () -> Unit,
+    onContinue: () -> Unit
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         // Question bubble (right-aligned)
         Surface(
@@ -210,20 +278,7 @@ private fun AskRound(message: GroundedAskMessage, onSourceClick: (noteId: String
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        if (message.isVerified) {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = "Verified",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Verified Evidence",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        } else if (message.insufficientEvidence) {
+                        if (message.insufficientEvidence) {
                             Icon(
                                 imageVector = Icons.Default.Warning,
                                 contentDescription = "Insufficient evidence",
@@ -234,6 +289,19 @@ private fun AskRound(message: GroundedAskMessage, onSourceClick: (noteId: String
                                 text = "Insufficient Evidence",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else if (message.isVerified) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Verified",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Verified Evidence",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -259,14 +327,51 @@ private fun AskRound(message: GroundedAskMessage, onSourceClick: (noteId: String
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                Text(
-                    text = message.answer,
-                    style = MaterialTheme.typography.bodyMedium
+                ClickableAnswerText(
+                    message = message,
+                    onSourceClick = onSourceClick
                 )
+                if (message.ruleBased) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Quoted from your notes — no AI model downloaded",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (message.answerIncomplete && !message.insufficientEvidence) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Incomplete answer",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "Answer was cut short (${message.stopReason})",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onContinue) {
+                            Text("Continue")
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        TextButton(onClick = onRetry) {
+                            Text("Retry")
+                        }
+                    }
+                }
             }
         }
 
-        // Citations & Sources (tappable → open the note)
+        // Citations & Sources (tappable → open the note), ordered by first
+        // mention so card numbers match the answer's [Source N] labels.
         if (message.citations.isNotEmpty()) {
             Text(
                 text = "Citations (${message.citations.size})",
@@ -274,11 +379,119 @@ private fun AskRound(message: GroundedAskMessage, onSourceClick: (noteId: String
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.SemiBold
             )
-            message.citations.forEach { citation ->
+            message.citations.sortedBy { it.sourceIndex }.forEach { citation ->
                 CitationItem(citation = citation, onClick = { onSourceClick(citation.noteId, citation.quoteSnippet) })
             }
         }
     }
+}
+
+internal val CITATION_INLINE_REGEX = Regex(
+    """\[(?:Sources?\s+(\d+)(?:\s*[-–]\s*(\d+))?(?::[^\]]+)?|(\d{1,2}(?:\s*,\s*\d{1,2})*))\]""",
+    RegexOption.IGNORE_CASE
+)
+
+internal fun buildAnnotatedAnswer(
+    answer: String,
+    citations: List<Citation>,
+    primaryColor: androidx.compose.ui.graphics.Color,
+    containerColor: androidx.compose.ui.graphics.Color
+): AnnotatedString {
+    return buildAnnotatedString {
+        var lastIdx = 0
+        CITATION_INLINE_REGEX.findAll(answer).forEach { match ->
+            if (match.range.first > lastIdx) {
+                append(answer.substring(lastIdx, match.range.first))
+            }
+
+            val g1 = match.groups[1]?.value?.toIntOrNull()
+            val g2 = match.groups[2]?.value?.toIntOrNull()
+            val g3 = match.groups[3]?.value
+
+            val indices = when {
+                g1 != null && g2 != null -> (g1..g2).toList()
+                g1 != null -> listOf(g1)
+                g3 != null -> g3.split(',').mapNotNull { it.trim().toIntOrNull() }
+                else -> emptyList()
+            }
+
+            val matchedCitations = indices.mapNotNull { idx ->
+                citations.find { it.sourceIndex == idx }
+                    ?: citations.getOrNull(idx - 1)
+            }
+
+            if (matchedCitations.isNotEmpty()) {
+                val primaryCitation = matchedCitations.first()
+                val displayText = match.value
+
+                pushStringAnnotation(
+                    tag = "CITATION",
+                    annotation = "${primaryCitation.noteId}|||${primaryCitation.quoteSnippet}"
+                )
+                pushStyle(
+                    SpanStyle(
+                        color = primaryColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        baselineShift = BaselineShift(0.25f),
+                        background = containerColor
+                    )
+                )
+                append(" $displayText ")
+                pop()
+                pop()
+            } else {
+                append(match.value)
+            }
+            lastIdx = match.range.last + 1
+        }
+
+        if (lastIdx < answer.length) {
+            append(answer.substring(lastIdx))
+        }
+    }
+}
+
+@Composable
+private fun ClickableAnswerText(
+    message: GroundedAskMessage,
+    onSourceClick: (noteId: String, snippet: String?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val answer = message.answer
+    val citations = message.citations
+
+    if (citations.isEmpty()) {
+        Text(
+            text = answer,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = modifier
+        )
+        return
+    }
+
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+    val annotatedText = remember(answer, citations, primaryColor, containerColor) {
+        buildAnnotatedAnswer(answer, citations, primaryColor, containerColor)
+    }
+
+    ClickableText(
+        text = annotatedText,
+        style = MaterialTheme.typography.bodyMedium.copy(
+            color = MaterialTheme.colorScheme.onSurface
+        ),
+        modifier = modifier,
+        onClick = { offset ->
+            annotatedText.getStringAnnotations(tag = "CITATION", start = offset, end = offset)
+                .firstOrNull()?.let { annotation ->
+                    val parts = annotation.item.split("|||", limit = 2)
+                    val noteId = parts.getOrNull(0) ?: return@let
+                    val snippet = parts.getOrNull(1)
+                    onSourceClick(noteId, snippet)
+                }
+        }
+    )
 }
 
 @Composable
@@ -289,30 +502,48 @@ private fun CitationItem(citation: Citation, onClick: () -> Unit) {
         color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Source,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = citation.noteTitle.ifEmpty { "Untitled" },
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    fontWeight = FontWeight.SemiBold
-                )
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Source,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (citation.sourceIndex > 0) {
+                            "Source ${citation.sourceIndex} — ${citation.noteTitle.ifEmpty { "Untitled" }}"
+                        } else {
+                            citation.noteTitle.ifEmpty { "Untitled" }
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                if (citation.quoteSnippet.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "\"${citation.quoteSnippet.take(120)}...\"",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                    )
+                }
             }
-            if (citation.quoteSnippet.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "\"${citation.quoteSnippet.take(120)}...\"",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-                )
-            }
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                contentDescription = "Jump to note",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+            )
         }
     }
 }

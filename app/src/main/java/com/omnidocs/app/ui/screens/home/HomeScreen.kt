@@ -56,13 +56,18 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.omnidocs.app.domain.model.Note
+import com.omnidocs.app.search.Tokenizer
 import com.omnidocs.app.ui.components.BottomNavItem
 import com.omnidocs.app.ui.components.IngestionReviewSheet
 import com.omnidocs.app.ui.components.OmniBottomNavBar
@@ -89,6 +94,20 @@ private val IMPORT_MIME_TYPES = arrayOf(
     "application/pdf"
 )
 
+/** Cards beyond this index appear instantly: no stagger coroutine, no entrance animation. */
+private const val MAX_ANIMATED_CARDS = 20
+
+/** Stagger delays are capped so deep list positions don't wait seconds to appear. */
+private const val MAX_ENTRANCE_DELAY_MS = 300L
+
+private fun entranceDelayFor(index: Int): Long =
+    if (index < MAX_ANIMATED_CARDS) minOf(index * MotionTokens.STAGGER_MS, MAX_ENTRANCE_DELAY_MS)
+    else -1L
+
+private val relativeDateFormat = ThreadLocal.withInitial {
+    java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault())
+}
+
 private fun relativeDate(timestamp: Long): String {
     val now = System.currentTimeMillis()
     val diff = now - timestamp
@@ -100,10 +119,7 @@ private fun relativeDate(timestamp: Long): String {
         minutes < 60 -> "${minutes}m ago"
         hours < 24 -> "${hours}h ago"
         days < 7 -> "${days}d ago"
-        else -> {
-            val sdf = java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault())
-            sdf.format(java.util.Date(timestamp))
-        }
+        else -> relativeDateFormat.get()!!.format(java.util.Date(timestamp))
     }
 }
 
@@ -117,7 +133,7 @@ enum class NoteReviewFilter {
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalCoroutinesApi::class)
 @Composable
 fun HomeScreen(
-    onNoteClick: (String) -> Unit,
+    onNoteClick: (String, String?) -> Unit,
     onNewNote: () -> Unit,
     onSettingsClick: () -> Unit,
     onFeedClick: () -> Unit = {},
@@ -126,6 +142,8 @@ fun HomeScreen(
     onTasksClick: () -> Unit = {},
     onRecordingsClick: () -> Unit = {},
     onAskNotesClick: () -> Unit = {},
+    onScanDoc: () -> Unit = {},
+    onStudyClick: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val notes by viewModel.notes.collectAsState()
@@ -135,7 +153,10 @@ fun HomeScreen(
     val isSelectionMode by viewModel.isSelectionMode.collectAsState()
     val selectedNoteIds by viewModel.selectedNoteIds.collectAsState()
     val loadError by viewModel.loadError.collectAsState()
+    val dueCardsCount by viewModel.dueCardsCount.collectAsState()
     val pendingReview by viewModel.pendingReview.collectAsState()
+    val isProcessingImport by viewModel.isProcessingImport.collectAsState()
+    val importingFileName by viewModel.importingFileName.collectAsState()
 
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
@@ -168,7 +189,7 @@ fun HomeScreen(
 
     LaunchedEffect(Unit) {
         viewModel.importResult.collect { note ->
-            onNoteClick(note.id)
+            onNoteClick(note.id, null)
         }
     }
 
@@ -181,13 +202,22 @@ fun HomeScreen(
         }
     }
 
-    // Filter notes based on selected chip
-    val filteredNotes = remember(notes, selectedFilter) {
-        when (selectedFilter) {
-            NoteReviewFilter.ALL -> notes
-            NoteReviewFilter.PINNED -> notes.filter { it.isPinned }
-            NoteReviewFilter.RECORDINGS -> notes.filter { it.attachments.contains("audio") || it.tags.contains("recording") || it.tags.contains("voice") }
-            NoteReviewFilter.RECENT -> notes.sortedByDescending { it.updatedAt }
+    // Filter notes based on selected chip — preserves search relevance ranking when searching
+    val filteredNotes = remember(notes, selectedFilter, searchQuery) {
+        if (searchQuery.isNotBlank()) {
+            when (selectedFilter) {
+                NoteReviewFilter.ALL -> notes
+                NoteReviewFilter.PINNED -> notes.filter { it.isPinned }
+                NoteReviewFilter.RECORDINGS -> notes.filter { it.attachments.contains("audio") || it.tags.contains("recording") || it.tags.contains("voice") }
+                NoteReviewFilter.RECENT -> notes // Preserve relevance rank order, do NOT overwrite with updatedAt sort
+            }
+        } else {
+            when (selectedFilter) {
+                NoteReviewFilter.ALL -> notes
+                NoteReviewFilter.PINNED -> notes.filter { it.isPinned }
+                NoteReviewFilter.RECORDINGS -> notes.filter { it.attachments.contains("audio") || it.tags.contains("recording") || it.tags.contains("voice") }
+                NoteReviewFilter.RECENT -> notes.sortedByDescending { it.updatedAt }
+            }
         }
     }
 
@@ -293,6 +323,15 @@ fun HomeScreen(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    // ── Import progress (cancellable) ──
+                    if (isProcessingImport) {
+                        ImportProgressBanner(
+                            fileName = importingFileName,
+                            onCancel = { viewModel.cancelImport() }
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+
                     // ── 2. "Talk with your Notes" Hero Card ──
                     if (searchQuery.isEmpty()) {
                         TalkWithNotesHeroCard(
@@ -332,13 +371,19 @@ fun HomeScreen(
                                 icon = Icons.Default.DocumentScanner,
                                 label = "Scan Doc",
                                 color = Color(0xFF2E7D32),
-                                onClick = { filePickerLauncher.launch(IMPORT_MIME_TYPES) }
+                                onClick = onScanDoc
                             )
                             QuickCreateChip(
                                 icon = Icons.Default.FolderOpen,
                                 label = "Import File",
                                 color = MaterialTheme.colorScheme.secondary,
                                 onClick = { filePickerLauncher.launch(IMPORT_MIME_TYPES) }
+                            )
+                            QuickCreateChip(
+                                icon = Icons.Default.School,
+                                label = if (dueCardsCount > 0) "Practice ($dueCardsCount)" else "Practice",
+                                color = Color(0xFF6A1B9A),
+                                onClick = onStudyClick
                             )
                             QuickCreateChip(
                                 icon = Icons.Default.DashboardCustomize,
@@ -499,11 +544,12 @@ fun HomeScreen(
                                         note = note,
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
-                                        entranceDelay = index * MotionTokens.STAGGER_MS,
+                                        entranceDelay = entranceDelayFor(index),
                                         matchNote = matchDetails[note.id],
+                                        searchQuery = searchQuery,
                                         onClick = {
                                             if (isSelectionMode) viewModel.toggleNoteSelection(note.id)
-                                            else onNoteClick(note.id)
+                                            else onNoteClick(note.id, searchQuery.takeIf { it.isNotBlank() })
                                         },
                                         onLongClick = {
                                             hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -525,11 +571,12 @@ fun HomeScreen(
                                         note = note,
                                         isSelected = selectedNoteIds.contains(note.id),
                                         isSelectionMode = isSelectionMode,
-                                        entranceDelay = index * MotionTokens.STAGGER_MS,
+                                        entranceDelay = entranceDelayFor(index),
                                         matchNote = matchDetails[note.id],
+                                        searchQuery = searchQuery,
                                         onClick = {
                                             if (isSelectionMode) viewModel.toggleNoteSelection(note.id)
-                                            else onNoteClick(note.id)
+                                            else onNoteClick(note.id, searchQuery.takeIf { it.isNotBlank() })
                                         },
                                         onLongClick = {
                                             hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -597,6 +644,54 @@ fun HomeScreen(
             },
             onDismiss = { viewModel.dismissImportReview() }
         )
+    }
+}
+
+// ── Import progress banner with cancel ──
+
+@Composable
+fun ImportProgressBanner(
+    fileName: String?,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                strokeWidth = 3.dp
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Importing ${fileName ?: "file"}…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            FilledTonalButton(onClick = onCancel) {
+                Icon(Icons.Default.Close, contentDescription = null)
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Cancel")
+            }
+        }
     }
 }
 
@@ -729,7 +824,8 @@ fun SelectableNoteCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     entranceDelay: Long = 0L,
-    matchNote: String? = null
+    matchNote: String? = null,
+    searchQuery: String = ""
 ) {
     val wordCount = remember(note.plainText) {
         if (note.plainText.isBlank()) 0
@@ -737,10 +833,12 @@ fun SelectableNoteCard(
     }
 
     val density = LocalDensity.current
-    var appeared by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        delay(entranceDelay)
-        appeared = true
+    var appeared by remember { mutableStateOf(entranceDelay < 0) }
+    if (entranceDelay >= 0) {
+        LaunchedEffect(Unit) {
+            delay(entranceDelay)
+            appeared = true
+        }
     }
 
     val reducedMotion = isReducedMotionEnabled()
@@ -814,13 +912,24 @@ fun SelectableNoteCard(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            Text(
-                text = note.plainText.ifEmpty { "No content" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                lineHeight = 16.sp
-            )
+            if (searchQuery.isNotBlank()) {
+                val snippet = remember(note.plainText, searchQuery) {
+                    extractSearchSnippet(note.plainText, searchQuery)
+                }
+                HighlightedSearchText(
+                    text = snippet.ifEmpty { "No content" },
+                    query = searchQuery,
+                    maxLines = 2
+                )
+            } else {
+                Text(
+                    text = note.plainText.ifEmpty { "No content" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    lineHeight = 16.sp
+                )
+            }
 
             // Search-match provenance badge
             if (matchNote != null) {
@@ -846,8 +955,11 @@ fun SelectableNoteCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Memoized: recomputing the date string on every recompose is
+                // wasted work since it only changes when the note updates.
+                val dateLabel = remember(note.updatedAt) { relativeDate(note.updatedAt) }
                 Text(
-                    text = relativeDate(note.updatedAt),
+                    text = dateLabel,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -861,6 +973,143 @@ fun SelectableNoteCard(
             }
         }
     }
+}
+
+/**
+ * Finds occurrences of a query token in text.
+ * Uses strict word-boundary matching for Latin/alphanumeric tokens to prevent short tokens
+ * like "ai" from matching inside unrelated words like "said", "daily", "availability", etc.
+ * Uses substring matching for CJK ideographs where words are not space-delimited.
+ */
+fun findTokenWordMatches(text: String, token: String): List<IntRange> {
+    if (text.isBlank() || token.isBlank()) return emptyList()
+    val isCjk = Tokenizer.isCjk(token)
+    val regex = if (isCjk) {
+        Regex(Regex.escape(token), RegexOption.IGNORE_CASE)
+    } else if (token.length <= 3) {
+        // Strict whole-word boundary for short words/acronyms ("ai", "ml", "ui", "cat")
+        Regex("""\b${Regex.escape(token)}\b""", RegexOption.IGNORE_CASE)
+    } else {
+        // For longer words (>= 4 chars), match whole word or plural/inflected prefix
+        Regex("""\b${Regex.escape(token)}[a-zA-Z]*\b""", RegexOption.IGNORE_CASE)
+    }
+    return regex.findAll(text).map { it.range }.toList()
+}
+
+/**
+ * Extracts a compact text snippet surrounding the first matching query term
+ * for display on search result cards.
+ */
+fun extractSearchSnippet(plainText: String, query: String, maxChars: Int = 140): String {
+    if (plainText.isBlank() || query.isBlank()) return plainText.take(maxChars).replace("\n", " ").trim()
+    val queryTokens = query.split(Regex("[^\\p{L}\\p{N}_]+")).filter { it.isNotBlank() && (it.length > 1 || Tokenizer.isCjk(it)) }
+    if (queryTokens.isEmpty()) return plainText.take(maxChars).replace("\n", " ").trim()
+
+    var matchIndex = -1
+    var matchedLength = 0
+
+    // 1. First check if the complete query phrase matches as a whole
+    val cleanQuery = query.trim()
+    val phraseMatches = findTokenWordMatches(plainText, cleanQuery)
+    if (phraseMatches.isNotEmpty()) {
+        val first = phraseMatches.first()
+        matchIndex = first.first
+        matchedLength = first.last - first.first + 1
+    } else {
+        // 2. Otherwise search for individual tokens, prioritizing longer content words
+        val sortedTokens = queryTokens.sortedByDescending { it.length }
+        for (token in sortedTokens) {
+            val tokenMatches = findTokenWordMatches(plainText, token)
+            if (tokenMatches.isNotEmpty()) {
+                val first = tokenMatches.first()
+                matchIndex = first.first
+                matchedLength = first.last - first.first + 1
+                break
+            }
+        }
+    }
+
+    if (matchIndex < 0) return plainText.take(maxChars).replace("\n", " ").trim()
+
+    val prefixStart = (matchIndex - 35).coerceAtLeast(0)
+    val suffixEnd = (matchIndex + matchedLength + 75).coerceAtMost(plainText.length)
+    val prefixEllipsis = if (prefixStart > 0) "…" else ""
+    val suffixEllipsis = if (suffixEnd < plainText.length) "…" else ""
+
+    return prefixEllipsis + plainText.substring(prefixStart, suffixEnd).replace("\n", " ").trim() + suffixEllipsis
+}
+
+/**
+ * Renders note snippet text with query term matches highlighted in primary theme color.
+ */
+@Composable
+fun HighlightedSearchText(
+    text: String,
+    query: String,
+    modifier: Modifier = Modifier,
+    maxLines: Int = 2
+) {
+    val queryTokens = remember(query) {
+        query.split(Regex("[^\\p{L}\\p{N}_]+")).filter { it.isNotBlank() && (it.length > 1 || Tokenizer.isCjk(it)) }
+    }
+    val colorScheme = MaterialTheme.colorScheme
+    val annotated = remember(text, queryTokens) {
+        buildAnnotatedString {
+            if (queryTokens.isEmpty()) {
+                append(text)
+                return@buildAnnotatedString
+            }
+            val matches = mutableListOf<IntRange>()
+            for (token in queryTokens) {
+                matches.addAll(findTokenWordMatches(text, token))
+            }
+            if (matches.isEmpty()) {
+                append(text)
+                return@buildAnnotatedString
+            }
+            val sorted = matches.sortedBy { it.first }
+            val merged = mutableListOf<IntRange>()
+            var cur = sorted[0]
+            for (i in 1 until sorted.size) {
+                val next = sorted[i]
+                if (next.first <= cur.last + 1) {
+                    cur = cur.first..maxOf(cur.last, next.last)
+                } else {
+                    merged.add(cur)
+                    cur = next
+                }
+            }
+            merged.add(cur)
+
+            var lastIdx = 0
+            for (range in merged) {
+                if (range.first > lastIdx) {
+                    append(text.substring(lastIdx, range.first))
+                }
+                withStyle(
+                    SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        color = colorScheme.primary
+                    )
+                ) {
+                    append(text.substring(range.first, range.last + 1))
+                }
+                lastIdx = range.last + 1
+            }
+            if (lastIdx < text.length) {
+                append(text.substring(lastIdx))
+            }
+        }
+    }
+
+    Text(
+        text = annotated,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = maxLines,
+        lineHeight = 16.sp,
+        modifier = modifier
+    )
 }
 
 @Composable

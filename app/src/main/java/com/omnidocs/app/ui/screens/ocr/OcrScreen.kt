@@ -39,6 +39,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -74,11 +75,18 @@ fun OcrScreen(
     var liveDetectedText by remember { mutableStateOf("") }
     var liveDetectedHtml by remember { mutableStateOf("") }
     var isFrozen by remember { mutableStateOf(false) }
+    var hasCaptured by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
     val cameraPermissionState = rememberPermissionState(Manifest.permission.CAMERA)
+
+    LaunchedEffect(isFrozen) {
+        if (!isFrozen) {
+            hasCaptured = false
+        }
+    }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -130,12 +138,14 @@ fun OcrScreen(
                     onTextDetected = { text, html ->
                         liveDetectedText = text
                         liveDetectedHtml = html
+                        hasCaptured = true
                     },
                     isFrozen = isFrozen,
                     language = ocrLanguage,
                     recognizeFromMediaImage = { image, rotation ->
                         viewModel.recognizeFromMediaImage(image, rotation)
-                    }
+                    },
+                    hasCaptured = hasCaptured
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -208,7 +218,11 @@ fun OcrScreen(
             } else {
                 selectedImageUri?.let { uri ->
                     AsyncImage(
-                        model = uri,
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(uri)
+                            .size(800)
+                            .crossfade(true)
+                            .build(),
                         contentDescription = "Selected image",
                         modifier = Modifier
                             .fillMaxWidth()
@@ -404,6 +418,7 @@ fun OcrScreen(
                                 liveDetectedText = ""
                                 liveDetectedHtml = ""
                                 isFrozen = false
+                                hasCaptured = false
                             } else {
                                 cameraPermissionState.launchPermissionRequest()
                             }
@@ -587,7 +602,8 @@ fun LiveCameraOcrView(
     onTextDetected: (String, String) -> Unit,
     isFrozen: Boolean,
     language: String,
-    recognizeFromMediaImage: (android.media.Image, Int) -> Pair<String, String>?
+    recognizeFromMediaImage: (android.media.Image, Int) -> Pair<String, String>?,
+    hasCaptured: Boolean
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -599,10 +615,11 @@ fun LiveCameraOcrView(
     // Bounding boxes for overlay
     var ocrBlocks by remember { mutableStateOf<List<OcrBlock>>(emptyList()) }
 
-    // Keep a Compose State that always reflects the latest isFrozen value.
+    // Keep Compose state that always reflects the latest flags.
     // The AndroidView factory runs once and captures variables by reference;
     // rememberUpdatedState ensures the analyzer lambda reads the current value.
     val currentIsFrozen by rememberUpdatedState(isFrozen)
+    val currentHasCaptured by rememberUpdatedState(hasCaptured)
 
     DisposableEffect(Unit) {
         onDispose {
@@ -631,34 +648,32 @@ fun LiveCameraOcrView(
                 val analysisExecutor = Executors.newSingleThreadExecutor()
 
                 imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                    if (!currentIsFrozen) {
-                        // Not frozen — just close the frame
+                    if (!currentIsFrozen || currentHasCaptured) {
                         imageProxy.close()
-                    } else {
-                        // Frozen — run OCR directly on the MediaImage
-                        // imageProxy MUST stay open while ML Kit processes it
-                        try {
-                            val mediaImage = imageProxy.image
-                            if (mediaImage != null) {
-                                val rotation = imageProxy.imageInfo.rotationDegrees
-                                Log.d(TAG, "Analyzer: frozen frame ${mediaImage.width}x${mediaImage.height} rot=$rotation")
-                                val result = recognizeFromMediaImage(mediaImage, rotation)
-                                if (result != null) {
-                                    val (text, html) = result
-                                    scope.launch {
-                                        withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                            onTextDetected(text, html)
-                                        }
+                        return@setAnalyzer
+                    }
+
+                    try {
+                        val mediaImage = imageProxy.image
+                        if (mediaImage != null) {
+                            val rotation = imageProxy.imageInfo.rotationDegrees
+                            Log.d(TAG, "Analyzer: frozen frame ${mediaImage.width}x${mediaImage.height} rot=$rotation")
+                            val result = recognizeFromMediaImage(mediaImage, rotation)
+                            if (result != null) {
+                                val (text, html) = result
+                                scope.launch {
+                                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        onTextDetected(text, html)
                                     }
                                 }
-                            } else {
-                                Log.w(TAG, "Analyzer: imageProxy.image is null")
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Analyzer: OCR error", e)
-                        } finally {
-                            imageProxy.close()
+                        } else {
+                            Log.w(TAG, "Analyzer: imageProxy.image is null")
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Analyzer: OCR error", e)
+                    } finally {
+                        imageProxy.close()
                     }
                 }
 

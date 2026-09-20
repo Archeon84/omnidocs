@@ -560,6 +560,10 @@ fun LlmModelManagementDialog(
                         is DownloadState.Downloading -> state.progress
                         else -> 0f
                     }
+                    val error = when (val state = downloadState) {
+                        is DownloadState.Error -> state.message.takeIf { state.modelId == model.id }
+                        else -> null
+                    }
 
                     ModelItemCard(
                         name = model.name,
@@ -569,6 +573,7 @@ fun LlmModelManagementDialog(
                         isSelected = isSelected,
                         isDownloading = isDownloading,
                         progress = progress,
+                        error = error,
                         onSelect = { viewModel.selectModel(model.id) },
                         onDownload = { viewModel.downloadModel(model) },
                         onDelete = { viewModel.deleteModel(model) }
@@ -634,6 +639,10 @@ fun SttModelManagementDialog(
                         is DownloadState.Downloading -> state.progress
                         else -> 0f
                     }
+                    val error = when (val state = downloadState) {
+                        is DownloadState.Error -> state.message.takeIf { state.modelId == model.id }
+                        else -> null
+                    }
 
                     ModelItemCard(
                         name = model.name,
@@ -643,6 +652,7 @@ fun SttModelManagementDialog(
                         isSelected = isSelected,
                         isDownloading = isDownloading,
                         progress = progress,
+                        error = error,
                         onSelect = { viewModel.selectSttModel(model.id) },
                         onDownload = { viewModel.downloadSttModel(model) },
                         onDelete = { viewModel.deleteSttModel(model) }
@@ -685,6 +695,10 @@ fun EmbeddingModelManagementDialog(
                         is DownloadState.Downloading -> state.progress
                         else -> 0f
                     }
+                    val error = when (val state = downloadState) {
+                        is DownloadState.Error -> state.message.takeIf { state.modelId == model.id }
+                        else -> null
+                    }
 
                     ModelItemCard(
                         name = model.name,
@@ -694,6 +708,7 @@ fun EmbeddingModelManagementDialog(
                         isSelected = isSelected,
                         isDownloading = isDownloading,
                         progress = progress,
+                        error = error,
                         onSelect = { viewModel.selectEmbeddingModel(model.id) },
                         onDownload = { viewModel.downloadEmbeddingModel(model) },
                         onDelete = { viewModel.deleteEmbeddingModel(model) }
@@ -716,6 +731,7 @@ fun ModelItemCard(
     isSelected: Boolean,
     isDownloading: Boolean,
     progress: Float,
+    error: String? = null,
     onSelect: () -> Unit,
     onDownload: () -> Unit,
     onDelete: () -> Unit
@@ -750,6 +766,15 @@ fun ModelItemCard(
                 Spacer(modifier = Modifier.height(6.dp))
                 LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
                 Text("Downloading: ${progress.toInt()}%", style = MaterialTheme.typography.labelSmall)
+            }
+
+            if (!isDownloading && error != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    error,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
             }
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -891,15 +916,4 @@ fun SttAccuracyDialog(
     )
 }
 
-private val STT_LANGUAGES = listOf(
-    "" to "Auto-detect",
-    "en" to "English",
-    "ms" to "Malay (Bahasa Melayu)",
-    "zh" to "Chinese (Mandarin)",
-    "ja" to "Japanese",
-    "ko" to "Korean",
-    "es" to "Spanish",
-    "ar" to "Arabic",
-    "vi" to "Vietnamese",
-    "uk" to "Ukrainian"
-)
+private val STT_LANGUAGES = com.omnidocs.app.stt.STT_LANGUAGES_WITH_NAMES

@@ -15,6 +15,9 @@ interface RecordingDao {
     @Query("SELECT * FROM recordings WHERE noteId = :noteId AND deletedAt IS NULL")
     fun getRecordingsByNoteId(noteId: String): Flow<List<RecordingEntity>>
 
+    @Query("SELECT * FROM recordings WHERE noteId IN (:noteIds) AND deletedAt IS NULL")
+    suspend fun getRecordingsByNoteIds(noteIds: List<String>): List<RecordingEntity>
+
     @Query("SELECT * FROM recordings WHERE id = :id")
     suspend fun getRecordingById(id: String): RecordingEntity?
 
@@ -32,6 +35,9 @@ interface RecordingDao {
      *  left untouched to preserve their original deletion timestamps. */
     @Query("UPDATE recordings SET deletedAt = :deletedAt WHERE noteId = :noteId AND deletedAt IS NULL")
     suspend fun softDeleteRecordingsByNoteId(noteId: String, deletedAt: Long)
+
+    @Query("UPDATE recordings SET deletedAt = :deletedAt WHERE noteId IN (:noteIds) AND deletedAt IS NULL")
+    suspend fun softDeleteRecordingsByNoteIds(noteIds: List<String>, deletedAt: Long)
 
     @Query("DELETE FROM recordings WHERE id = :id")
     suspend fun permanentlyDeleteRecording(id: String)

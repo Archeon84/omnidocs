@@ -3,6 +3,7 @@ package com.omnidocs.app.study
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.omnidocs.app.util.HtmlSanitizer
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -59,9 +60,17 @@ class StudyExportService @Inject constructor() {
                     appendLine("*Explanation:* ${card.explanation}")
                 }
 
-                if (!card.sourceSnippet.isNullOrBlank()) {
+                val sourceTitle = card.sourceTitle?.takeIf { it.isNotBlank() }
+                val snippet = card.sourceSnippet?.takeIf {
+                    it.isNotBlank() &&
+                        !it.contains("[Truncated", ignoreCase = true) &&
+                        !it.contains("Truncated text", ignoreCase = true)
+                }
+                if (sourceTitle != null || snippet != null) {
                     appendLine()
-                    appendLine("> *Source snippet:* \"${card.sourceSnippet}\"")
+                    val titlePart = if (sourceTitle != null) "**Source:** $sourceTitle" else "**Source:**"
+                    val snippetPart = if (snippet != null) " — *\"$snippet\"*" else ""
+                    appendLine("> $titlePart$snippetPart")
                 }
 
                 if (card.tags.isNotEmpty()) {
@@ -92,8 +101,23 @@ class StudyExportService @Inject constructor() {
                     if (!card.explanation.isNullOrBlank()) {
                         append("<br/><br/><i>${escapeTsv(card.explanation)}</i>")
                     }
-                    if (!card.sourceSnippet.isNullOrBlank()) {
-                        append("<br/><br/><small>Source: \"${escapeTsv(card.sourceSnippet)}\"</small>")
+                    val sourceTitle = card.sourceTitle?.takeIf { it.isNotBlank() }
+                    val snippet = card.sourceSnippet?.takeIf {
+                        it.isNotBlank() &&
+                            !it.contains("[Truncated", ignoreCase = true) &&
+                            !it.contains("Truncated text", ignoreCase = true)
+                    }
+                    val sourceHtml = when {
+                        sourceTitle != null && snippet != null ->
+                            "<br/><br/><small><b>Source:</b> ${escapeTsv(sourceTitle)} — <i>\"${escapeTsv(snippet)}\"</i></small>"
+                        sourceTitle != null ->
+                            "<br/><br/><small><b>Source:</b> ${escapeTsv(sourceTitle)}</small>"
+                        snippet != null ->
+                            "<br/><br/><small>Source: \"${escapeTsv(snippet)}\"</small>"
+                        else -> ""
+                    }
+                    if (sourceHtml.isNotBlank()) {
+                        append(sourceHtml)
                     }
                 }
                 val tags = card.tags.joinToString(" ")
@@ -147,9 +171,11 @@ class StudyExportService @Inject constructor() {
     }
 
     private fun escapeTsv(text: String): String {
-        return text
+        val sanitized = HtmlSanitizer.sanitize(text)
+        return sanitized
             .replace("\t", " ")
             .replace("\r\n", "<br/>")
             .replace("\n", "<br/>")
+            .replace("\"", "&quot;")
     }
 }

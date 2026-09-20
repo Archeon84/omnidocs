@@ -78,10 +78,16 @@ class MainActivity : FragmentActivity() {
         )
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Reset unlock state when leaving the foreground so the lock screen
+        // reappears on the next resume/device handoff.
+        isUnlocked.value = false
+    }
+
     override fun onResume() {
         super.onResume()
-        // If app lock is enabled and not unlocked, re-prompt
-        if (securityPreferences.isAppLockEnabled.value && !isUnlocked.value && biometricAuthManager.canAuthenticate()) {
+        if (securityPreferences.isAppLockEnabled.value && biometricAuthManager.canAuthenticate()) {
             triggerBiometricAuth()
         }
     }

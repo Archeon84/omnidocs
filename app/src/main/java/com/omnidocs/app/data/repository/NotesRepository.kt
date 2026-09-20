@@ -2,17 +2,22 @@ package com.omnidocs.app.data.repository
 
 import androidx.room.withTransaction
 import com.omnidocs.app.ai.BackgroundInferenceDispatcher
-import com.omnidocs.app.ai.ModelDownloadManager
-import com.omnidocs.app.ai.isAnyEmbeddingModelDownloaded
+import com.omnidocs.app.data.local.ContentBlockDao
 import com.omnidocs.app.data.local.EmbeddingDao
+import com.omnidocs.app.data.local.FlashcardDao
 import com.omnidocs.app.data.local.NoteDao
 import com.omnidocs.app.data.local.NotesDatabase
 import com.omnidocs.app.data.local.RecordingDao
+import com.omnidocs.app.data.local.SourceDocumentDao
+import com.omnidocs.app.data.local.entity.FlashcardEntity
 import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.domain.model.Note
 import com.omnidocs.app.search.EmbeddingService
+import com.omnidocs.app.util.MarkdownCodec
 import com.omnidocs.app.voice.RecordingStorage
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import android.util.Log
@@ -24,12 +29,14 @@ import javax.inject.Singleton
 class NotesRepository @Inject constructor(
     private val noteDao: NoteDao,
     private val recordingDao: RecordingDao,
+    private val contentBlockDao: ContentBlockDao,
+    private val sourceDocumentDao: SourceDocumentDao,
     private val recordingStorage: RecordingStorage,
     private val notesDatabase: NotesDatabase,
     private val embeddingService: EmbeddingService,
     private val embeddingDao: EmbeddingDao,
-    private val modelDownloadManager: ModelDownloadManager,
-    private val inferenceDispatcher: BackgroundInferenceDispatcher
+    private val inferenceDispatcher: BackgroundInferenceDispatcher,
+    private val flashcardDao: FlashcardDao
 ) {
     fun getAllNotes(): Flow<List<Note>> {
         return noteDao.getAllNotes().map { entities ->
@@ -49,16 +56,44 @@ class NotesRepository @Inject constructor(
      * Falls back to LIKE search on empty/malformed FTS query.
      */
     fun searchNotesFts(query: String): Flow<List<Note>> {
+        // Strip the full FTS4 operator set (- : + . ? | & ! /) plus bare
+        // AND/OR/NOT/NEAR keywords: any of these in MATCH syntax throws
+        // SQLiteException ("malformed MATCH", "no such column") on ordinary
+        // input like "well-known" or "10:30".
         val ftsQuery = query.trim()
-            .replace(Regex("[\"'*()^\\[\\]{}]"), "")  // strip FTS special chars
+            .replace(Regex("[\"'*()^\\[\\]{}:?!|&/+-]"), " ")
+            .replace(Regex("\\."), " ")
             .split(Regex("\\s+"))
             .filter { it.isNotBlank() }
-            .joinToString(" ") { "$it*" }  // prefix matching
+            .filterNot { it.uppercase() in FTS_BARE_OPERATORS }
+            .joinToString(" ") { "\"$it\"*" }  // quoted prefix matching
         return if (ftsQuery.isBlank()) {
             searchNotes(query)
         } else {
             noteDao.searchNotesFts(ftsQuery).map { entities ->
                 entities.map { it.toDomain() }
+            }.catch { e ->
+                // Belt-and-braces: a surviving edge case falls back to LIKE
+                // instead of crashing the search collector.
+                Log.w("NotesRepository", "FTS query failed, falling back to LIKE", e)
+                emitAll(searchNotes(query))
+            }
+        }
+    }
+
+    companion object {
+        private val FTS_BARE_OPERATORS = setOf("AND", "OR", "NOT", "NEAR")
+
+        /**
+         * Canonical text representation of a note for chunking and passage embeddings.
+         * Ensures 100% representation parity across index-on-save, background full-reindex,
+         * and retrieval-time passage extraction.
+         */
+        fun canonicalChunkText(note: NoteEntity): String {
+            return if (note.content.contains("<") && note.content.contains(">")) {
+                MarkdownCodec.htmlToMarkdown(note.content).ifBlank { note.plainText }
+            } else {
+                note.plainText.ifBlank { note.content }
             }
         }
     }
@@ -95,18 +130,19 @@ class NotesRepository @Inject constructor(
 
     /**
      * Refresh a note's semantic embedding after a save so search stays current.
-     * Fire-and-forget and only when a real embedding model is downloaded (the
-     * n-gram path is handled by the lazy first-search reindex in VectorSearch).
+     * Always enqueued: the n-gram fallback is cheap CPU, and the real-model
+     * path is incremental per chunkHash — skipping it left no-model installs
+     * with permanently stale vectors. Rapid autosaves coalesce by note key in
+     * the dispatcher.
      * Idempotent upsert in EmbeddingService prevents duplicate rows.
      */
     private fun reindexOnSave(note: NoteEntity) {
-        val modelDownloaded = isAnyEmbeddingModelDownloaded(modelDownloadManager)
-        Log.d("NotesRepository", "reindexOnSave: note=${note.id}, modelDownloaded=$modelDownloaded")
-        if (!modelDownloaded) return
-        inferenceDispatcher.enqueue {
+        Log.d("NotesRepository", "reindexOnSave: note=${note.id}")
+        inferenceDispatcher.enqueue("reindex:${note.id}") {
             try {
                 Log.d("NotesRepository", "reindexOnSave: starting passage embed for note ${note.id}")
-                embeddingService.embedAndStoreNotePassages(note.id, note.title, note.plainText)
+                val chunkContent = canonicalChunkText(note)
+                embeddingService.embedAndStoreNotePassages(note.id, note.title, chunkContent)
                 Log.d("NotesRepository", "reindexOnSave: completed passage embed for note ${note.id}")
             } catch (e: Exception) {
                 Log.e("NotesRepository", "reindexOnSave failed for note ${note.id}", e)
@@ -129,33 +165,64 @@ class NotesRepository @Inject constructor(
     private suspend fun deleteNotesWithRecordings(ids: List<String>) {
         if (ids.isEmpty()) return
         val now = System.currentTimeMillis()
-        val keysToDelete = mutableListOf<String>()
+        // Batch-fetch recordings BEFORE the transaction so the DB lock is held
+        // only for pure writes, never across N read queries.
+        val recordings = recordingDao.getRecordingsByNoteIds(ids)
+        val keysToDelete = recordings.map { it.storageKey }
         // Note + its recordings soft-delete atomically; the audio file cleanup is
         // deferred until after the transaction so disk I/O doesn't hold the DB lock.
         notesDatabase.withTransaction {
             for (id in ids) {
                 noteDao.deleteNoteById(id, now)
-                val recordings = recordingDao.getRecordingsByNoteId(id).first()
-                if (recordings.isNotEmpty()) {
-                    recordingDao.softDeleteRecordingsByNoteId(id, now)
-                    keysToDelete += recordings.map { it.storageKey }
-                }
             }
+            recordingDao.softDeleteRecordingsByNoteIds(ids, now)
         }
         keysToDelete.forEach { recordingStorage.deleteRecording(it) }
         // Clean up orphaned embeddings so they don't suppress lazy reindex
         try {
-            for (id in ids) {
-                embeddingDao.deleteEmbeddingsBySource("note", id)
-            }
+            embeddingDao.deleteEmbeddingsBySourceIds(ids)
         } catch (e: Exception) {
             Log.e("NotesRepository", "Failed to clean up embeddings for deleted notes", e)
         }
+        try {
+            for (id in ids) {
+                flashcardDao.deleteFlashcardsByNoteId(id)
+            }
+        } catch (e: Exception) {
+            Log.e("NotesRepository", "Failed to clean up flashcards for deleted notes", e)
+        }
     }
 
-    /** Permanently remove a note from the database */
+    /**
+     * Hard-delete a note that was just imported but discarded in review.
+     * Only applies when the row exists AND never synced (nothing remote can
+     * reference it). Removes the note row plus its blocks, embeddings, and
+     * source documents so no orphans remain. Returns false when the guard
+     * refuses (caller should fall back to a soft delete).
+     */
+    suspend fun discardUnsyncedNote(noteId: String): Boolean {
+        val local = noteDao.getNoteByIdIncludeDeleted(noteId) ?: return true
+        if (local.isSynced) return false
+        // Collect owning source docs BEFORE deleting blocks.
+        val sourceDocIds = contentBlockDao.getBlocksForNoteSync(noteId)
+            .mapNotNull { it.sourceDocumentId }
+            .distinct()
+        notesDatabase.withTransaction {
+            contentBlockDao.deleteBlocksForNote(noteId)
+            embeddingDao.deleteEmbeddingsBySource("note", noteId)
+            flashcardDao.deleteFlashcardsByNoteId(noteId)
+            noteDao.permanentlyDeleteNoteById(noteId)
+            for (docId in sourceDocIds) {
+                sourceDocumentDao.deleteSourceDocument(docId)
+            }
+        }
+        return true
+    }
+
+    /** Permanently remove a note: writes a tombstone so the deletion propagates
+     *  to the cloud, then GC hard-purges it after the retention window. */
     suspend fun permanentlyDeleteNote(note: Note) {
-        noteDao.permanentlyDeleteNoteById(note.id)
+        deleteNotesWithRecordings(listOf(note.id))
     }
 
     suspend fun togglePin(note: Note) {
@@ -168,15 +235,13 @@ class NotesRepository @Inject constructor(
         return noteDao.getAllNotesSync().map { it.toDomain() }
     }
 
-    suspend fun getUnsyncedNotes(): List<Note> {
-        return noteDao.getUnsyncedNotes().map { it.toDomain() }
-    }
-
     suspend fun markAsSynced(id: String) {
         noteDao.markAsSynced(id)
     }
 
     suspend fun markAsSynced(ids: List<String>) {
+        // Room generates `IN ()` for empty lists → SQLiteException. No-op instead.
+        if (ids.isEmpty()) return
         noteDao.markAsSynced(ids)
     }
 
@@ -216,4 +281,58 @@ class NotesRepository @Inject constructor(
         tags = tags,
         relatedNotes = relatedNotes
     )
+
+    // ── Flashcards & Spaced Repetition Study ──────────────────────────
+
+    suspend fun getFlashcardsForNote(noteId: String): List<FlashcardEntity> {
+        return flashcardDao.getFlashcardsByNoteId(noteId)
+    }
+
+    fun getFlashcardsForNoteFlow(noteId: String): Flow<List<FlashcardEntity>> {
+        return flashcardDao.getFlashcardsByNoteIdFlow(noteId)
+    }
+
+    suspend fun getDueFlashcards(nowMs: Long = System.currentTimeMillis(), limit: Int = 100): List<FlashcardEntity> {
+        return flashcardDao.getDueFlashcards(nowMs, limit)
+    }
+
+    fun getDueFlashcardsFlow(nowMs: Long = System.currentTimeMillis()): Flow<List<FlashcardEntity>> {
+        return flashcardDao.getDueFlashcardsFlow(nowMs)
+    }
+
+    suspend fun countDueFlashcards(nowMs: Long = System.currentTimeMillis()): Int {
+        return flashcardDao.countDueFlashcards(nowMs)
+    }
+
+    fun countDueFlashcardsFlow(nowMs: Long = System.currentTimeMillis()): Flow<Int> {
+        return flashcardDao.countDueFlashcardsFlow(nowMs)
+    }
+
+    suspend fun saveFlashcards(cards: List<FlashcardEntity>) {
+        flashcardDao.insertFlashcards(cards)
+    }
+
+    suspend fun updateFlashcardReview(
+        id: String,
+        repetitionCount: Int,
+        intervalDays: Int,
+        easinessFactor: Float,
+        nextReviewDateMs: Long,
+        lastReviewedAtMs: Long,
+        updatedAt: Long = System.currentTimeMillis()
+    ) {
+        flashcardDao.updateReviewState(
+            id = id,
+            repetitionCount = repetitionCount,
+            intervalDays = intervalDays,
+            easinessFactor = easinessFactor,
+            nextReviewDateMs = nextReviewDateMs,
+            lastReviewedAtMs = lastReviewedAtMs,
+            updatedAt = updatedAt
+        )
+    }
+
+    suspend fun deleteFlashcardsForNote(noteId: String) {
+        flashcardDao.deleteFlashcardsByNoteId(noteId)
+    }
 }

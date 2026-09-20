@@ -22,25 +22,61 @@ enum class NativeModelSlot {
 /**
  * Coordinates native memory allocations, model loading mutual exclusion,
  * and memory pressure trimming across llama.cpp (LLM + Embeddings) and Sherpa-onnx (STT).
+ *
+ * Semantics are load-time eviction: acquiring a slot unloads conflicting
+ * residents BEFORE the caller loads its model, so two giants are never
+ * resident at once. Ownership is tracked per (slot, owner) with refcounts;
+ * [withSlot] guarantees release in `finally`.
+ *
+ * Lock discipline: [slotMutex] is only ever held for fast, non-suspending
+ * bookkeeping. Eviction (which takes other services' mutexes) always runs
+ * OUTSIDE the mutex, so lock ordering is strictly slotMutex -> others and
+ * can never deadlock against a holder of another mutex.
  */
 @Singleton
 class NativeMemoryManager @Inject constructor(
     private val llamaCppService: LlamaCppService,
     private val embeddingEngine: EmbeddingEngine
 ) {
+    companion object {
+        const val OWNER_LLM = "generative-llm"
+        const val OWNER_STT = "speech-to-text"
+        const val OWNER_EMBEDDINGS = "embeddings"
+        const val OWNER_APP_PRELOAD = "app-preload"
+    }
+
     private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val slotMutex = Mutex()
 
-    @Volatile
-    private var activeSlot: NativeModelSlot? = null
+    /** slot -> (owner -> refcount) */
+    private val holders = mutableMapOf<NativeModelSlot, MutableMap<String, Int>>()
+
+    /**
+     * Acquire [slot] for [owner], run [block], always release afterwards.
+     * Preferred over manual acquire/release pairs.
+     */
+    suspend fun <T> withSlot(
+        slot: NativeModelSlot,
+        owner: String,
+        block: suspend () -> T
+    ): T {
+        acquireSlot(slot, owner)
+        try {
+            return block()
+        } finally {
+            releaseSlot(slot, owner)
+        }
+    }
 
     /**
      * Request an exclusive or prioritized slot for a native model.
-     * Unloads non-essential inactive models if memory contention would occur.
+     * Unloads non-essential conflicting residents if memory contention would occur.
+     * Re-entrant for the same (slot, owner): refcount is incremented.
      */
-    suspend fun acquireSlot(slot: NativeModelSlot): Boolean = slotMutex.withLock {
-        Log.d(TAG, "Requesting native slot: $slot (current active: $activeSlot)")
+    suspend fun acquireSlot(slot: NativeModelSlot, owner: String = "unknown"): Boolean {
+        Log.d(TAG, "Requesting native slot: $slot by $owner")
 
+        // Evict conflicting residents OUTSIDE the mutex (suspending calls).
         when (slot) {
             NativeModelSlot.SPEECH_TO_TEXT -> {
                 // STT requires low latency and high resident memory (Whisper Large/Small).
@@ -63,18 +99,36 @@ class NativeMemoryManager @Inject constructor(
             }
         }
 
-        activeSlot = slot
-        true
+        // Fast, non-suspending bookkeeping only.
+        slotMutex.withLock {
+            holders.getOrPut(slot) { mutableMapOf() }.merge(owner, 1, Int::plus)
+        }
+        return true
     }
 
     /**
-     * Release the active slot when the native operation completes.
+     * Release a previously acquired slot. Only the matching [owner]'s refcount
+     * is decremented; other owners are unaffected.
      */
-    suspend fun releaseSlot(slot: NativeModelSlot) = slotMutex.withLock {
-        if (activeSlot == slot) {
-            activeSlot = null
-            Log.d(TAG, "Released native slot: $slot")
+    suspend fun releaseSlot(slot: NativeModelSlot, owner: String = "unknown") {
+        slotMutex.withLock {
+            val owners = holders[slot] ?: return@withLock
+            val remaining = (owners[owner] ?: 0) - 1
+            if (remaining <= 0) {
+                owners.remove(owner)
+            } else {
+                owners[owner] = remaining
+            }
+            if (owners.isEmpty()) {
+                holders.remove(slot)
+            }
+            Log.d(TAG, "Released native slot: $slot by $owner")
         }
+    }
+
+    /** Returns true if [slot] is currently held by any owner. */
+    suspend fun isSlotHeld(slot: NativeModelSlot): Boolean = slotMutex.withLock {
+        holders[slot]?.isNotEmpty() == true
     }
 
     /**

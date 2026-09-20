@@ -32,4 +32,30 @@ class MarkdownCodecTest {
         assertTrue(md.contains("# Hello"))
         assertTrue(md.contains("**bold**"))
     }
+
+    @Test
+    fun `html to markdown - multiline tags and tables`() {
+        val html = """
+            <h2>Quarterly Review</h2>
+            <p>First line of paragraph.
+            Second line across newline.</p>
+            <table>
+                <tr><th>Metric</th><th>Q1</th><th>Q2</th></tr>
+                <tr><td>Revenue</td><td>$10M</td><td>$12M</td></tr>
+            </table>
+            <div class='attachment' id='img_123'>
+                <img src='content://media/1' />
+                <span class='delete-btn' data-attachment-id='img_123'>Delete</span>
+            </div>
+        """.trimIndent()
+
+        val md = MarkdownCodec.htmlToMarkdown(html)
+        assertTrue("Heading preserved", md.contains("## Quarterly Review"))
+        assertTrue("Multiline paragraph preserved", md.contains("First line of paragraph.") && md.contains("Second line across newline."))
+        assertTrue("Table header formatted", md.contains("| Metric | Q1 | Q2 |"))
+        assertTrue("Table separator formatted", md.contains("| --- | --- | --- |"))
+        assertTrue("Table row formatted", md.contains("| Revenue | $10M | $12M |"))
+        assertFalse("Delete button stripped from markdown", md.contains("Delete"))
+        assertTrue("Image markdown preserved", md.contains("![](content://media/1)"))
+    }
 }

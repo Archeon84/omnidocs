@@ -6,7 +6,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -33,12 +35,19 @@ fun StudyScreen(
     viewModel: StudyViewModel = hiltViewModel()
 ) {
     val deck by viewModel.deck.collectAsState()
+    val activeQueue by viewModel.activeQueue.collectAsState()
     val currentIndex by viewModel.currentCardIndex.collectAsState()
     val isFlipped by viewModel.isFlipped.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val summary by viewModel.reviewSummary.collectAsState()
     var showExportMenu by remember { mutableStateOf(false) }
+    var selectedOptionIndex by remember { mutableStateOf<Int?>(null) }
     val context = LocalContext.current
+
+    // Reset option selection when advancing to next card
+    LaunchedEffect(currentIndex) {
+        selectedOptionIndex = null
+    }
 
     Scaffold(
         topBar = {
@@ -64,12 +73,22 @@ fun StudyScreen(
                     if (deck != null) {
                         Box {
                             IconButton(onClick = { showExportMenu = true }) {
-                                Icon(Icons.Default.Share, contentDescription = "Export Deck")
+                                Icon(Icons.Default.MoreVert, contentDescription = "Menu")
                             }
                             DropdownMenu(
                                 expanded = showExportMenu,
                                 onDismissRequest = { showExportMenu = false }
                             ) {
+                                if (viewModel.noteId != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Regenerate Cards") },
+                                        onClick = {
+                                            showExportMenu = false
+                                            viewModel.regenerateDeck()
+                                        },
+                                        leadingIcon = { Icon(Icons.Default.Refresh, null) }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Export Markdown (.md)") },
                                     onClick = {
@@ -109,7 +128,7 @@ fun StudyScreen(
                         CircularProgressIndicator()
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            "Generating study flashcards from note...",
+                            "Loading study flashcards...",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -123,8 +142,8 @@ fun StudyScreen(
                         onDone = onNavigateBack
                     )
                 }
-                deck != null && deck!!.cards.isNotEmpty() -> {
-                    val cards = deck!!.cards
+                activeQueue.isNotEmpty() -> {
+                    val cards = activeQueue
                     val card = cards.getOrNull(currentIndex) ?: cards.first()
 
                     Column(
@@ -162,54 +181,92 @@ fun StudyScreen(
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // 3D Flip Card
+                        // 3D Flip Card — Keyed by card.id to eliminate backwards flip animation glitch
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxWidth()
                         ) {
-                            FlipFlashcard(
-                                card = card,
-                                isFlipped = isFlipped,
-                                onFlip = { viewModel.flipCard() }
-                            )
+                            key(card.id) {
+                                FlipFlashcard(
+                                    card = card,
+                                    isFlipped = isFlipped,
+                                    selectedOptionIndex = selectedOptionIndex,
+                                    onSelectOption = { selectedOptionIndex = it },
+                                    onFlip = { viewModel.flipCard() },
+                                    fallbackTitle = deck?.title?.takeIf { !it.startsWith("Daily Practice") }
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
 
                         // Rating controls
                         if (isFlipped) {
+                            val againInterval = viewModel.getProjectedInterval(1)
+                            val hardInterval = viewModel.getProjectedInterval(3)
+                            val goodInterval = viewModel.getProjectedInterval(4)
+                            val easyInterval = viewModel.getProjectedInterval(5)
+
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                // Again
                                 Button(
                                     onClick = { viewModel.rateCard(1) },
                                     modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
                                 ) {
-                                    Text("Again", fontSize = 13.sp)
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("Again", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        if (againInterval.isNotBlank()) {
+                                            Text(againInterval, fontSize = 10.sp, color = Color.White.copy(alpha = 0.85f))
+                                        }
+                                    }
                                 }
+                                // Hard
                                 Button(
                                     onClick = { viewModel.rateCard(3) },
                                     modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF57C00))
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF57C00)),
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
                                 ) {
-                                    Text("Hard", fontSize = 13.sp)
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("Hard", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        if (hardInterval.isNotBlank()) {
+                                            Text(hardInterval, fontSize = 10.sp, color = Color.White.copy(alpha = 0.85f))
+                                        }
+                                    }
                                 }
+                                // Good
                                 Button(
                                     onClick = { viewModel.rateCard(4) },
                                     modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
                                 ) {
-                                    Text("Good", fontSize = 13.sp)
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("Good", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        if (goodInterval.isNotBlank()) {
+                                            Text(goodInterval, fontSize = 10.sp, color = Color.White.copy(alpha = 0.85f))
+                                        }
+                                    }
                                 }
+                                // Easy
                                 Button(
                                     onClick = { viewModel.rateCard(5) },
                                     modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
                                 ) {
-                                    Text("Easy", fontSize = 13.sp)
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("Easy", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        if (easyInterval.isNotBlank()) {
+                                            Text(easyInterval, fontSize = 10.sp, color = Color.White.copy(alpha = 0.85f))
+                                        }
+                                    }
                                 }
                             }
                         } else {
@@ -225,7 +282,39 @@ fun StudyScreen(
                     }
                 }
                 else -> {
-                    Text("No study cards available for this note.")
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.School,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = if (viewModel.noteId.isNullOrBlank()) {
+                                "All caught up! No cards are due for practice."
+                            } else {
+                                "No study cards generated yet for this note."
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        if (viewModel.noteId != null) {
+                            Button(onClick = { viewModel.regenerateDeck() }) {
+                                Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Generate Study Flashcards")
+                            }
+                        } else {
+                            OutlinedButton(onClick = onNavigateBack) {
+                                Text("Go to Notes")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -236,8 +325,11 @@ fun StudyScreen(
 fun FlipFlashcard(
     card: Flashcard,
     isFlipped: Boolean,
+    selectedOptionIndex: Int?,
+    onSelectOption: (Int) -> Unit,
     onFlip: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    fallbackTitle: String? = null
 ) {
     val rotation by animateFloatAsState(
         targetValue = if (isFlipped) 180f else 0f,
@@ -264,7 +356,7 @@ fun FlipFlashcard(
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
         if (rotation <= 90f) {
-            // Front (Question)
+            // Front (Question & Interactive Options)
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -305,30 +397,76 @@ fun FlipFlashcard(
                     }
                 }
 
+                // Question Prompt (with Cloze mask if applicable)
+                val displayPrompt = if (card.type == StudyCardType.CLOZE) {
+                    formatClozePrompt(card.prompt)
+                } else {
+                    card.prompt
+                }
+
                 Text(
-                    text = card.prompt,
+                    text = displayPrompt,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp)
                 )
 
+                // Interactive Multiple Choice Options
                 if (card.options.isNotEmpty()) {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         card.options.forEachIndexed { idx, opt ->
+                            val isSelected = selectedOptionIndex == idx
+                            val surfaceColor = if (isSelected) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            }
+                            val borderColor = if (isSelected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                Color.Transparent
+                            }
+
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surface,
-                                modifier = Modifier.fillMaxWidth()
+                                shape = RoundedCornerShape(10.dp),
+                                color = surfaceColor,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, borderColor, RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        onSelectOption(idx)
+                                    }
                             ) {
-                                Text(
-                                    text = "${('A' + idx)}. $opt",
-                                    modifier = Modifier.padding(10.dp),
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = "${('A' + idx)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = opt,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
                             }
                         }
                     }
@@ -343,7 +481,7 @@ fun FlipFlashcard(
                 )
             }
         } else {
-            // Back (Answer & Citation)
+            // Back (Answer, Explanation, MCQ Feedback & Citation)
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -359,7 +497,9 @@ fun FlipFlashcard(
                 )
 
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
@@ -369,6 +509,53 @@ fun FlipFlashcard(
                         color = MaterialTheme.colorScheme.primary
                     )
 
+                    // MCQ result breakdown if options were present
+                    if (card.options.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            card.options.forEachIndexed { idx, opt ->
+                                val isCorrect = idx == card.correctOptionIndex
+                                val isUserChoice = idx == selectedOptionIndex
+
+                                val optionBg = when {
+                                    isCorrect -> Color(0xFF2E7D32).copy(alpha = 0.15f)
+                                    isUserChoice -> Color(0xFFD32F2F).copy(alpha = 0.15f)
+                                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                }
+                                val optionBorder = when {
+                                    isCorrect -> Color(0xFF2E7D32)
+                                    isUserChoice -> Color(0xFFD32F2F)
+                                    else -> Color.Transparent
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = optionBg,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .border(1.dp, optionBorder, RoundedCornerShape(8.dp))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (isCorrect) "✓ " else if (isUserChoice) "✗ " else "• ",
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isCorrect) Color(0xFF2E7D32) else if (isUserChoice) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = "${('A' + idx)}. $opt",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if (!card.explanation.isNullOrBlank()) {
                         Text(
                             text = card.explanation,
@@ -376,18 +563,49 @@ fun FlipFlashcard(
                         )
                     }
 
-                    if (!card.sourceSnippet.isNullOrBlank()) {
+                    val displaySourceTitle = (card.sourceTitle ?: fallbackTitle)?.takeIf { it.isNotBlank() }
+                    val displaySnippet = card.sourceSnippet?.takeIf {
+                        it.isNotBlank() &&
+                            !it.contains("[Truncated", ignoreCase = true) &&
+                            !it.contains("Truncated text", ignoreCase = true) &&
+                            !it.contains("showing first", ignoreCase = true)
+                    }
+
+                    if (displaySourceTitle != null || displaySnippet != null) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(
-                                text = "Source: \"${card.sourceSnippet}\"",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(8.dp)
-                            )
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                if (displaySourceTitle != null) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Description,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp),
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Source: $displaySourceTitle",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                                if (displaySnippet != null) {
+                                    if (displaySourceTitle != null) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                    }
+                                    Text(
+                                        text = "\"$displaySnippet\"",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -402,6 +620,13 @@ fun FlipFlashcard(
             }
         }
     }
+}
+
+private fun formatClozePrompt(rawPrompt: String): String {
+    // Replaces {{c1::hidden text}} or {{hidden text}} with [ ... ]
+    return rawPrompt
+        .replace(Regex("""\{\{c\d+::(.*?)\}\}"""), "[ ... ]")
+        .replace(Regex("""\{\{(.*?)\}\}"""), "[ ... ]")
 }
 
 @Composable

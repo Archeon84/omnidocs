@@ -25,7 +25,7 @@
         }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Roboto', 'Noto Sans', 'Noto Sans Arabic', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans CJK JP', 'Noto Sans CJK KR', 'Noto Sans Devanagari', 'Noto Sans Thai', sans-serif;
             font-size: 16px;
             line-height: 1.6;
             color: var(--color-text);
@@ -38,6 +38,7 @@
             outline: none;
             min-height: calc(100vh - 100px);
             padding: 8px;
+            unicode-bidi: plaintext;
         }
 
         #editor:empty:before {
@@ -79,7 +80,8 @@
 
         ul, ol {
             margin: 8px 0;
-            padding-left: 24px;
+            padding-inline-start: 24px;
+            padding-inline-end: 0;
         }
 
         li {
@@ -87,7 +89,7 @@
         }
 
         blockquote {
-            border-left: 3px solid var(--color-quote-border);
+            border-inline-start: 3px solid var(--color-quote-border);
             margin: 8px 0;
             padding: 8px 16px;
             background: var(--color-quote-bg);
@@ -98,7 +100,7 @@
             background: var(--color-code-bg);
             padding: 2px 6px;
             border-radius: 4px;
-            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Noto Sans Mono', monospace;
             font-size: 14px;
         }
 
@@ -146,7 +148,7 @@
         th, td {
             border: 1px solid var(--color-border);
             padding: 8px 12px;
-            text-align: left;
+            text-align: start;
         }
 
         th {
@@ -154,16 +156,34 @@
             font-weight: bold;
         }
 
+        .delete-btn {
+            display: inline-block;
+            padding: 4px 10px;
+            margin-top: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #d32f2f;
+            cursor: pointer;
+            background: #ffebee;
+            border: 1px solid #ffcdd2;
+            border-radius: 4px;
+            user-select: none;
+            transition: background 0.15s ease;
+        }
+        .delete-btn:active {
+            background: #ffcdd2;
+        }
+
         .collapsible-heading {
             cursor: pointer;
             user-select: none;
             position: relative;
-            padding-left: 20px;
+            padding-inline-start: 20px;
         }
         .collapsible-heading::before {
             content: '\25B8';
             position: absolute;
-            left: 0;
+            inset-inline-start: 0;
             transition: transform 0.2s;
             font-size: 0.8em;
         }
@@ -178,10 +198,33 @@
             max-height: 0 !important;
             opacity: 0;
         }
+
+        @keyframes citationPulse {
+            0% {
+                background-color: rgba(255, 214, 0, 0.85);
+                box-shadow: 0 0 0 3px rgba(255, 214, 0, 0.5);
+            }
+            50% {
+                background-color: rgba(255, 214, 0, 0.55);
+                box-shadow: 0 0 0 2px rgba(255, 214, 0, 0.3);
+            }
+            100% {
+                background-color: rgba(255, 214, 0, 0.35);
+                box-shadow: none;
+            }
+        }
+        .citation-highlight {
+            animation: citationPulse 2.5s ease-out forwards;
+            background-color: rgba(255, 214, 0, 0.35);
+            border-bottom: 2px solid #f57f17;
+            border-radius: 3px;
+            padding: 1px 2px;
+            display: inline;
+        }
     </style>
 </head>
 <body>
-    <div contenteditable="true" id="editor" role="textbox" aria-multiline="true" aria-label="Note content"><!-- CONTENT_PLACEHOLDER --></div>
+    <div contenteditable="true" id="editor" dir="auto" role="textbox" aria-multiline="true" aria-label="Note content"><!-- CONTENT_PLACEHOLDER --></div>
 
     <script>
         const editor = document.getElementById('editor');
@@ -200,14 +243,46 @@
         // Debounce timer for format state sync
         let formatStateTimer;
 
+        // IME composition state
+        let isComposing = false;
+        editor.addEventListener('compositionstart', function() {
+            isComposing = true;
+        });
+        editor.addEventListener('compositionend', function() {
+            isComposing = false;
+            notifyContentChanged();
+        });
+
         // Notify Android of content changes
-        editor.addEventListener('input', function() {
+        function notifyContentChanged() {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(function() {
+                if (isComposing) return;
                 if (window.Android && window.Android.onContentChanged) {
                     window.Android.onContentChanged(editor.innerHTML);
                 }
             }, 300);
+        }
+
+        editor.addEventListener('input', function() {
+            if (!isComposing) {
+                notifyContentChanged();
+            }
+        });
+
+        // Event delegation for attachment deletion
+        editor.addEventListener('click', function(e) {
+            const deleteBtn = e.target.closest('.delete-btn');
+            if (deleteBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                const attachmentId = deleteBtn.getAttribute('data-attachment-id');
+                const target = attachmentId ? document.getElementById(attachmentId) : deleteBtn.closest('.attachment');
+                if (target) {
+                    target.remove();
+                    notifyContentChanged();
+                }
+            }
         });
 
         // Notify Android of format state changes (debounced selection change)
@@ -247,10 +322,70 @@
             if (colors.hr) root.style.setProperty('--color-hr', colors.hr);
         }
 
+        // Set document language and direction
+        function setLanguage(lang, dir) {
+            if (lang) document.documentElement.setAttribute('lang', lang);
+            const resolvedDir = dir || (lang === 'ar' ? 'rtl' : 'auto');
+            document.documentElement.setAttribute('dir', resolvedDir);
+            editor.setAttribute('dir', resolvedDir);
+        }
+
         // Helper functions for formatting
         function formatText(command, value) {
             document.execCommand(command, false, value || null);
             editor.focus();
+        }
+
+        function formatHeading() {
+            editor.focus();
+            let node = window.getSelection()?.anchorNode;
+            if (node && node.nodeType === 3) node = node.parentElement;
+            let currentHeading = node ? node.closest('h1, h2, h3, p, div') : null;
+            let tag = currentHeading ? currentHeading.tagName.toLowerCase() : 'p';
+
+            let nextTag = 'h2';
+            if (tag === 'h2') nextTag = 'h3';
+            else if (tag === 'h3') nextTag = 'p';
+            else nextTag = 'h2';
+
+            try {
+                document.execCommand('formatBlock', false, '<' + nextTag + '>');
+            } catch(e) {
+                document.execCommand('formatBlock', false, nextTag);
+            }
+            initCollapsibles();
+            notifyFormatState();
+        }
+
+        function formatCode() {
+            editor.focus();
+            const sel = window.getSelection();
+            if (!sel || !sel.rangeCount) return;
+            const range = sel.getRangeAt(0);
+            let node = sel.anchorNode;
+            if (node && node.nodeType === 3) node = node.parentElement;
+            const codeParent = node ? node.closest('code, pre') : null;
+
+            if (codeParent) {
+                // Unwrap code
+                const textNode = document.createTextNode(codeParent.textContent);
+                codeParent.parentNode.replaceChild(textNode, codeParent);
+            } else if (!sel.isCollapsed) {
+                // Wrap selection in <code>
+                const text = range.toString();
+                const codeEl = document.createElement('code');
+                codeEl.textContent = text;
+                range.deleteContents();
+                range.insertNode(codeEl);
+                sel.removeAllRanges();
+                const newRange = document.createRange();
+                newRange.selectNodeContents(codeEl);
+                sel.addRange(newRange);
+            } else {
+                // Insert code snippet at cursor
+                document.execCommand('insertHTML', false, '<code>&nbsp;</code>');
+            }
+            notifyFormatState();
         }
 
         function wrapSelection(before, after) {
@@ -371,6 +506,166 @@
                 } catch(e) {}
             }
         });
+        // Remove citation highlights and clean up fragmented text nodes
+        function removeCitationHighlights() {
+            var highlights = document.querySelectorAll('.citation-highlight');
+            highlights.forEach(function(el) {
+                var parent = el.parentNode;
+                if (!parent) return;
+                while (el.firstChild) {
+                    parent.insertBefore(el.firstChild, el);
+                }
+                parent.removeChild(el);
+            });
+            if (editor) {
+                editor.normalize();
+            }
+        }
+
+        // Highlight and scroll to cited text across multi-node spans and formatting tags
+        function findAndScrollToText(searchText) {
+            if (!searchText) return;
+            removeCitationHighlights();
+
+            // 1. Gather all text nodes inside editor and compute character offsets in flat text
+            var walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
+            var textNodes = [];
+            var rawConcatenated = "";
+            var nodeOffsets = [];
+            var curr;
+            while (curr = walker.nextNode()) {
+                var val = curr.nodeValue;
+                if (!val) continue;
+                textNodes.push(curr);
+                nodeOffsets.push({
+                    node: curr,
+                    start: rawConcatenated.length,
+                    end: rawConcatenated.length + val.length
+                });
+                rawConcatenated += val;
+            }
+
+            if (nodeOffsets.length === 0 || !rawConcatenated.trim()) return;
+
+            // 2. Prepare normalized full text for searching (whitespace collapsed to single space)
+            // normToRaw maps normalized character index -> rawConcatenated character index
+            var normToRaw = [];
+            var normFullText = "";
+            var prevWasSpace = false;
+            for (var i = 0; i < rawConcatenated.length; i++) {
+                var ch = rawConcatenated[i];
+                var isSpace = /\s/.test(ch);
+                if (isSpace) {
+                    if (!prevWasSpace && normFullText.length > 0) {
+                        normToRaw.push(i);
+                        normFullText += " ";
+                        prevWasSpace = true;
+                    }
+                } else {
+                    normToRaw.push(i);
+                    normFullText += ch.toLowerCase();
+                    prevWasSpace = false;
+                }
+            }
+
+            // 3. Prepare candidate query phrases from searchText
+            // Strip markdown, quotes, ellipses, leading/trailing whitespace
+            var cleanQuery = searchText
+                .replace(/^["'«“\s]+|["'»”\s]+$/g, '')
+                .replace(/^\.{2,}|[\.]{2,}$/g, '')
+                .trim();
+
+            var candidates = [];
+            var normQuery = cleanQuery.toLowerCase().replace(/\s+/g, ' ').trim();
+            if (normQuery.length >= 10) {
+                candidates.push(normQuery.length > 150 ? normQuery.substring(0, 150).trim() : normQuery);
+            }
+
+            // Candidate B: Distinctive sentences inside the snippet
+            var sentences = cleanQuery.split(/[\n.!?]+/);
+            for (var s = 0; s < sentences.length; s++) {
+                var sent = sentences[s].toLowerCase().replace(/\s+/g, ' ').trim();
+                if (sent.length >= 20) {
+                    candidates.push(sent);
+                }
+            }
+
+            // Candidate C: Leading word sequences
+            var words = normQuery.split(' ');
+            if (words.length >= 6) {
+                candidates.push(words.slice(0, 10).join(' '));
+                candidates.push(words.slice(0, 6).join(' '));
+            }
+
+            // Fallback: full normQuery if not already present
+            if (candidates.indexOf(normQuery) === -1 && normQuery.length > 0) {
+                candidates.push(normQuery);
+            }
+
+            // 4. Find match in normalized full text
+            var matchNormStart = -1;
+            var matchNormEnd = -1;
+            for (var c = 0; c < candidates.length; c++) {
+                var cand = candidates[c];
+                if (!cand) continue;
+                var idx = normFullText.indexOf(cand);
+                if (idx !== -1) {
+                    matchNormStart = idx;
+                    matchNormEnd = idx + cand.length;
+                    break;
+                }
+            }
+
+            if (matchNormStart === -1) return;
+
+            // 5. Convert normalized match boundaries back to rawConcatenated offsets
+            var rawStart = normToRaw[matchNormStart];
+            var rawEnd = matchNormEnd < normToRaw.length ? normToRaw[matchNormEnd] : rawConcatenated.length;
+
+            // 6. Find all text nodes overlapping [rawStart, rawEnd] and wrap them safely
+            var spans = [];
+            for (var n = 0; n < nodeOffsets.length; n++) {
+                var item = nodeOffsets[n];
+                if (item.end <= rawStart || item.start >= rawEnd) {
+                    continue;
+                }
+
+                var nodeText = item.node.nodeValue;
+                var localStart = Math.max(0, rawStart - item.start);
+                var localEnd = Math.min(nodeText.length, rawEnd - item.start);
+
+                if (localStart < localEnd) {
+                    var range = document.createRange();
+                    range.setStart(item.node, localStart);
+                    range.setEnd(item.node, localEnd);
+
+                    var span = document.createElement('span');
+                    span.className = 'citation-highlight';
+                    try {
+                        range.surroundContents(span);
+                        spans.push(span);
+                    } catch(e) {
+                        try {
+                            var frag = range.extractContents();
+                            span.appendChild(frag);
+                            range.insertNode(span);
+                            spans.push(span);
+                        } catch(e2) {}
+                    }
+                }
+            }
+
+            if (spans.length > 0) {
+                var firstSpan = spans[0];
+                var collapsedParent = firstSpan.closest('.collapsible-content.collapsed');
+                if (collapsedParent) {
+                    collapsedParent.classList.remove('collapsed');
+                    var heading = collapsedParent.previousElementSibling;
+                    if (heading) heading.classList.add('expanded');
+                }
+                firstSpan.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
     </script>
 </body>
 </html>
