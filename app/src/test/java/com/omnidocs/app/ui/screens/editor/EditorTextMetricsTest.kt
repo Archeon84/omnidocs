@@ -78,4 +78,38 @@ class EditorTextMetricsTest {
         val longChinese = "字".repeat(700)
         assertEquals(2, EditorViewModel.calculateReadingTime(longChinese))
     }
+
+    @Test
+    fun testFindCitationSpanInMarkdown_exactMatch() {
+        val text = "# Architecture\nOmniDocs uses offline vector search for RAG grounding.\n\nKey features."
+        val snippet = "offline vector search for RAG grounding"
+        val range = findCitationSpanInMarkdown(text, snippet)
+        org.junit.Assert.assertNotNull(range)
+        assertEquals(snippet, text.substring(range!!.start, range.end))
+    }
+
+    @Test
+    fun testFindCitationSpanInMarkdown_cleanedQuotesAndEllipses() {
+        val text = "The application implements AES-256-GCM encryption for all stored note files."
+        val snippet = "\"...AES-256-GCM encryption for all stored note files...\""
+        val range = findCitationSpanInMarkdown(text, snippet)
+        org.junit.Assert.assertNotNull(range)
+        assertEquals("AES-256-GCM encryption for all stored note files", text.substring(range!!.start, range.end))
+    }
+
+    @Test
+    fun testFindCitationSpanInMarkdown_sentenceMatch() {
+        val text = "Introduction.\nSQLCipher provides database security.\nConclusion."
+        val snippet = "Security Overview. SQLCipher provides database security. Next steps."
+        val range = findCitationSpanInMarkdown(text, snippet)
+        org.junit.Assert.assertNotNull(range)
+        assertEquals("SQLCipher provides database security", text.substring(range!!.start, range.end))
+    }
+
+    @Test
+    fun testFindCitationSpanInMarkdown_notFound() {
+        val text = "Simple note text."
+        val range = findCitationSpanInMarkdown(text, "completely missing query snippet")
+        org.junit.Assert.assertNull(range)
+    }
 }

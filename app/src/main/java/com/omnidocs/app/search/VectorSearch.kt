@@ -7,6 +7,7 @@ import com.omnidocs.app.data.local.NoteDao
 import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.data.repository.NotesRepository
 import com.omnidocs.app.graph.Bm25Scorer
+import com.omnidocs.app.search.ann.AnnIndexManager
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -18,12 +19,31 @@ private const val TAG = "VectorSearch"
  * Falls back to BM25-only if no embeddings are available.
  */
 @Singleton
-open class VectorSearch @Inject constructor(
+open class VectorSearch(
     private val embeddingDao: EmbeddingDao,
     private val noteDao: NoteDao,
     private val embeddingService: EmbeddingService,
-    private val inferenceDispatcher: BackgroundInferenceDispatcher
+    private val inferenceDispatcher: BackgroundInferenceDispatcher,
+    private val annIndexManager: AnnIndexManager?,
+    @Suppress("UNUSED_PARAMETER") dummy: Unit?
 ) {
+    @Inject
+    constructor(
+        embeddingDao: EmbeddingDao,
+        noteDao: NoteDao,
+        embeddingService: EmbeddingService,
+        inferenceDispatcher: BackgroundInferenceDispatcher,
+        annIndexManager: AnnIndexManager
+    ) : this(embeddingDao, noteDao, embeddingService, inferenceDispatcher, annIndexManager, null)
+
+    /** Secondary constructor for tests without ANN index injected */
+    constructor(
+        embeddingDao: EmbeddingDao,
+        noteDao: NoteDao,
+        embeddingService: EmbeddingService,
+        inferenceDispatcher: BackgroundInferenceDispatcher
+    ) : this(embeddingDao, noteDao, embeddingService, inferenceDispatcher, null, null)
+
     // Guards lazy first-search reindexing so concurrent searches don't duplicate it.
     private val reindexing = AtomicBoolean(false)
 
@@ -380,24 +400,47 @@ open class VectorSearch @Inject constructor(
 
         if (allEmbeddings.isNotEmpty()) {
             val queryEmbedding = embeddingService.generateEmbedding(cleanQuery)
-            // Passage-level retrieval with MaxP scoring: track highest passage cosine per note
-            // and preserve multiple qualifying passages for multi-page/5,000-word documents.
-            for (embedding in allEmbeddings) {
-                val noteEmbedding = embeddingService.cachedVector(
-                    embedding.id, embedding.createdAt, embedding.embeddingVector
-                )
-                val score = embeddingService.cosineSimilarity(queryEmbedding, noteEmbedding)
-                if (score > cosineFloor) {
-                    val passageIdx = parsePassageIndex(embedding.id, embedding.sourceId)
-                    if (passageIdx != null) {
-                        topPassageIndicesByNote.getOrPut(embedding.sourceId) { mutableListOf() }
-                            .add(passageIdx to score)
+            if (annIndexManager != null) {
+                // Accelerate via ANN index (USearch HNSW on disk / memory)
+                if (annIndexManager.size() == 0) {
+                    annIndexManager.syncCorpus(allEmbeddings) { entity ->
+                        embeddingService.cachedVector(entity.id, entity.createdAt, entity.embeddingVector)
                     }
-                    val currentMax = topPassageScoreByNote[embedding.sourceId] ?: 0f
-                    if (score > currentMax) {
-                        topPassageScoreByNote[embedding.sourceId] = score
-                        passageIdx?.let { idx ->
-                            topPassageIndexByNote[embedding.sourceId] = idx
+                }
+                val annMatches = annIndexManager.search(
+                    query = queryEmbedding,
+                    wanted = 100,
+                    cosineFloor = cosineFloor,
+                    modelName = activeModelName
+                )
+                for (hit in annMatches) {
+                    topPassageIndicesByNote.getOrPut(hit.noteId) { mutableListOf() }
+                        .add(hit.chunkIndex to hit.similarity)
+                    val currentMax = topPassageScoreByNote[hit.noteId] ?: 0f
+                    if (hit.similarity > currentMax) {
+                        topPassageScoreByNote[hit.noteId] = hit.similarity
+                        topPassageIndexByNote[hit.noteId] = hit.chunkIndex
+                    }
+                }
+            } else {
+                // Fallback: Passage-level retrieval with MaxP scoring
+                for (embedding in allEmbeddings) {
+                    val noteEmbedding = embeddingService.cachedVector(
+                        embedding.id, embedding.createdAt, embedding.embeddingVector
+                    )
+                    val score = embeddingService.cosineSimilarity(queryEmbedding, noteEmbedding)
+                    if (score > cosineFloor) {
+                        val passageIdx = parsePassageIndex(embedding.id, embedding.sourceId)
+                        if (passageIdx != null) {
+                            topPassageIndicesByNote.getOrPut(embedding.sourceId) { mutableListOf() }
+                                .add(passageIdx to score)
+                        }
+                        val currentMax = topPassageScoreByNote[embedding.sourceId] ?: 0f
+                        if (score > currentMax) {
+                            topPassageScoreByNote[embedding.sourceId] = score
+                            passageIdx?.let { idx ->
+                                topPassageIndexByNote[embedding.sourceId] = idx
+                            }
                         }
                     }
                 }

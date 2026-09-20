@@ -14,6 +14,12 @@ interface EmbeddingDao {
     @Query("SELECT * FROM embeddings WHERE sourceType = :sourceType AND modelName = :modelName")
     suspend fun getEmbeddingsByTypeAndModel(sourceType: String, modelName: String): List<EmbeddingEntity>
 
+    @Query("SELECT * FROM embeddings WHERE sourceType = 'note' AND sourceId = :noteId AND modelName = :modelName ORDER BY chunkIndex ASC")
+    suspend fun getNotePassageEmbeddings(noteId: String, modelName: String): List<EmbeddingEntity>
+
+    @Query("SELECT * FROM embeddings WHERE sourceType = 'note' AND sourceId IN (:noteIds) AND modelName = :modelName ORDER BY chunkIndex ASC")
+    suspend fun getNotePassageEmbeddingsForNotes(noteIds: List<String>, modelName: String): List<EmbeddingEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertEmbedding(embedding: EmbeddingEntity)
 

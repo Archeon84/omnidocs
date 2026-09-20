@@ -42,6 +42,7 @@ add_subdirectory(llama.cpp)
 # Create our JNI wrapper library
 add_library(llama-android SHARED
     llama_jni.cpp
+    usearch_jni.cpp
 )
 
 # Find required libraries
@@ -56,8 +57,9 @@ target_link_libraries(llama-android
     ${log-lib}
 )
 
-# Include llama.cpp headers
+# Include headers
 target_include_directories(llama-android PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )

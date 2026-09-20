@@ -11,6 +11,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.filled.Source
 import androidx.compose.material.icons.filled.Stop
@@ -44,6 +45,7 @@ fun AskNotesScreen(
     val isDeviceWarm by viewModel.isDeviceWarm.collectAsState()
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    var selectedCitationForPreview by remember { mutableStateOf<Citation?>(null) }
 
     // Auto-scroll to the newest round as answers arrive.
     LaunchedEffect(messages.size, streamingText.length) {
@@ -122,7 +124,9 @@ fun AskNotesScreen(
                     items(messages) { msg ->
                         AskRound(
                             message = msg,
-                            onSourceClick = onSourceClick,
+                            onCitationClick = { citation ->
+                                selectedCitationForPreview = citation
+                            },
                             onRetry = { viewModel.retry(msg) },
                             onContinue = { viewModel.continueAnswer(msg) }
                         )
@@ -231,12 +235,27 @@ fun AskNotesScreen(
             }
         }
     }
+
+    selectedCitationForPreview?.let { citation ->
+        CitationPreviewBottomSheet(
+            citation = citation,
+            onJumpToNote = {
+                val targetNoteId = citation.noteId
+                val targetSnippet = citation.quoteSnippet
+                selectedCitationForPreview = null
+                onSourceClick(targetNoteId, targetSnippet)
+            },
+            onDismiss = {
+                selectedCitationForPreview = null
+            }
+        )
+    }
 }
 
 @Composable
 private fun AskRound(
     message: GroundedAskMessage,
-    onSourceClick: (noteId: String, snippet: String?) -> Unit,
+    onCitationClick: (Citation) -> Unit,
     onRetry: () -> Unit,
     onContinue: () -> Unit
 ) {
@@ -329,7 +348,7 @@ private fun AskRound(
 
                 ClickableAnswerText(
                     message = message,
-                    onSourceClick = onSourceClick
+                    onCitationClick = onCitationClick
                 )
                 if (message.ruleBased) {
                     Spacer(modifier = Modifier.height(4.dp))
@@ -370,7 +389,7 @@ private fun AskRound(
             }
         }
 
-        // Citations & Sources (tappable → open the note), ordered by first
+        // Citations & Sources (tappable → preview and open the note), ordered by first
         // mention so card numbers match the answer's [Source N] labels.
         if (message.citations.isNotEmpty()) {
             Text(
@@ -380,14 +399,14 @@ private fun AskRound(
                 fontWeight = FontWeight.SemiBold
             )
             message.citations.sortedBy { it.sourceIndex }.forEach { citation ->
-                CitationItem(citation = citation, onClick = { onSourceClick(citation.noteId, citation.quoteSnippet) })
+                CitationItem(citation = citation, onClick = { onCitationClick(citation) })
             }
         }
     }
 }
 
 internal val CITATION_INLINE_REGEX = Regex(
-    """\[(?:Sources?\s+(\d+)(?:\s*[-–]\s*(\d+))?(?::[^\]]+)?|(\d{1,2}(?:\s*,\s*\d{1,2})*))\]""",
+    """\[(?:Sources?\s*:?\s*(\d+)(?:\s*[-–]\s*(\d+))?(?::[^\]]+)?|(\d{1,2}(?:\s*,\s*\d{1,2})*))\]""",
     RegexOption.IGNORE_CASE
 )
 
@@ -455,7 +474,7 @@ internal fun buildAnnotatedAnswer(
 @Composable
 private fun ClickableAnswerText(
     message: GroundedAskMessage,
-    onSourceClick: (noteId: String, snippet: String?) -> Unit,
+    onCitationClick: (Citation) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val answer = message.answer
@@ -487,8 +506,11 @@ private fun ClickableAnswerText(
                 .firstOrNull()?.let { annotation ->
                     val parts = annotation.item.split("|||", limit = 2)
                     val noteId = parts.getOrNull(0) ?: return@let
-                    val snippet = parts.getOrNull(1)
-                    onSourceClick(noteId, snippet)
+                    val snippet = parts.getOrNull(1) ?: ""
+                    val citation = citations.find { it.noteId == noteId && (snippet.isBlank() || it.quoteSnippet == snippet) }
+                        ?: citations.find { it.noteId == noteId }
+                        ?: Citation(noteId = noteId, noteTitle = "Referenced Note", quoteSnippet = snippet, quoteHash = "")
+                    onCitationClick(citation)
                 }
         }
     )
@@ -544,6 +566,137 @@ private fun CitationItem(citation: Citation, onClick: () -> Unit) {
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CitationPreviewBottomSheet(
+    citation: Citation,
+    onJumpToNote: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Header: Source badge and Close button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = if (citation.sourceIndex > 0) "Source ${citation.sourceIndex}" else "Cited Source",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
+
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Close")
+                }
+            }
+
+            // Note Title
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Referenced Note",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = citation.noteTitle.ifBlank { "Untitled Note" },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            // Quoted Evidence Passage Card
+            if (citation.quoteSnippet.isNotBlank()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Source,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                            Text(
+                                text = "VERIFIED EVIDENCE SNIPPET",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        Text(
+                            text = "\"${citation.quoteSnippet}\"",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Deep-link Action: Jump to Note Button
+            Button(
+                onClick = onJumpToNote,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Jump to Note",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

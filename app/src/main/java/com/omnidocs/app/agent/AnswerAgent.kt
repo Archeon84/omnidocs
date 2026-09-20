@@ -125,7 +125,7 @@ internal fun parseReferencedSources(answer: String, maxSources: Int): Set<Int> {
     Regex("""\[Sources?\s+(\d+)""", RegexOption.IGNORE_CASE).findAll(answer)
         .forEach { add(it.groupValues[1].toIntOrNull() ?: 0) }
     // "Sources: 1, 3, 5" / "Sources: 2-4" / "Sources 1 and 3"
-    Regex("""\bSources?\s*:?\s*([0-9,\s\-–and]+)""", RegexOption.IGNORE_CASE).findAll(answer)
+    Regex("""\bSources?\s*:?\s*(\d+[\d,\s\-–and]*)""", RegexOption.IGNORE_CASE).findAll(answer)
         .forEach { m ->
             m.groupValues[1].split(Regex("[,\\s]+")).forEach { tok ->
                 val range = Regex("""^(\d+)\s*[-–]\s*(\d+)$""").find(tok)
@@ -138,9 +138,13 @@ internal fun parseReferencedSources(answer: String, maxSources: Int): Set<Int> {
                 }
             }
         }
-    // Bare "[3]"
-    Regex("""\[(\d{1,2})\]""").findAll(answer)
-        .forEach { add(it.groupValues[1].toIntOrNull() ?: 0) }
+    // Bare "[3]" or comma list "[1, 2]"
+    Regex("""\[(\d{1,2}(?:\s*,\s*\d{1,2})*)\]""").findAll(answer)
+        .forEach { m ->
+            m.groupValues[1].split(',').forEach { tok ->
+                add(tok.trim().toIntOrNull() ?: 0)
+            }
+        }
 
     return found
 }
@@ -152,7 +156,7 @@ data class Citation(
     val startOffset: Int? = null,
     val endOffset: Int? = null,
     val quoteSnippet: String,
-    val quoteHash: String,
+    val quoteHash: String = "",
     /** Retrieval score carried at build time (never re-indexed). */
     val score: Double = 0.0,
     /** 1-based [Source N] number as shown to the model. */

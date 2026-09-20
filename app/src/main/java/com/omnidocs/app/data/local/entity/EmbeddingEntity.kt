@@ -21,7 +21,12 @@ data class EmbeddingEntity(
     val chunkHash: String,
     val modelName: String,
     val embeddingVector: ByteArray,
-    val createdAt: Long
+    val createdAt: Long,
+    val chunkText: String = "",
+    val sectionHeader: String? = null,
+    val startOffset: Int = 0,
+    val endOffset: Int = 0,
+    val chunkIndex: Int = 0
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

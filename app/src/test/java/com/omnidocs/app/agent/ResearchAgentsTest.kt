@@ -286,10 +286,43 @@ class ResearchAgentsTest {
             parseReferencedSources("Sources: 1, 3, 5 cover the schema.", 6)
         )
         assertEquals(setOf(2), parseReferencedSources("See [2] for details.", 6))
+        assertEquals(setOf(1, 2), parseReferencedSources("Details in [1, 2].", 6))
         // Out-of-range refs are dropped for citation filtering but kept for
         // the verifier (called with Int.MAX_VALUE) to flag as dangling.
         assertEquals(setOf(9), parseReferencedSources("Based on [Source 9].", Int.MAX_VALUE))
         assertEquals(setOf<Int>(), parseReferencedSources("No citations here.", 6))
+    }
+
+    @Test
+    fun `verification agent verifies numeric and ranged citation formats`() = runTest {
+        val verifier = VerificationAgent()
+        val answer = "The database migration from version 10 to 11 adds source documents [1, 2]."
+        val citations = listOf(
+            Citation(
+                noteId = "note_1",
+                noteTitle = "Architecture Spec",
+                quoteSnippet = "database migration from version 10 to 11",
+                quoteHash = "hash123",
+                sourceIndex = 1
+            ),
+            Citation(
+                noteId = "note_2",
+                noteTitle = "Document Schema",
+                quoteSnippet = "adds source documents and metadata tables",
+                quoteHash = "hash456",
+                sourceIndex = 2
+            )
+        )
+
+        val report = verifier.verify(
+            answer = answer,
+            citations = citations,
+            initialConfidence = "HIGH"
+        )
+
+        assertTrue("Expected verified=true for bracketed numeric citations [1, 2]", report.isVerified)
+        assertEquals("HIGH", report.finalConfidence)
+        assertEquals(1.0f, report.citationCoverage, 0.01f)
     }
 
     @Test

@@ -161,7 +161,7 @@ class VerificationAgent @Inject constructor() : Agent {
                 unsupported.add("Reference [Source $n] has no matching emitted citation")
                 continue
             }
-            val carrierSentences = sentences.filter { Regex("""\[Sources?\s+$n\b[^\]]*\]""", RegexOption.IGNORE_CASE).containsMatchIn(it) }
+            val carrierSentences = sentences.filter { parseReferencedSources(it, Int.MAX_VALUE).contains(n) }
             val unsupportedCarrierSentences = carrierSentences.filter { !isSupportedBy(it, n, citation) }
             if (unsupportedCarrierSentences.isNotEmpty()) {
                 unsupported.add("${citation.noteTitle}: ${unsupportedCarrierSentences.size} claim(s) citing [Source $n] share no supporting evidence")
@@ -242,16 +242,24 @@ class VerificationAgent @Inject constructor() : Agent {
      * Note title alone never passes without supporting content evidence.
      * Supports CJK fullwidth sentence terminators and ideographic n-gram matching.
      */
+    private val citationMarkerRegex = Regex(
+        """\[(?:Sources?\s+\d+[^\]]*|\d+(?:\s*,\s*\d+)*)\]|\bSources?\s*:?\s*\d+[\d,\s\-–and]*""",
+        RegexOption.IGNORE_CASE
+    )
+
     private fun isSupportedBy(answer: String, sourceIndex: Int, citation: Citation): Boolean {
         if (citation.quoteSnippet.isBlank()) return false
-        val labelPattern = Regex("""\[Source\s+$sourceIndex\b[^\]]*\]""")
         val carrierSentences = answer.split(Regex("(?<=[.!?。！？])\\s*"))
-            .filter { labelPattern.containsMatchIn(it) }
-        if (carrierSentences.isEmpty()) return false
-        val carrierText = carrierSentences.joinToString(" ") { labelPattern.replace(it, " ") }
+            .filter { parseReferencedSources(it, Int.MAX_VALUE).contains(sourceIndex) }
+        val carrierText = if (carrierSentences.isNotEmpty()) {
+            carrierSentences.joinToString(" ")
+        } else {
+            answer
+        }
+        val cleanCarrierText = citationMarkerRegex.replace(carrierText, " ")
 
         val snippetTerms = Tokenizer.tokenize(citation.quoteSnippet).toSet()
-        val carrierTerms = Tokenizer.tokenize(carrierText).toSet()
+        val carrierTerms = Tokenizer.tokenize(cleanCarrierText).toSet()
         if (snippetTerms.isNotEmpty() && carrierTerms.isNotEmpty()) {
             val sharedTerms = snippetTerms.intersect(carrierTerms)
             if (sharedTerms.size >= 2) return true
@@ -262,7 +270,7 @@ class VerificationAgent @Inject constructor() : Agent {
         }
 
         // CJK character n-gram entailment fallback for unspaced ideographic text
-        if (Tokenizer.isCjk(citation.quoteSnippet) || Tokenizer.isCjk(carrierText)) {
+        if (Tokenizer.isCjk(citation.quoteSnippet) || Tokenizer.isCjk(cleanCarrierText)) {
             val cleanCarrier = carrierText.filter { Tokenizer.isCjk(it.toString()) }
             val cleanSnippet = citation.quoteSnippet.filter { Tokenizer.isCjk(it.toString()) }
             if (cleanCarrier.length >= 2 && cleanSnippet.length >= 2) {

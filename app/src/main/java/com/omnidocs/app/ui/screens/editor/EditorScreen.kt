@@ -48,8 +48,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -1649,6 +1651,48 @@ fun RichTextEditor(
     )
 }
 
+/**
+ * Locates the start and end character offsets of a cited snippet in markdown text.
+ * Matches exact snippet, cleaned quotes/ellipses, distinctive sentences, or leading words.
+ */
+internal fun findCitationSpanInMarkdown(text: String, highlight: String): TextRange? {
+    if (highlight.isBlank() || text.isBlank()) return null
+
+    // 1. Direct exact match
+    val direct = text.indexOf(highlight, ignoreCase = true)
+    if (direct != -1) return TextRange(direct, direct + highlight.length)
+
+    // 2. Cleaned snippet (strip leading/trailing quotes, ellipses, whitespace)
+    val clean = highlight
+        .replace(Regex("""^["'«“\s]+|["'»”\s]+$"""), "")
+        .replace(Regex("""^\.{2,}|[\.]{2,}$"""), "")
+        .trim()
+    if (clean.length >= 6) {
+        val cleanIdx = text.indexOf(clean, ignoreCase = true)
+        if (cleanIdx != -1) return TextRange(cleanIdx, cleanIdx + clean.length)
+    }
+
+    // 3. Match distinctive sentences (>= 15 characters)
+    val sentences = clean.split(Regex("""[\n.!?]+"""))
+    for (sentence in sentences) {
+        val s = sentence.trim()
+        if (s.length >= 15) {
+            val sIdx = text.indexOf(s, ignoreCase = true)
+            if (sIdx != -1) return TextRange(sIdx, sIdx + s.length)
+        }
+    }
+
+    // 4. Match leading 6 words
+    val words = clean.split(Regex("""\s+""")).filter { it.isNotBlank() }
+    if (words.size >= 4) {
+        val leadingWords = words.take(6).joinToString(" ")
+        val leadIdx = text.indexOf(leadingWords, ignoreCase = true)
+        if (leadIdx != -1) return TextRange(leadIdx, leadIdx + leadingWords.length)
+    }
+
+    return null
+}
+
 /** Monospace plain-text markdown source editor used in MARKDOWN mode. */
 @Composable
 private fun MarkdownEditor(
@@ -1658,39 +1702,71 @@ private fun MarkdownEditor(
     modifier: Modifier = Modifier
 ) {
     val fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-    var textFieldValue by remember(text, highlightText) {
-        val selection = if (!highlightText.isNullOrBlank()) {
-            val idx = text.indexOf(highlightText, ignoreCase = true)
-            if (idx != -1) {
-                androidx.compose.ui.text.TextRange(idx, idx + highlightText.length)
-            } else {
-                val words = highlightText.trim().split(Regex("""\s+""")).take(6).joinToString(" ")
-                val wordIdx = if (words.isNotBlank()) text.indexOf(words, ignoreCase = true) else -1
-                if (wordIdx != -1) androidx.compose.ui.text.TextRange(wordIdx, wordIdx + words.length)
-                else androidx.compose.ui.text.TextRange(text.length)
-            }
-        } else {
-            androidx.compose.ui.text.TextRange(text.length)
-        }
-        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(text = text, selection = selection))
+    val scrollState = rememberScrollState()
+
+    var textFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = text,
+                selection = TextRange(text.length)
+            )
+        )
     }
 
-    OutlinedTextField(
-        value = textFieldValue,
-        onValueChange = {
-            textFieldValue = it
-            if (it.text != text) onTextChange(it.text)
-        },
+    // Keep external text changes in sync (e.g. initial note load or mode switch)
+    LaunchedEffect(text) {
+        if (text != textFieldValue.text) {
+            textFieldValue = textFieldValue.copy(text = text)
+        }
+    }
+
+    // When highlightText is set or changes, locate character offset, select span, and scroll to line
+    LaunchedEffect(highlightText, text, scrollState.maxValue) {
+        if (!highlightText.isNullOrBlank() && text.isNotBlank()) {
+            val range = findCitationSpanInMarkdown(text, highlightText)
+            if (range != null) {
+                textFieldValue = textFieldValue.copy(selection = range)
+
+                // Calculate line number in markdownText and scroll the ScrollState to that line
+                val lineNumber = text.take(range.start).count { it == '\n' }
+                val totalLines = maxOf(1, text.count { it == '\n' } + 1)
+
+                if (scrollState.maxValue > 0) {
+                    val visibleLine = maxOf(0, lineNumber - 1)
+                    val targetY = (scrollState.maxValue * (visibleLine.toFloat() / totalLines)).toInt()
+                    scrollState.animateScrollTo(targetY.coerceIn(0, scrollState.maxValue))
+                }
+            }
+        } else if (highlightText == null && textFieldValue.selection.length > 0) {
+            // Collapse selection if highlight was dismissed
+            textFieldValue = textFieldValue.copy(
+                selection = TextRange(textFieldValue.selection.end)
+            )
+        }
+    }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = fontFamily),
-        placeholder = { Text("Write in markdown...") },
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.outline,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            .verticalScroll(scrollState)
+    ) {
+        OutlinedTextField(
+            value = textFieldValue,
+            onValueChange = {
+                textFieldValue = it
+                if (it.text != text) onTextChange(it.text)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = fontFamily),
+            placeholder = { Text("Write in markdown...") },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.outline,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            )
         )
-    )
+    }
 }
 
 /** Read-only rendered markdown preview used in PREVIEW mode. Reuses the

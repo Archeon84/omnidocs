@@ -3,10 +3,12 @@ package com.omnidocs.app.agent
 import com.omnidocs.app.ai.NoteBlockAdapter
 import com.omnidocs.app.ai.SmartSnippetExtractor
 import com.omnidocs.app.data.local.ContentBlockDao
+import com.omnidocs.app.data.local.EmbeddingDao
 import com.omnidocs.app.data.local.NoteDao
 import com.omnidocs.app.data.local.NoteLinkDao
 import com.omnidocs.app.data.local.entity.ContentBlockEntity
 import com.omnidocs.app.data.repository.NotesRepository
+import com.omnidocs.app.search.EmbeddingService
 import com.omnidocs.app.search.Tokenizer
 import com.omnidocs.app.search.VectorSearch
 import com.omnidocs.app.search.VectorSearch.SearchResult
@@ -33,15 +35,50 @@ data class EvidenceCandidate(
  * augmented with Graph RAG 1-hop link neighborhood expansion across the knowledge graph.
  */
 @Singleton
-class RetrievalAgent @Inject constructor(
+class RetrievalAgent(
     private val vectorSearch: VectorSearch,
     private val noteDao: NoteDao,
     private val contentBlockDao: ContentBlockDao,
     private val smartSnippetExtractor: SmartSnippetExtractor,
     private val vocabularyDictionaryService: VocabularyDictionaryService,
     private val noteBlockAdapter: NoteBlockAdapter,
-    private val noteLinkDao: NoteLinkDao
+    private val noteLinkDao: NoteLinkDao,
+    private val embeddingDao: EmbeddingDao?,
+    private val embeddingService: EmbeddingService?,
+    @Suppress("UNUSED_PARAMETER") dummy: Unit?
 ) : Agent {
+
+    @Inject
+    constructor(
+        vectorSearch: VectorSearch,
+        noteDao: NoteDao,
+        contentBlockDao: ContentBlockDao,
+        smartSnippetExtractor: SmartSnippetExtractor,
+        vocabularyDictionaryService: VocabularyDictionaryService,
+        noteBlockAdapter: NoteBlockAdapter,
+        noteLinkDao: NoteLinkDao,
+        embeddingDao: EmbeddingDao,
+        embeddingService: EmbeddingService
+    ) : this(
+        vectorSearch, noteDao, contentBlockDao, smartSnippetExtractor,
+        vocabularyDictionaryService, noteBlockAdapter, noteLinkDao,
+        embeddingDao, embeddingService, null
+    )
+
+    /** Secondary constructor for tests without embeddingDao (7 parameters) */
+    constructor(
+        vectorSearch: VectorSearch,
+        noteDao: NoteDao,
+        contentBlockDao: ContentBlockDao,
+        smartSnippetExtractor: SmartSnippetExtractor,
+        vocabularyDictionaryService: VocabularyDictionaryService,
+        noteBlockAdapter: NoteBlockAdapter,
+        noteLinkDao: NoteLinkDao
+    ) : this(
+        vectorSearch, noteDao, contentBlockDao, smartSnippetExtractor,
+        vocabularyDictionaryService, noteBlockAdapter, noteLinkDao,
+        null, null, null
+    )
 
     override val id: String = "agent_retrieval"
 
@@ -172,10 +209,6 @@ class RetrievalAgent @Inject constructor(
             if (blockHits == 0) {
                 // Passage-level linking: extract qualifying passage chunks (up to 3 for long/5,000-word notes)
                 val canonicalText = NotesRepository.canonicalChunkText(note)
-                val segments = if (canonicalText.isNotBlank()) {
-                    noteBlockAdapter.chunkText(note.id, note.title, canonicalText)
-                } else null
-
                 val passageIndices = if (result.topPassageIndices.isNotEmpty()) {
                     result.topPassageIndices.take(3)
                 } else {
@@ -183,33 +216,71 @@ class RetrievalAgent @Inject constructor(
                 }
 
                 var extractedPassageCount = 0
-                if (segments != null && passageIndices.isNotEmpty()) {
-                    for (pIdx in passageIndices) {
-                        if (pIdx in segments.indices) {
-                            val matchedSegment = segments[pIdx]
-                            if (matchedSegment.content.isNotBlank()) {
-                                val expandedText = if (canonicalText.isNotBlank()) {
-                                    noteBlockAdapter.expandToParentContext(matchedSegment, canonicalText, maxChars = 2400)
-                                } else matchedSegment.content
+                if (passageIndices.isNotEmpty()) {
+                    // Fast path: retrieve persisted chunk metadata directly without re-chunking
+                    val activeModel = try { (embeddingService as EmbeddingService?)?.activeModelName() ?: "" } catch (e: Throwable) { "" }
+                    val storedChunks = if (activeModel.isNotBlank()) {
+                        try {
+                            (embeddingDao as EmbeddingDao?)?.getNotePassageEmbeddings(note.id, activeModel) ?: emptyList()
+                        } catch (e: Throwable) {
+                            emptyList()
+                        }
+                    } else emptyList()
 
-                                val titleWithSection = if (!matchedSegment.headerContext.isNullOrBlank()) {
-                                    "${note.title} > ${matchedSegment.headerContext}"
+                    val hasValidStoredChunks = storedChunks.isNotEmpty() && storedChunks.any { it.chunkText.isNotBlank() }
+
+                    if (hasValidStoredChunks) {
+                        val chunksByIndex = storedChunks.associateBy { it.chunkIndex }
+                        for (pIdx in passageIndices) {
+                            val chunk = chunksByIndex[pIdx] ?: continue
+                            if (chunk.chunkText.isNotBlank()) {
+                                val titleWithSection = if (!chunk.sectionHeader.isNullOrBlank()) {
+                                    "${note.title} > ${chunk.sectionHeader}"
                                 } else {
                                     note.title
                                 }
-
                                 candidates.add(
                                     EvidenceCandidate(
                                         noteId = note.id,
                                         noteTitle = titleWithSection,
-                                        text = expandedText,
+                                        text = chunk.chunkText,
                                         blockId = null,
-                                        startOffset = matchedSegment.startOffset,
-                                        endOffset = matchedSegment.endOffset,
+                                        startOffset = chunk.startOffset,
+                                        endOffset = chunk.endOffset,
                                         score = result.rawScore
                                     )
                                 )
                                 extractedPassageCount++
+                            }
+                        }
+                    }
+
+                    // Fallback to on-the-fly chunking if no stored chunk text available
+                    if (extractedPassageCount == 0 && canonicalText.isNotBlank()) {
+                        val segments = noteBlockAdapter.chunkText(note.id, note.title, canonicalText)
+                        for (pIdx in passageIndices) {
+                            if (pIdx in segments.indices) {
+                                val matchedSegment = segments[pIdx]
+                                if (matchedSegment.content.isNotBlank()) {
+                                    val expandedText = noteBlockAdapter.expandToParentContext(matchedSegment, canonicalText, maxChars = 2400)
+                                    val titleWithSection = if (!matchedSegment.headerContext.isNullOrBlank()) {
+                                        "${note.title} > ${matchedSegment.headerContext}"
+                                    } else {
+                                        note.title
+                                    }
+                                    candidates.add(
+                                        EvidenceCandidate(
+                                            noteId = note.id,
+                                            noteTitle = titleWithSection,
+                                            text = expandedText,
+                                            blockId = null,
+                                            startOffset = matchedSegment.startOffset,
+                                            endOffset = matchedSegment.endOffset,
+                                            score = result.rawScore
+                                        )
+                                    )
+                                    extractedPassageCount++
+                                }
                             }
                         }
                     }

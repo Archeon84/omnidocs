@@ -122,7 +122,12 @@ class EmbeddingService @Inject constructor(
                     chunkHash = hash,
                     modelName = resolvedModel,
                     embeddingVector = serializeVector(vector),
-                    createdAt = System.currentTimeMillis()
+                    createdAt = System.currentTimeMillis(),
+                    chunkText = segment.content,
+                    sectionHeader = segment.headerContext,
+                    startOffset = segment.startOffset,
+                    endOffset = segment.endOffset,
+                    chunkIndex = index
                 )
             )
         }
@@ -191,7 +196,12 @@ class EmbeddingService @Inject constructor(
             chunkHash = text.hashCode().toString(),
             modelName = usedModelName,
             embeddingVector = serializeVector(vector),
-            createdAt = System.currentTimeMillis()
+            createdAt = System.currentTimeMillis(),
+            chunkText = text,
+            sectionHeader = null,
+            startOffset = 0,
+            endOffset = text.length,
+            chunkIndex = 0
         )
 
         embeddingDao.insertEmbedding(entity)
