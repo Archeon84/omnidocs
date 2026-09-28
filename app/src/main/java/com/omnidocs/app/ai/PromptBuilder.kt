@@ -7,7 +7,8 @@ package com.omnidocs.app.ai
 enum class PromptFormat {
     CHATML,
     LLAMA3,
-    PHI4
+    PHI4,
+    GEMMA
 }
 
 object PromptBuilder {
@@ -31,6 +32,7 @@ object PromptBuilder {
             PromptFormat.CHATML -> buildChatML(systemPrompt, userPrompt, forceNoThink)
             PromptFormat.LLAMA3 -> buildLlama3(systemPrompt, userPrompt)
             PromptFormat.PHI4 -> buildPhi4(systemPrompt, userPrompt)
+            PromptFormat.GEMMA -> buildGemma(systemPrompt, userPrompt)
         }
     }
 
@@ -59,6 +61,17 @@ object PromptBuilder {
                "<|user|>" + NL +
                userPrompt + "<|end|>" + NL +
                "<|assistant|>" + NL
+    }
+
+    private fun buildGemma(systemPrompt: String, userPrompt: String): String {
+        val combinedUser = if (systemPrompt.isNotBlank()) {
+            systemPrompt + NL2 + userPrompt
+        } else {
+            userPrompt
+        }
+        return "<start_of_turn>user" + NL +
+               combinedUser + "<end_of_turn>" + NL +
+               "<start_of_turn>model" + NL
     }
 
     private val NL = "\n"

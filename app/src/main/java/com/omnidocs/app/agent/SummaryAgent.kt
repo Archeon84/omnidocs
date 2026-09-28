@@ -1,6 +1,7 @@
 package com.omnidocs.app.agent
 
 import com.omnidocs.app.ai.LlamaCppService
+import com.omnidocs.app.ai.LongDocumentSynthesizer
 import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelPreferences
 import com.omnidocs.app.ai.resolveActiveModel
@@ -10,12 +11,14 @@ import javax.inject.Singleton
 /**
  * Agent responsible for generating structured summaries, key decisions,
  * and highlights from meetings, notes, and imported documents.
+ * Seamlessly handles 5,000+ word notes via Hierarchical Map-Reduce.
  */
 @Singleton
 class SummaryAgent @Inject constructor(
     private val llamaCppService: LlamaCppService,
     private val modelPreferences: ModelPreferences,
-    private val modelDownloadManager: ModelDownloadManager
+    private val modelDownloadManager: ModelDownloadManager,
+    private val longDocumentSynthesizer: LongDocumentSynthesizer? = null
 ) : Agent {
 
     override val id: String = "agent_summary"
@@ -43,23 +46,13 @@ class SummaryAgent @Inject constructor(
     }
 
     suspend fun generateSummary(title: String, text: String): String {
-        if (text.length in 50..5000) {
+        if (text.length >= 50) {
             val model = resolveActiveModel(modelPreferences, modelDownloadManager)
-            if (model != null) {
+            if (model != null && longDocumentSynthesizer != null) {
                 try {
-                    val prompt = """Summarize the following document into 3 clear sections:
-1. Overview
-2. Key Discussion & Decisions
-3. Action Items
-
-Title: $title
-Content:
-${text.take(2000)}
-
-Summary:"""
-                    val result = llamaCppService.generate(prompt, maxTokens = 400)
-                    if (!result.isNullOrBlank()) {
-                        return result.trim()
+                    val synthesized = longDocumentSynthesizer.summarizeDocument(title, text)
+                    if (!synthesized.isNullOrBlank()) {
+                        return synthesized.trim()
                     }
                 } catch (e: Exception) {
                     // Fallback to extractive summary

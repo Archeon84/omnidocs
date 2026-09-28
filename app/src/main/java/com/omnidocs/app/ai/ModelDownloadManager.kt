@@ -119,47 +119,23 @@ class ModelDownloadManager @Inject constructor(
 
     val availableModels = listOf(
         ModelInfo(
-            id = "qwen3.5_2b",
-            name = "Qwen3.5 2B (Default)",
-            description = "Default balanced model for on-device RAG Q&A, summarization, and note intelligence.",
-            size = "1.28 GB",
-            downloadUrl = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
-            fileName = "Qwen3.5-2B-Q4_K_M.gguf",
-            promptFormat = PromptFormat.CHATML,
-            addBos = false,
-            // Device-proven (2026-09-07 logcat): emits <think> blocks without
-            // the hint, burning the token budget on reasoning (200s/5k-char
-            // thinking traces, blank answers after filtering). Keep /no_think.
-            isThinkingModel = true
-        ),
-        ModelInfo(
-            id = "phi4_mini_3.8b",
-            name = "Phi-4 mini 3.8B (Pro)",
-            description = "Pro on-device model with state-of-the-art math, code and complex factual reasoning.",
-            size = "2.49 GB",
-            downloadUrl = "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf",
-            fileName = "Phi-4-mini-instruct-Q4_K_M.gguf",
-            promptFormat = PromptFormat.PHI4,
+            id = "gemma_4_e2b",
+            name = "Gemma 4 E2B (Default)",
+            description = "Google's lightweight on-device model for text note intelligence, fast RAG Q&A, and auto-tagging.",
+            size = "~1.1 GB",
+            downloadUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
+            fileName = "gemma-4-E2B-it.litertlm",
+            promptFormat = PromptFormat.GEMMA,
             addBos = false
         ),
         ModelInfo(
-            id = "qwen2.5_1.5b",
-            name = "Qwen2.5 1.5B (Light)",
-            description = "Balanced lightweight model for fast on-device RAG Q&A, summarization, and proofreading.",
-            size = "1.11 GB",
-            downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            fileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            promptFormat = PromptFormat.CHATML,
-            addBos = false
-        ),
-        ModelInfo(
-            id = "qwen2.5_0.5b",
-            name = "Qwen2.5 0.5B (Compact)",
-            description = "Smallest and fastest model. Great for quick tasks on lower-end devices.",
-            size = "491 MB",
-            downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            fileName = "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            promptFormat = PromptFormat.CHATML,
+            id = "gemma_4_e4b",
+            name = "Gemma 4 E4B (Pro)",
+            description = "High-capacity reasoning model from Google for complex syntheses, multi-document research, and deep analysis.",
+            size = "~3.2 GB",
+            downloadUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
+            fileName = "gemma-4-E4B-it.litertlm",
+            promptFormat = PromptFormat.GEMMA,
             addBos = false
         )
     )

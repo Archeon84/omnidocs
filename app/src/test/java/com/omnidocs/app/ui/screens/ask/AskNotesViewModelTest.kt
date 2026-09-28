@@ -2,6 +2,7 @@ package com.omnidocs.app.ui.screens.ask
 
 import com.omnidocs.app.agent.Citation
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -167,4 +168,54 @@ class AskNotesViewModelTest {
         assertTrue(annotated.text.contains("[TODO]"))
         assertTrue(annotated.text.contains("[random bracket]"))
     }
+
+    @Test
+    fun `buildAnnotatedAnswer formats markdown headings and bullets with citations`() {
+        val citations = listOf(
+            Citation(
+                noteId = "note_arch",
+                noteTitle = "Architecture",
+                quoteSnippet = "HNSW index provides sub-millisecond search.",
+                quoteHash = "h1",
+                sourceIndex = 1
+            )
+        )
+        val answer = """
+            ### Architecture Overview [Source 1]
+            - **Vector Index**: Uses USearch HNSW [Source 1]
+            - **Storage**: Persisted to disk with `.usearch` files
+        """.trimIndent()
+
+        val annotated = buildAnnotatedAnswer(
+            answer = answer,
+            citations = citations,
+            primaryColor = androidx.compose.ui.graphics.Color.Blue,
+            containerColor = androidx.compose.ui.graphics.Color.LightGray,
+            headingColor = androidx.compose.ui.graphics.Color.Red,
+            bulletColor = androidx.compose.ui.graphics.Color.Green
+        )
+
+        // Verifies headings stripped the ### prefix
+        assertTrue(annotated.text.contains("Architecture Overview"))
+        assertFalse(annotated.text.contains("###"))
+
+        // Verifies bullet list replaced - with bullet glyph
+        assertTrue(annotated.text.contains("• Vector Index"))
+        assertTrue(annotated.text.contains("• Storage"))
+
+        // Verifies bold content stripped asterisks and preserved text
+        assertTrue(annotated.text.contains("Vector Index"))
+        assertFalse(annotated.text.contains("**Vector Index**"))
+
+        // Verifies inline code preserved text without backticks
+        assertTrue(annotated.text.contains(".usearch"))
+        assertFalse(annotated.text.contains("`.usearch`"))
+
+        // Verifies both citations were tagged
+        val annotations = annotated.getStringAnnotations(tag = "CITATION", start = 0, end = annotated.length)
+        assertEquals(2, annotations.size)
+        assertEquals("note_arch|||HNSW index provides sub-millisecond search.", annotations[0].item)
+        assertEquals("note_arch|||HNSW index provides sub-millisecond search.", annotations[1].item)
+    }
 }
+

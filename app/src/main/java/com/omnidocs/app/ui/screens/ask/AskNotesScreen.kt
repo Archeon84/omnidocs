@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextAlign
@@ -410,42 +412,196 @@ internal val CITATION_INLINE_REGEX = Regex(
     RegexOption.IGNORE_CASE
 )
 
+private sealed class AnswerInlineToken(val start: Int, val end: Int) {
+    class CitationToken(
+        start: Int,
+        end: Int,
+        val citation: Citation,
+        val text: String
+    ) : AnswerInlineToken(start, end)
+
+    class BoldToken(
+        start: Int,
+        end: Int,
+        val content: String
+    ) : AnswerInlineToken(start, end)
+
+    class CodeToken(
+        start: Int,
+        end: Int,
+        val content: String
+    ) : AnswerInlineToken(start, end)
+
+    class ItalicToken(
+        start: Int,
+        end: Int,
+        val content: String
+    ) : AnswerInlineToken(start, end)
+}
+
 internal fun buildAnnotatedAnswer(
     answer: String,
     citations: List<Citation>,
     primaryColor: androidx.compose.ui.graphics.Color,
-    containerColor: androidx.compose.ui.graphics.Color
+    containerColor: androidx.compose.ui.graphics.Color,
+    headingColor: androidx.compose.ui.graphics.Color = primaryColor,
+    bulletColor: androidx.compose.ui.graphics.Color = primaryColor
 ): AnnotatedString {
     return buildAnnotatedString {
-        var lastIdx = 0
-        CITATION_INLINE_REGEX.findAll(answer).forEach { match ->
-            if (match.range.first > lastIdx) {
-                append(answer.substring(lastIdx, match.range.first))
+        val lines = answer.split('\n')
+        for ((lineIdx, rawLine) in lines.withIndex()) {
+            if (lineIdx > 0) {
+                append("\n")
             }
 
-            val g1 = match.groups[1]?.value?.toIntOrNull()
-            val g2 = match.groups[2]?.value?.toIntOrNull()
-            val g3 = match.groups[3]?.value
-
-            val indices = when {
-                g1 != null && g2 != null -> (g1..g2).toList()
-                g1 != null -> listOf(g1)
-                g3 != null -> g3.split(',').mapNotNull { it.trim().toIntOrNull() }
-                else -> emptyList()
+            val trimmed = rawLine.trimStart()
+            when {
+                trimmed.startsWith("### ") -> {
+                    val headingText = trimmed.removePrefix("### ").trim()
+                    pushStyle(
+                        SpanStyle(
+                            color = headingColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                    )
+                    renderLineTokens(headingText, citations, primaryColor, containerColor)
+                    pop()
+                }
+                trimmed.startsWith("## ") -> {
+                    val headingText = trimmed.removePrefix("## ").trim()
+                    pushStyle(
+                        SpanStyle(
+                            color = headingColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    )
+                    renderLineTokens(headingText, citations, primaryColor, containerColor)
+                    pop()
+                }
+                trimmed.startsWith("# ") -> {
+                    val headingText = trimmed.removePrefix("# ").trim()
+                    pushStyle(
+                        SpanStyle(
+                            color = headingColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp
+                        )
+                    )
+                    renderLineTokens(headingText, citations, primaryColor, containerColor)
+                    pop()
+                }
+                trimmed.startsWith("> ") -> {
+                    val quoteText = trimmed.removePrefix("> ").trim()
+                    pushStyle(SpanStyle(color = bulletColor, fontWeight = FontWeight.Bold))
+                    append("▍ ")
+                    pop()
+                    pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
+                    renderLineTokens(quoteText, citations, primaryColor, containerColor)
+                    pop()
+                }
+                trimmed.matches(Regex("""^[-*+]\s+.*""")) -> {
+                    val bulletMatch = Regex("""^[-*+]\s+""").find(trimmed)!!
+                    val bulletContent = trimmed.substring(bulletMatch.range.last + 1)
+                    pushStyle(SpanStyle(color = bulletColor, fontWeight = FontWeight.Bold))
+                    append("  • ")
+                    pop()
+                    renderLineTokens(bulletContent, citations, primaryColor, containerColor)
+                }
+                trimmed.matches(Regex("""^(\d+\.)\s+.*""")) -> {
+                    val numMatch = Regex("""^(\d+\.)\s+""").find(trimmed)!!
+                    val numStr = numMatch.groupValues[1]
+                    val numContent = trimmed.substring(numMatch.range.last + 1)
+                    pushStyle(SpanStyle(color = bulletColor, fontWeight = FontWeight.Bold))
+                    append("  $numStr ")
+                    pop()
+                    renderLineTokens(numContent, citations, primaryColor, containerColor)
+                }
+                else -> {
+                    renderLineTokens(rawLine, citations, primaryColor, containerColor)
+                }
             }
+        }
+    }
+}
 
-            val matchedCitations = indices.mapNotNull { idx ->
-                citations.find { it.sourceIndex == idx }
-                    ?: citations.getOrNull(idx - 1)
-            }
+private fun AnnotatedString.Builder.renderLineTokens(
+    line: String,
+    citations: List<Citation>,
+    primaryColor: androidx.compose.ui.graphics.Color,
+    containerColor: androidx.compose.ui.graphics.Color
+) {
+    val tokens = mutableListOf<AnswerInlineToken>()
 
-            if (matchedCitations.isNotEmpty()) {
-                val primaryCitation = matchedCitations.first()
-                val displayText = match.value
+    // 1. Citations
+    CITATION_INLINE_REGEX.findAll(line).forEach { match ->
+        val g1 = match.groups[1]?.value?.toIntOrNull()
+        val g2 = match.groups[2]?.value?.toIntOrNull()
+        val g3 = match.groups[3]?.value
 
+        val indices = when {
+            g1 != null && g2 != null -> (g1..g2).toList()
+            g1 != null -> listOf(g1)
+            g3 != null -> g3.split(',').mapNotNull { it.trim().toIntOrNull() }
+            else -> emptyList()
+        }
+
+        val matchedCitations = indices.mapNotNull { idx ->
+            citations.find { it.sourceIndex == idx } ?: citations.getOrNull(idx - 1)
+        }
+
+        if (matchedCitations.isNotEmpty()) {
+            tokens.add(
+                AnswerInlineToken.CitationToken(
+                    start = match.range.first,
+                    end = match.range.last + 1,
+                    citation = matchedCitations.first(),
+                    text = match.value
+                )
+            )
+        }
+    }
+
+    // 2. Bold: **text**
+    Regex("""\*\*([^*\n]+?)\*\*""").findAll(line).forEach { match ->
+        val s = match.range.first
+        val e = match.range.last + 1
+        if (tokens.none { maxOf(it.start, s) < minOf(it.end, e) }) {
+            tokens.add(AnswerInlineToken.BoldToken(s, e, match.groupValues[1]))
+        }
+    }
+
+    // 3. Inline code: `code`
+    Regex("""`([^`\n]+?)`""").findAll(line).forEach { match ->
+        val s = match.range.first
+        val e = match.range.last + 1
+        if (tokens.none { maxOf(it.start, s) < minOf(it.end, e) }) {
+            tokens.add(AnswerInlineToken.CodeToken(s, e, match.groupValues[1]))
+        }
+    }
+
+    // 4. Italic: *text* (single asterisk)
+    Regex("""(?<!\*)\*([^*\n]+?)\*(?!\*)""").findAll(line).forEach { match ->
+        val s = match.range.first
+        val e = match.range.last + 1
+        if (tokens.none { maxOf(it.start, s) < minOf(it.end, e) }) {
+            tokens.add(AnswerInlineToken.ItalicToken(s, e, match.groupValues[1]))
+        }
+    }
+
+    tokens.sortBy { it.start }
+
+    var cursor = 0
+    for (token in tokens) {
+        if (token.start > cursor) {
+            append(line.substring(cursor, token.start))
+        }
+        when (token) {
+            is AnswerInlineToken.CitationToken -> {
                 pushStringAnnotation(
                     tag = "CITATION",
-                    annotation = "${primaryCitation.noteId}|||${primaryCitation.quoteSnippet}"
+                    annotation = "${token.citation.noteId}|||${token.citation.quoteSnippet}"
                 )
                 pushStyle(
                     SpanStyle(
@@ -456,18 +612,36 @@ internal fun buildAnnotatedAnswer(
                         background = containerColor
                     )
                 )
-                append(" $displayText ")
+                append(" ${token.text} ")
                 pop()
                 pop()
-            } else {
-                append(match.value)
             }
-            lastIdx = match.range.last + 1
+            is AnswerInlineToken.BoldToken -> {
+                pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+                append(token.content)
+                pop()
+            }
+            is AnswerInlineToken.CodeToken -> {
+                pushStyle(
+                    SpanStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        background = containerColor.copy(alpha = 0.35f)
+                    )
+                )
+                append(" ${token.content} ")
+                pop()
+            }
+            is AnswerInlineToken.ItalicToken -> {
+                pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
+                append(token.content)
+                pop()
+            }
         }
-
-        if (lastIdx < answer.length) {
-            append(answer.substring(lastIdx))
-        }
+        cursor = token.end
+    }
+    if (cursor < line.length) {
+        append(line.substring(cursor))
     }
 }
 
@@ -480,19 +654,12 @@ private fun ClickableAnswerText(
     val answer = message.answer
     val citations = message.citations
 
-    if (citations.isEmpty()) {
-        Text(
-            text = answer,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = modifier
-        )
-        return
-    }
-
     val primaryColor = MaterialTheme.colorScheme.primary
     val containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-    val annotatedText = remember(answer, citations, primaryColor, containerColor) {
-        buildAnnotatedAnswer(answer, citations, primaryColor, containerColor)
+    val headingColor = MaterialTheme.colorScheme.primary
+    val bulletColor = MaterialTheme.colorScheme.tertiary
+    val annotatedText = remember(answer, citations, primaryColor, containerColor, headingColor, bulletColor) {
+        buildAnnotatedAnswer(answer, citations, primaryColor, containerColor, headingColor, bulletColor)
     }
 
     ClickableText(

@@ -103,6 +103,6 @@ class ModelPreferences @Inject constructor(
     }
 
     companion object {
-        const val DEFAULT_MODEL_ID = "qwen3.5_2b"
+        const val DEFAULT_MODEL_ID = "gemma_4_e2b"
     }
 }

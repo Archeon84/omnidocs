@@ -241,6 +241,8 @@ class AnswerAgent @Inject constructor(
             }
             val noteId = obj.optString("noteId", "")
             val noteTitle = obj.optString("noteTitle", "Untitled")
+            val sectionHeader = obj.optString("sectionHeader").takeIf { it.isNotBlank() }
+            val displayTitle = if (sectionHeader != null) "$noteTitle > $sectionHeader" else noteTitle
             val text = obj.optString("text", "")
             val score = obj.optDouble("score", 0.0)
             val blockId = obj.optString("blockId").takeIf { it.isNotBlank() }
@@ -248,7 +250,7 @@ class AnswerAgent @Inject constructor(
             val endOffset = obj.optIntLenient("endOffset")
 
             sourceNumber++
-            sources.add(PromptBudget.EvidenceSource(noteTitle, text, score, sourceNumber))
+            sources.add(PromptBudget.EvidenceSource(displayTitle, text, score, sourceNumber))
 
             val quoteSnippet = text.take(PromptBudget.MAX_SOURCE_CHARS)
             val quoteHash = MessageDigest.getInstance("SHA-256")
@@ -293,11 +295,20 @@ class AnswerAgent @Inject constructor(
         if (model != null) {
             val langInstruction = if (language.lowercase() != "en") "\nEnsure your answer is in $language language." else ""
             val systemPrompt = """You are a grounded knowledge assistant.
-Answer the user's question directly and concisely using ONLY the provided sources. If the sources do not contain enough information, state clearly: "Insufficient evidence in your workspace."
-Always cite sources by their [Source X] labels.
+Answer the user's question directly and concisely using ONLY the provided sources. If the sources do not contain enough information to answer part or all of the question, state clearly: "Insufficient evidence in your workspace."
+Always cite sources by their [Source X] labels immediately following the facts they support.
 
-Rules:
-• Provide a direct, factual answer without meta-commentary or filler.
+Strict Accuracy & Grounding Rules:
+• Rely EXCLUSIVELY on facts directly stated in the sources.
+• NEVER fabricate, extrapolate, infer, or assume details not present in the sources.
+• Do NOT bring in unverified external knowledge.
+
+Formatting & Structure:
+• Format with clear Markdown hierarchy:
+  - Use `### Heading` for distinct sections or topics.
+  - Use bullet points (`- `) with bold leading terms (e.g. `- **Key Item**: detail [Source 1]`) for lists and takeaways.
+  - Bold key terms, dates, and conclusions (`**bold text**`).
+• Provide a direct, factual answer without meta-commentary, preamble, or conversational filler.
 • Do NOT include thinking tags (<think>...</think>), internal chain of thought, reasoning steps, or internal monologue.
 • Do NOT repeat the question or generate duplicate answer variations.
 • Do NOT simulate conversation turns, role tags, or Q&A loops.$langInstruction"""

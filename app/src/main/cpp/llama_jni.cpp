@@ -335,7 +335,7 @@ extern "C" {
             }
             llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
             llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.9f, 1));
-            llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
+            llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.15f));
             llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
 
             // ── Generation loop ──────────────────────────────────────────────
@@ -577,7 +577,7 @@ extern "C" {
             }
             llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
             llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.9f, 1));
-            llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
+            llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.15f));
             llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
 
             gen_batch = llama_batch_init(1, 0, 1);

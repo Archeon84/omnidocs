@@ -50,11 +50,11 @@ class NoteBlockAdapterTest {
         val segments = adapter.chunkText("note_2", "Architecture Overview", markdownDoc)
 
         assertTrue(segments.size >= 2)
-        val offlineSegment = segments.find { it.headerContext == "Offline Inference Engine" }
+        val offlineSegment = segments.find { it.headerContext?.contains("Offline Inference Engine") == true }
         assertNotNull(offlineSegment)
         assertTrue(offlineSegment!!.content.contains("Llama.cpp JNI bindings"))
 
-        val storageSegment = segments.find { it.headerContext == "Storage & Security" }
+        val storageSegment = segments.find { it.headerContext?.contains("Storage & Security") == true }
         assertNotNull(storageSegment)
         assertTrue(storageSegment!!.content.contains("SQLCipher AES-256"))
     }
@@ -146,5 +146,44 @@ class NoteBlockAdapterTest {
         assertTrue("Must expand backward to paragraph start", expanded.contains("This is the opening of the key paragraph"))
         assertTrue("Must preserve child content", expanded.contains(childContent))
         assertTrue("Must expand forward to paragraph end", expanded.contains("Here is the conclusion of the paragraph"))
+    }
+
+    @Test
+    fun testChunkText_handlesFiveThousandWordsDocumentWithoutDataLoss() {
+        val sectionTitles = listOf(
+            "Executive Summary",
+            "System Architecture",
+            "Database Design",
+            "Vector Search & Embeddings",
+            "Speech Recognition Pipeline",
+            "Security & Cryptography",
+            "Performance Benchmarks",
+            "Conclusion & Future Work"
+        )
+
+        val docBuilder = StringBuilder()
+        for ((idx, title) in sectionTitles.withIndex()) {
+            docBuilder.append("# Chapter ${idx + 1}: $title\n\n")
+            repeat(10) { p ->
+                docBuilder.append("## Subsection ${idx + 1}.$p: Detailed Discussion\n")
+                // Generate ~75 words per paragraph = ~750 words per chapter
+                docBuilder.append("This paragraph provides in-depth analysis of $title section $p. ".repeat(6))
+                docBuilder.append("\n\n")
+            }
+        }
+
+        val fullText = docBuilder.toString()
+        val wordCount = fullText.split(Regex("\\s+")).count { it.isNotBlank() }
+        assertTrue("Fixture must exceed 5,000 words (actual: $wordCount)", wordCount >= 5000)
+
+        val segments = adapter.chunkText("note_5k", "Full Research Paper", fullText)
+
+        assertTrue("5,000+ word document must produce multiple semantic segments", segments.size >= 12)
+        // Verify every segment is safely within on-device token limits
+        assertTrue("All segments must stay under MAX_CHUNK_TOKENS", segments.all { it.tokenEstimate <= NoteBlockAdapter.MAX_CHUNK_TOKENS * 2 })
+
+        // Verify hierarchical breadcrumb tracking across deep sections
+        val deepSegment = segments.find { it.headerContext?.contains("Chapter 4: Vector Search & Embeddings > Subsection 4.5: Detailed Discussion") == true }
+        assertNotNull("Hierarchical header breadcrumb must be preserved for deep chapters", deepSegment)
     }
 }

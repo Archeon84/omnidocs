@@ -67,6 +67,7 @@ class NoteBlockAdapter @Inject constructor() {
         val segments = mutableListOf<SourceSegment>()
 
         var currentHeader: String? = null
+        val headerStack = mutableListOf<Pair<Int, String>>()
         val currentBlockLines = mutableListOf<String>()
         var blockStartOffset = 0
         var currentOffset = 0
@@ -133,7 +134,13 @@ class NoteBlockAdapter @Inject constructor() {
                 // The header line itself opens the next chunk so header-only
                 // keywords remain embedded and searchable.
                 flushCurrentBlock()
-                currentHeader = headerMatch.groupValues[2].trim()
+                val level = headerMatch.groupValues[1].length
+                val headerText = headerMatch.groupValues[2].trim()
+                while (headerStack.isNotEmpty() && headerStack.last().first >= level) {
+                    headerStack.removeAt(headerStack.lastIndex)
+                }
+                headerStack.add(level to headerText)
+                currentHeader = headerStack.joinToString(" > ") { it.second }
                 blockStartOffset = currentOffset
                 currentBlockLines.add(line)
                 totalLineCount++

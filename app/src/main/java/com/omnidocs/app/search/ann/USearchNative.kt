@@ -1,4 +1,4 @@
-﻿package com.omnidocs.app.search.ann
+package com.omnidocs.app.search.ann
 
 import android.util.Log
 
@@ -14,13 +14,18 @@ object USearchNative {
 
     init {
         try {
-            System.loadLibrary("llama-android")
+            System.loadLibrary("usearch-android")
             isNativeLoaded = true
-            Log.i(TAG, "Successfully loaded native library llama-android for USearch")
+            Log.i(TAG, "Successfully loaded native library usearch-android for USearch")
         } catch (t: Throwable) {
-            isNativeLoaded = false
-            // Normal in JVM unit tests or if native lib is missing
-            Log.w(TAG, "USearchNative library not available: . Falling back to Kotlin HNSW.")
+            try {
+                System.loadLibrary("llama-android")
+                isNativeLoaded = true
+                Log.i(TAG, "Successfully loaded legacy library llama-android for USearch")
+            } catch (t2: Throwable) {
+                isNativeLoaded = false
+                Log.w(TAG, "USearchNative library not available. Falling back to Kotlin HNSW.")
+            }
         }
     }
 

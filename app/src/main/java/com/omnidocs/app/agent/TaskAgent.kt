@@ -25,7 +25,8 @@ data class ExtractedTask(
 class TaskAgent @Inject constructor(
     private val llamaCppService: LlamaCppService,
     private val modelPreferences: ModelPreferences,
-    private val modelDownloadManager: ModelDownloadManager
+    private val modelDownloadManager: ModelDownloadManager,
+    private val noteBlockAdapter: com.omnidocs.app.ai.NoteBlockAdapter = com.omnidocs.app.ai.NoteBlockAdapter()
 ) : Agent {
 
     override val id: String = "agent_task"
@@ -63,22 +64,38 @@ class TaskAgent @Inject constructor(
     }
 
     suspend fun extractTasks(text: String): List<ExtractedTask> {
-        if (text.length in 50..4000) {
+        if (text.length >= 50) {
             val model = resolveActiveModel(modelPreferences, modelDownloadManager)
             if (model != null) {
                 try {
-                    val prompt = """Analyze the following text and extract actionable tasks.
+                    val segments = noteBlockAdapter.chunkText("task", "Doc", text)
+                    val batches = if (segments.size <= 1) {
+                        listOf(text.take(2000))
+                    } else {
+                        segments.chunked(3).map { chunkGroup ->
+                            chunkGroup.joinToString("\n\n") { it.content }.take(2000)
+                        }
+                    }
+
+                    val allTasks = mutableListOf<ExtractedTask>()
+                    for (batchText in batches) {
+                        val prompt = """Analyze the following text and extract actionable tasks.
 Return ONLY a valid JSON array of objects with keys: "title", "owner", "priority" (LOW, MEDIUM, HIGH).
 Do not include commentary or markdown formatting.
 
 Text:
-${text.take(1500)}
+$batchText
 
 JSON:"""
-                    val raw = llamaCppService.generate(prompt, maxTokens = 300)
-                    if (raw != null) {
-                        val parsed = parseJsonTasks(raw)
-                        if (parsed.isNotEmpty()) return parsed
+                        val raw = llamaCppService.generate(prompt, maxTokens = 300)
+                        if (raw != null) {
+                            val parsed = parseJsonTasks(raw)
+                            allTasks.addAll(parsed)
+                        }
+                    }
+
+                    if (allTasks.isNotEmpty()) {
+                        return allTasks.distinctBy { it.title.lowercase().trim() }
                     }
                 } catch (e: Exception) {
                     // Fall back to pattern matching

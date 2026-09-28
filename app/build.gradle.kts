@@ -65,7 +65,7 @@ android {
 
     kotlinOptions {
         jvmTarget = "1.8"
-        freeCompilerArgs += listOf("-Xmetadata-version=1.9.0")
+        freeCompilerArgs += listOf("-Xskip-metadata-version-check", "-Xmetadata-version=2.0.0")
     }
 
     buildFeatures {
@@ -86,6 +86,12 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/**"
         }
+        jniLibs {
+            pickFirsts += listOf(
+                "**/libLiteRtClGlAccelerator.so",
+                "**/libc++_shared.so"
+            )
+        }
     }
 }
 
@@ -95,6 +101,14 @@ configurations.all {
     exclude(group = "org.bouncycastle", module = "bcprov-jdk15to18")
     exclude(group = "org.bouncycastle", module = "bcpkix-jdk15to18")
     exclude(group = "org.bouncycastle", module = "bcutil-jdk15to18")
+
+    resolutionStrategy {
+        force("org.jetbrains.kotlin:kotlin-stdlib:2.1.0")
+        force("org.jetbrains.kotlin:kotlin-reflect:2.1.0")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.0")
+        force("org.jetbrains.kotlin:kotlin-stdlib-common:2.1.0")
+    }
 }
 
 dependencies {
@@ -191,6 +205,9 @@ dependencies {
     // Biometrics & WorkManager
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // LiteRT-LM (On-device LLM inference for Gemma 4)
+    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
