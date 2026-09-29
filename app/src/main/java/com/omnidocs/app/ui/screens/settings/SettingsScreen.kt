@@ -41,6 +41,7 @@ fun SettingsScreen(
     onAuthClick: () -> Unit = {},
     onPrivacyClick: () -> Unit = {},
     onAgentJobsClick: () -> Unit = {},
+    onLocalChatClick: () -> Unit = {},
     lifecycleOwner: LifecycleOwner? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
@@ -233,6 +234,17 @@ fun SettingsScreen(
             // ── On-Device AI Models ──
             item {
                 SettingsSection(title = "On-Device AI Engine") {
+                    SettingsTile(
+                        icon = Icons.Default.ChatBubbleOutline,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                        title = "Offline LLM Chat",
+                        description = "Direct air-gapped chat with on-device LLM with zero cloud connections",
+                        trailingText = "Launch",
+                        onClick = onLocalChatClick
+                    )
+
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+
                     val activeModel = viewModel.modelDownloadManager.availableModels.find { it.id == selectedModelId }
                     SettingsTile(
                         icon = Icons.Default.SmartToy,

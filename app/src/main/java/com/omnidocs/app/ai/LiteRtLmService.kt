@@ -156,6 +156,7 @@ class LiteRtLmService @Inject constructor(
 
                     val initialized = withContext(Dispatchers.IO) {
                         withTimeoutOrNull(LOAD_TIMEOUT_MS) {
+                            var eng: Engine? = null
                             try {
                                 // 1. Attempt GPU acceleration first for maximum mobile performance
                                 Log.d(TAG, "Attempting LiteRT-LM initialization with GPU backend (maxTokens=$maxTokens)...")
@@ -165,12 +166,25 @@ class LiteRtLmService @Inject constructor(
                                     maxNumTokens = maxTokens,
                                     cacheDir = cacheDir
                                 )
-                                val eng = Engine(gpuConfig)
-                                eng.initialize()
-                                engine = eng
+                                val gpuEng = Engine(gpuConfig)
+                                eng = gpuEng
+                                gpuEng.initialize()
+
+                                // Probe GPU execution with a test conversation to verify OpenCL runtime compatibility
+                                val probeConv = gpuEng.createConversation()
+                                try {
+                                    probeConv.sendMessageAsync("hi", maxOutputToken = 1).collect { }
+                                } finally {
+                                    try { probeConv.close() } catch (_: Exception) {}
+                                }
+
+                                engine = gpuEng
+                                Log.d(TAG, "GPU backend initialized and verified successfully")
                                 true
                             } catch (gpuError: Throwable) {
-                                Log.w(TAG, "GPU backend failed: ${gpuError.message}. Falling back to CPU backend...", gpuError)
+                                try { eng?.close() } catch (_: Exception) {}
+                                eng = null
+                                Log.w(TAG, "GPU backend failed verification: ${gpuError.message}. Falling back to CPU backend...", gpuError)
                                 try {
                                     val cpuConfig = EngineConfig(
                                         modelPath = modelPath,
@@ -178,9 +192,10 @@ class LiteRtLmService @Inject constructor(
                                         maxNumTokens = maxTokens,
                                         cacheDir = cacheDir
                                     )
-                                    val eng = Engine(cpuConfig)
-                                    eng.initialize()
-                                    engine = eng
+                                    val cpuEng = Engine(cpuConfig)
+                                    cpuEng.initialize()
+                                    engine = cpuEng
+                                    Log.d(TAG, "CPU backend initialized successfully")
                                     true
                                 } catch (cpuError: Throwable) {
                                     Log.e(TAG, "LiteRT-LM CPU initialization also failed: ${cpuError.message}", cpuError)

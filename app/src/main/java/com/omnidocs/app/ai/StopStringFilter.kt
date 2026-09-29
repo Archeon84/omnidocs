@@ -18,6 +18,8 @@ object StopStrings {
         "<|end|>",
         "<|start_header_id|>",
         "<|end_header_id|>",
+        "<end_of_turn>",
+        "<start_of_turn>",
         "\n\nUser:",
         "\n\nHuman:",
         "\n\nAssistant:"

@@ -36,6 +36,83 @@ object PromptBuilder {
         }
     }
 
+    /**
+     * Build a multi-turn chat prompt for conversational history.
+     */
+    fun buildMultiTurnPrompt(
+        format: PromptFormat,
+        systemPrompt: String,
+        messages: List<Pair<String, String>>,
+        model: ModelInfo? = null
+    ): String {
+        if (messages.isEmpty()) {
+            return buildPrompt(format, systemPrompt, "", model)
+        }
+        return when (format) {
+            PromptFormat.CHATML -> {
+                val imS = "<|im_start|>"
+                val imE = "<|im_end|>"
+                val sb = StringBuilder()
+                if (systemPrompt.isNotBlank()) {
+                    sb.append(imS).append("system").append(NL).append(systemPrompt).append(imE).append(NL)
+                }
+                for ((role, text) in messages) {
+                    val r = if (role.equals("user", ignoreCase = true)) "user" else "assistant"
+                    sb.append(imS).append(r).append(NL).append(text).append(imE).append(NL)
+                }
+                val forceNoThink = model?.isThinkingModel == true
+                val thinkBlock = if (forceNoThink) "<think></think>\n\n" else ""
+                sb.append(imS).append("assistant").append(NL).append(thinkBlock)
+                sb.toString()
+            }
+            PromptFormat.LLAMA3 -> {
+                val sb = StringBuilder()
+                if (systemPrompt.isNotBlank()) {
+                    sb.append("<|start_header_id|>system<|end_header_id|>").append(NL2)
+                        .append(systemPrompt).append("<|eot_id|>")
+                }
+                for ((role, text) in messages) {
+                    val r = if (role.equals("user", ignoreCase = true)) "user" else "assistant"
+                    sb.append("<|start_header_id|>").append(r).append("<|end_header_id|>").append(NL2)
+                        .append(text).append("<|eot_id|>")
+                }
+                sb.append("<|start_header_id|>assistant<|end_header_id|>").append(NL2)
+                sb.toString()
+            }
+            PromptFormat.PHI4 -> {
+                val sb = StringBuilder()
+                if (systemPrompt.isNotBlank()) {
+                    sb.append("<|system|>").append(NL).append(systemPrompt).append("<|end|>").append(NL)
+                }
+                for ((role, text) in messages) {
+                    val r = if (role.equals("user", ignoreCase = true)) "user" else "assistant"
+                    sb.append("<|").append(r).append("|>").append(NL).append(text).append("<|end|>").append(NL)
+                }
+                sb.append("<|assistant|>").append(NL)
+                sb.toString()
+            }
+            PromptFormat.GEMMA -> {
+                val sb = StringBuilder()
+                var firstUser = true
+                for ((role, text) in messages) {
+                    if (role.equals("user", ignoreCase = true)) {
+                        val content = if (firstUser && systemPrompt.isNotBlank()) {
+                            firstUser = false
+                            systemPrompt + NL2 + text
+                        } else {
+                            text
+                        }
+                        sb.append("<start_of_turn>user").append(NL).append(content).append("<end_of_turn>").append(NL)
+                    } else {
+                        sb.append("<start_of_turn>model").append(NL).append(text).append("<end_of_turn>").append(NL)
+                    }
+                }
+                sb.append("<start_of_turn>model").append(NL)
+                sb.toString()
+            }
+        }
+    }
+
     internal fun buildChatML(systemPrompt: String, userPrompt: String, forceNoThink: Boolean = false): String {
         val imS = "<|im_start|>"
         val imE = "<|im_end|>"

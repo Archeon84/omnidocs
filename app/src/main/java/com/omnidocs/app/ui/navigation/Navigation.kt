@@ -22,6 +22,7 @@ import com.omnidocs.app.ui.screens.editor.EditorScreen
 import com.omnidocs.app.ui.screens.feed.FeedScreen
 import com.omnidocs.app.ui.screens.graph.GraphScreen
 import com.omnidocs.app.ui.screens.home.HomeScreen
+import com.omnidocs.app.ui.screens.localchat.LocalChatScreen
 import com.omnidocs.app.ui.screens.ocr.OcrScreen
 import com.omnidocs.app.ui.screens.privacy.PrivacyDashboardScreen
 import com.omnidocs.app.ui.screens.recordings.RecordingsScreen
@@ -64,6 +65,7 @@ sealed class Screen(val route: String) {
             return if (noteId != null) "study?noteId=$noteId" else "study"
         }
     }
+    object LocalChat : Screen("local_chat")
 }
 
 @Composable
@@ -114,6 +116,9 @@ fun NotesNavHost(
                 },
                 onStudyClick = {
                     navController.navigate(Screen.Study.createRoute(null))
+                },
+                onLocalChatClick = {
+                    navController.navigate(Screen.LocalChat.route)
                 }
             )
         }
@@ -263,6 +268,9 @@ fun NotesNavHost(
                 onAgentJobsClick = {
                     navController.navigate(Screen.AgentJobs.route)
                 },
+                onLocalChatClick = {
+                    navController.navigate(Screen.LocalChat.route)
+                },
                 lifecycleOwner = backStackEntry
             )
         }
@@ -392,6 +400,18 @@ fun NotesNavHost(
             popExitTransition = { screenPopExitTransition() }
         ) {
             StudyScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = Screen.LocalChat.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            LocalChatScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
         }

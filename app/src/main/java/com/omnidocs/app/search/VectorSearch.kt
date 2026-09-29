@@ -98,14 +98,26 @@ open class VectorSearch(
 
             val foldedPlain = Tokenizer.normalizeForMatch(note.plainText.lowercase())
             val foldedTitle = Tokenizer.normalizeForMatch(note.title.lowercase())
-            val hasTokenOverlap = queryTerms.any {
+            val matchedTermsCount = queryTerms.count {
                 Tokenizer.matchesToken(it, foldedPlain) || Tokenizer.matchesToken(it, foldedTitle)
             }
-            if (hasTokenOverlap || hasLexicalMatch) return true
+            if (matchedTermsCount == 0 && !hasLexicalMatch) {
+                // Zero lexical overlap:
+                if (isNgramModel) return false
+                return semanticScore >= SEMANTIC_STANDALONE_FLOOR
+            }
 
-            // Zero lexical overlap:
-            if (isNgramModel) return false
-            return semanticScore >= SEMANTIC_STANDALONE_FLOOR
+            // For multi-term queries without real neural semantic confirmation:
+            // Reject notes matching only 1 term if the query has 2+ terms and neither title nor neural model backs it.
+            if (queryTerms.size >= 2 && matchedTermsCount < 2) {
+                val hasTitleMatch = queryTerms.any { Tokenizer.matchesToken(it, foldedTitle) }
+                val hasNeuralSupport = !isNgramModel && semanticScore >= MODEL_COSINE_FLOOR
+                if (!hasTitleMatch && !hasNeuralSupport) {
+                    return false
+                }
+            }
+
+            return true
         }
 
         /**
@@ -508,8 +520,8 @@ open class VectorSearch(
             val matchedTermsCount = titleCheckTerms.count {
                 Tokenizer.matchesToken(it, foldedPlain) || Tokenizer.matchesToken(it, foldedTitle)
             }
-            val coordFactor = if (titleCheckTerms.size >= 2) {
-                (matchedTermsCount.toFloat() / titleCheckTerms.size).coerceIn(0.5f, 1.0f)
+            val coordFactor = if (titleCheckTerms.isNotEmpty()) {
+                matchedTermsCount.toFloat() / titleCheckTerms.size
             } else 1.0f
 
             val rrfBm25 = if (rBm25 != null && bm25Raw > 0f) {

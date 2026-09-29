@@ -452,17 +452,27 @@ Formatting & Structure:
                 if (answerIncomplete) AiOutputProcessor.trimDanglingIncompleteText(cleaned) else cleaned
             }
             if (processed.isNullOrBlank()) {
-                // The model abstained, emitted only thinking, or the stream
-                // died with zero tokens: never fabricate a cited answer.
-                answerText = "Insufficient evidence in your workspace to answer this question."
-                insufficient = true
+                if ((attempt.streamFailed || stopReason == com.omnidocs.app.ai.StopReason.EXCEPTION) && citations.isNotEmpty()) {
+                    Log.w("AnswerAgent", "Native generation failed with $stopReasonName, falling back to rule-based citation")
+                    ruleBased = true
+                    answerText = generateRuleBasedAnswer(citations, query)
+                    if (answerText.startsWith("Insufficient evidence", ignoreCase = true)) {
+                        insufficient = true
+                    }
+                } else {
+                    answerText = "Insufficient evidence in your workspace to answer this question."
+                    insufficient = true
+                }
             } else {
                 answerText = processed
             }
         } else if (topScore >= RULE_BASED_MIN_SCORE) {
             // No model downloaded: quote the top source verbatim, labeled.
             ruleBased = true
-            answerText = generateRuleBasedAnswer(citations)
+            answerText = generateRuleBasedAnswer(citations, query)
+            if (answerText.startsWith("Insufficient evidence", ignoreCase = true)) {
+                insufficient = true
+            }
         } else {
             answerText = "No model is downloaded and the retrieved evidence is too weak to quote. Download a model in Settings to get grounded answers."
             insufficient = true
@@ -535,8 +545,22 @@ Formatting & Structure:
         )
     }
 
-    private fun generateRuleBasedAnswer(citations: List<Citation>): String {
+    private fun generateRuleBasedAnswer(citations: List<Citation>, query: String = ""): String {
         val top = citations.firstOrNull() ?: return "No relevant notes found."
+        if (query.isNotBlank()) {
+            val queryTerms = com.omnidocs.app.search.Tokenizer.tokenize(query)
+            if (queryTerms.size >= 2) {
+                val snippetLower = com.omnidocs.app.search.Tokenizer.normalizeForMatch(top.quoteSnippet.lowercase())
+                val titleLower = com.omnidocs.app.search.Tokenizer.normalizeForMatch(top.noteTitle.lowercase())
+                val matchedCount = queryTerms.count {
+                    com.omnidocs.app.search.Tokenizer.matchesToken(it, snippetLower) ||
+                        com.omnidocs.app.search.Tokenizer.matchesToken(it, titleLower)
+                }
+                if (matchedCount < 2 && (matchedCount.toFloat() / queryTerms.size) < 0.5f) {
+                    return "Insufficient evidence in your workspace to answer this question."
+                }
+            }
+        }
         return "Based on [Source ${top.sourceIndex}: ${top.noteTitle}]:\n\"${top.quoteSnippet}...\""
     }
 }

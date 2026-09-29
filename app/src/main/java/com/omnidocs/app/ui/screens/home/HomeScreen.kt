@@ -144,6 +144,7 @@ fun HomeScreen(
     onAskNotesClick: () -> Unit = {},
     onScanDoc: () -> Unit = {},
     onStudyClick: () -> Unit = {},
+    onLocalChatClick: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val notes by viewModel.notes.collectAsState()
@@ -270,6 +271,13 @@ fun HomeScreen(
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            IconButton(onClick = onLocalChatClick) {
+                                Icon(
+                                    imageVector = Icons.Default.SmartToy,
+                                    contentDescription = "Offline LLM Chat",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                             IconButton(onClick = onGraphClick) {
                                 Icon(
                                     imageVector = Icons.Default.AccountTree,
@@ -355,6 +363,12 @@ fun HomeScreen(
                                 .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            QuickCreateChip(
+                                icon = Icons.Default.SmartToy,
+                                label = "Offline LLM",
+                                color = MaterialTheme.colorScheme.primary,
+                                onClick = onLocalChatClick
+                            )
                             QuickCreateChip(
                                 icon = Icons.Default.EditNote,
                                 label = "New Note",
