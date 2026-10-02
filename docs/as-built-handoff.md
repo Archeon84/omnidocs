@@ -115,8 +115,8 @@ Classification levels:
 ---
 
 ## 5. Data and integrations
-* **Room Database**: 22 entity tables, Schema Version 17, 16 forward migration steps, AES-256 SQLCipher encryption keyed via Android KeyStore ([NotesDatabase.kt](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/NotesDatabase.kt)).
-* **Local Chat Files**: Flat JSON files in `context.filesDir/local_chats/` ([LocalChatStorage.kt](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/LocalChatStorage.kt)).
+* **Room Database**: 24 entity tables (including `chat_sessions` and `chat_messages`), Schema Version 18, 17 forward migration steps, AES-256 SQLCipher encryption keyed via Android KeyStore ([NotesDatabase.kt](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/NotesDatabase.kt)).
+* **Local Chat Storage**: Fully integrated into SQLCipher-encrypted Room database via [ChatDao.kt](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/ChatDao.kt) and [LocalChatStorage.kt](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/LocalChatStorage.kt). Included in [LocalBackupService.kt](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/backup/LocalBackupService.kt) encrypted backups. Legacy JSON files automatically migrated on first run.
 * **External Sync**: Google Drive REST via OkHttp (`DriveService.kt`).
 * **AI Models**: Google Gemma 4 E2B/E4B (`.litertlm`), Multilingual E5 Small (`.gguf`), Sherpa-ONNX Whisper Small/Large V3 / Moonshine (`.tar.bz2`).
 * **Permissions**: `INTERNET`, `CAMERA`, `RECORD_AUDIO`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`.
@@ -135,10 +135,11 @@ Classification levels:
 
 ---
 
-## 7. Risks and gaps
-1. **Missing `androidTest`**: `app/build.gradle.kts` specifies instrumentation dependencies, but `app/src/androidTest` directory does not exist. Component unit tests provide existing test coverage.
-2. **Storage Segregation**: Local Chat sessions bypass SQLCipher Room database, persisting in unencrypted plaintext JSON.
-3. **Decoupled C++ Assets**: Submodule `llama.cpp` and `llama_jni.cpp` remain present in `app/src/main/cpp/` uncompiled as intentional fallback assets.
+## 7. Risks and gaps (Resolution Status)
+1. **Missing `androidTest` [RESOLVED]**: Created [`app/src/androidTest/`](file:///h:/Work/OmniDocs/app/src/androidTest/) containing [`NotesDatabaseInstrumentationTest.kt`](file:///h:/Work/OmniDocs/app/src/androidTest/java/com/omnidocs/app/data/local/NotesDatabaseInstrumentationTest.kt) (verifying SQLCipher Room schema v18, DAOs, and cascade deletes on ART runtime) and [`AppSmokeInstrumentationTest.kt`](file:///h:/Work/OmniDocs/app/src/androidTest/java/com/omnidocs/app/ui/AppSmokeInstrumentationTest.kt) (verifying Compose Material 3 runtime rendering).
+2. **Storage Segregation [RESOLVED]**: Local Chat migrated into SQLCipher-encrypted Room database via [`ChatSessionEntity.kt`](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/entity/ChatSessionEntity.kt), [`ChatMessageEntity.kt`](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/entity/ChatMessageEntity.kt), and [`ChatDao.kt`](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/local/ChatDao.kt) under `MIGRATION_17_18`. Sessions and messages are now protected with AES-256 encryption at rest and automatically exported by [`LocalBackupService.kt`](file:///h:/Work/OmniDocs/app/src/main/java/com/omnidocs/app/data/backup/LocalBackupService.kt). Legacy JSON files are seamlessly migrated on startup.
+3. **Decoupled C++ Assets [RESOLVED]**: Pinned submodule `llama.cpp` to clean state `e3546c7`, added [`.claude/`](file:///h:/Work/OmniDocs/.gitignore) to `.gitignore`, and authored [`app/src/main/cpp/README.md`](file:///h:/Work/OmniDocs/app/src/main/cpp/README.md) documenting active (`usearch-android`) vs decoupled fallback (`llama.cpp` / `llama_jni.cpp`) components for auditors.
+
 
 ---
 
@@ -158,3 +159,4 @@ Classification levels:
 3. **Cloud Sync Intent**: Resolved. `README.md` updated to accurately specify Google Drive REST sync; Firebase references removed.
 4. **Welcome / Onboarding Flow**: Resolved. First-run onboarding carousel, preferences, and tests committed to `feature/markdown-edit-preview`.
 5. **Camera & Document OCR**: Verified. Physical device testing confirmed live CameraX preview, bounding box tracking, and Google ML Kit text extraction.
+6. **Audit Risks & Gaps**: Resolved. All 3 audit risks (Local Chat storage segregation, missing androidTest directory, and decoupled C++ asset hygiene) have been engineered, tested, and resolved in Git.
