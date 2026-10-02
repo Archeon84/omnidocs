@@ -27,3 +27,4 @@ app/PaddleLite/
 # Cache
 .cache/
 *.log
+.claude/
