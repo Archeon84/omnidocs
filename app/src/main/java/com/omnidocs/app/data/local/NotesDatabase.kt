@@ -13,6 +13,8 @@ import com.omnidocs.app.data.local.entity.AgentJobEntity
 import com.omnidocs.app.data.local.entity.AiArtifactEntity
 import com.omnidocs.app.data.local.entity.AiRunEntity
 import com.omnidocs.app.data.local.entity.AuditEventEntity
+import com.omnidocs.app.data.local.entity.ChatMessageEntity
+import com.omnidocs.app.data.local.entity.ChatSessionEntity
 import com.omnidocs.app.data.local.entity.ClaimEntity
 import com.omnidocs.app.data.local.entity.ContentBlockEntity
 import com.omnidocs.app.data.local.entity.EmbeddingEntity
@@ -44,9 +46,10 @@ import java.security.SecureRandom
         AuditEventEntity::class, SavedSearchEntity::class,
         AgentJobEntity::class, AgentEventEntity::class,
         SourceDocumentEntity::class, ContentBlockEntity::class,
-        AiArtifactEntity::class, FlashcardEntity::class
+        AiArtifactEntity::class, FlashcardEntity::class,
+        ChatSessionEntity::class, ChatMessageEntity::class
     ],
-    version = 17,
+    version = 18,
     exportSchema = false
 )
 abstract class NotesDatabase : RoomDatabase() {
@@ -71,6 +74,7 @@ abstract class NotesDatabase : RoomDatabase() {
     abstract fun contentBlockDao(): ContentBlockDao
     abstract fun aiArtifactDao(): AiArtifactDao
     abstract fun flashcardDao(): FlashcardDao
+    abstract fun chatDao(): ChatDao
 
     companion object {
         @Volatile
@@ -202,7 +206,7 @@ abstract class NotesDatabase : RoomDatabase() {
                     "notes_database"
                 )
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
                 INSTANCE = instance

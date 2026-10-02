@@ -66,7 +66,8 @@ private val KNOWLEDGE_TABLES = listOf(
     "transcript_segments", "speakers", "claims", "evidence_links",
     "action_items", "entities", "entity_mentions", "note_links",
     "embeddings", "ai_runs", "note_versions", "audit_events", "saved_searches",
-    "source_documents", "content_blocks", "agent_jobs", "agent_events", "ai_artifacts"
+    "source_documents", "content_blocks", "agent_jobs", "agent_events", "ai_artifacts",
+    "flashcards", "chat_sessions", "chat_messages"
 )
 
 /**

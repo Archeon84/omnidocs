@@ -1,4 +1,4 @@
-﻿package com.omnidocs.app.di
+package com.omnidocs.app.di
 
 import android.content.Context
 import com.omnidocs.app.data.local.*
@@ -41,5 +41,6 @@ object DatabaseModule {
     @Provides @Singleton fun provideContentBlockDao(db: NotesDatabase): ContentBlockDao = db.contentBlockDao()
     @Provides @Singleton fun provideAiArtifactDao(db: NotesDatabase): AiArtifactDao = db.aiArtifactDao()
     @Provides @Singleton fun provideFlashcardDao(db: NotesDatabase): FlashcardDao = db.flashcardDao()
+    @Provides @Singleton fun provideChatDao(db: NotesDatabase): ChatDao = db.chatDao()
 }
 

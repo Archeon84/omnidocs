@@ -1,16 +1,19 @@
 package com.omnidocs.app.data.local
 
 import android.content.Context
+import com.omnidocs.app.data.local.entity.ChatMessageEntity
+import com.omnidocs.app.data.local.entity.ChatSessionEntity
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
@@ -99,36 +102,102 @@ data class LocalChatMessage(
     val isError: Boolean = false
 )
 
+fun ChatSessionEntity.toModel(): LocalChatSession = LocalChatSession(
+    id = id,
+    title = title,
+    personaId = personaId,
+    systemPrompt = systemPrompt,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+    modelId = modelId,
+    temperature = temperature,
+    topP = topP,
+    maxTokens = maxTokens,
+    messageCount = messageCount
+)
+
+fun LocalChatSession.toEntity(): ChatSessionEntity = ChatSessionEntity(
+    id = id,
+    title = title,
+    personaId = personaId,
+    systemPrompt = systemPrompt,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+    modelId = modelId,
+    temperature = temperature,
+    topP = topP,
+    maxTokens = maxTokens,
+    messageCount = messageCount
+)
+
+fun ChatMessageEntity.toModel(): LocalChatMessage = LocalChatMessage(
+    id = id,
+    sessionId = sessionId,
+    role = role,
+    content = content,
+    timestamp = timestamp,
+    durationMs = durationMs,
+    tokenCount = tokenCount,
+    tokPerSec = tokPerSec,
+    modelName = modelName,
+    isError = isError
+)
+
+fun LocalChatMessage.toEntity(): ChatMessageEntity = ChatMessageEntity(
+    id = id,
+    sessionId = sessionId,
+    role = role,
+    content = content,
+    timestamp = timestamp,
+    durationMs = durationMs,
+    tokenCount = tokenCount,
+    tokPerSec = tokPerSec,
+    modelName = modelName,
+    isError = isError
+)
+
 /**
- * Thread-safe private on-device storage for local offline chat sessions and message threads.
- * Keeps all conversation history strictly local in private encrypted app storage.
+ * Thread-safe on-device storage for local offline chat sessions and message threads.
+ * Backed by SQLCipher-encrypted Room database (`chat_sessions` and `chat_messages` tables),
+ * providing AES-256 encryption at rest and automatic inclusion in LocalBackupService.
  */
 @Singleton
 class LocalChatStorage @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val chatDao: ChatDao
 ) {
-    private val mutex = Mutex()
-    private val baseDir = File(context.filesDir, "local_chats").apply { mkdirs() }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val baseDir = File(context.filesDir, "local_chats")
     private val indexFile = File(baseDir, "sessions_index.json")
 
-    private val _sessions = MutableStateFlow<List<LocalChatSession>>(emptyList())
-    val sessions: StateFlow<List<LocalChatSession>> = _sessions.asStateFlow()
+    val sessions: StateFlow<List<LocalChatSession>> = chatDao.getSessionsFlow()
+        .map { entities -> entities.map { it.toModel() } }
+        .stateIn(
+            scope = scope,
+            started = SharingStarted.Eagerly,
+            initialValue = emptyList()
+        )
 
     init {
-        loadSessionsSync()
+        scope.launch {
+            migrateLegacyJsonFilesIfNeeded()
+        }
     }
 
-    private fun loadSessionsSync() {
+    private suspend fun migrateLegacyJsonFilesIfNeeded() = withContext(Dispatchers.IO) {
         try {
             if (indexFile.exists()) {
                 val jsonStr = indexFile.readText()
                 val jsonArr = JSONArray(jsonStr)
-                val list = mutableListOf<LocalChatSession>()
+                val sessionsToInsert = mutableListOf<ChatSessionEntity>()
+                val messagesToInsert = mutableListOf<ChatMessageEntity>()
+
                 for (i in 0 until jsonArr.length()) {
                     val obj = jsonArr.getJSONObject(i)
-                    list.add(
-                        LocalChatSession(
-                            id = obj.getString("id"),
+                    val sessionId = obj.getString("id")
+                    sessionsToInsert.add(
+                        ChatSessionEntity(
+                            id = sessionId,
                             title = obj.getString("title"),
                             personaId = obj.optString("personaId", "general"),
                             systemPrompt = obj.optString("systemPrompt", BUILTIN_PERSONAS.first().systemPrompt),
@@ -141,36 +210,41 @@ class LocalChatStorage @Inject constructor(
                             messageCount = obj.optInt("messageCount", 0)
                         )
                     )
-                }
-                _sessions.value = list.sortedByDescending { it.updatedAt }
-            }
-        } catch (e: Exception) {
-            _sessions.value = emptyList()
-        }
-    }
 
-    private suspend fun persistSessionsIndex(list: List<LocalChatSession>) = withContext(Dispatchers.IO) {
-        try {
-            val jsonArr = JSONArray()
-            for (s in list) {
-                val obj = JSONObject().apply {
-                    put("id", s.id)
-                    put("title", s.title)
-                    put("personaId", s.personaId)
-                    put("systemPrompt", s.systemPrompt)
-                    put("createdAt", s.createdAt)
-                    put("updatedAt", s.updatedAt)
-                    put("modelId", s.modelId)
-                    put("temperature", s.temperature.toDouble())
-                    put("topP", s.topP.toDouble())
-                    put("maxTokens", s.maxTokens)
-                    put("messageCount", s.messageCount)
+                    val msgFile = File(baseDir, "messages_${sessionId}.json")
+                    if (msgFile.exists()) {
+                        try {
+                            val msgArr = JSONArray(msgFile.readText())
+                            for (j in 0 until msgArr.length()) {
+                                val mObj = msgArr.getJSONObject(j)
+                                messagesToInsert.add(
+                                    ChatMessageEntity(
+                                        id = mObj.getString("id"),
+                                        sessionId = mObj.getString("sessionId"),
+                                        role = mObj.getString("role"),
+                                        content = mObj.getString("content"),
+                                        timestamp = mObj.getLong("timestamp"),
+                                        durationMs = mObj.optLong("durationMs", 0L),
+                                        tokenCount = mObj.optInt("tokenCount", 0),
+                                        tokPerSec = mObj.optDouble("tokPerSec", 0.0),
+                                        modelName = mObj.optString("modelName", ""),
+                                        isError = mObj.optBoolean("isError", false)
+                                    )
+                                )
+                            }
+                        } catch (_: Exception) {}
+                    }
                 }
-                jsonArr.put(obj)
+
+                if (sessionsToInsert.isNotEmpty()) {
+                    chatDao.insertSessions(sessionsToInsert)
+                }
+                if (messagesToInsert.isNotEmpty()) {
+                    chatDao.insertMessages(messagesToInsert)
+                }
+
+                baseDir.deleteRecursively()
             }
-            val tmp = File(baseDir, "sessions_index.tmp")
-            tmp.writeText(jsonArr.toString())
-            tmp.renameTo(indexFile)
         } catch (_: Exception) {}
     }
 
@@ -181,7 +255,7 @@ class LocalChatStorage @Inject constructor(
         temperature: Float = 0.7f,
         topP: Float = 0.9f,
         maxTokens: Int = 2048
-    ): LocalChatSession = mutex.withLock {
+    ): LocalChatSession = withContext(Dispatchers.IO) {
         val newSession = LocalChatSession(
             id = UUID.randomUUID().toString(),
             title = title,
@@ -195,130 +269,50 @@ class LocalChatStorage @Inject constructor(
             maxTokens = maxTokens,
             messageCount = 0
         )
-        val updated = listOf(newSession) + _sessions.value.filter { it.id != newSession.id }
-        _sessions.value = updated
-        persistSessionsIndex(updated)
+        chatDao.insertSession(newSession.toEntity())
         newSession
     }
 
-    suspend fun updateSession(session: LocalChatSession) = mutex.withLock {
-        val current = _sessions.value.toMutableList()
-        val index = current.indexOfFirst { it.id == session.id }
-        if (index != -1) {
-            current[index] = session
-            val sorted = current.sortedByDescending { it.updatedAt }
-            _sessions.value = sorted
-            persistSessionsIndex(sorted)
-        }
+    suspend fun updateSession(session: LocalChatSession) = withContext(Dispatchers.IO) {
+        chatDao.updateSession(session.toEntity())
     }
 
-    suspend fun renameSession(sessionId: String, newTitle: String) = mutex.withLock {
-        val current = _sessions.value.toMutableList()
-        val index = current.indexOfFirst { it.id == sessionId }
-        if (index != -1) {
-            val updated = current[index].copy(title = newTitle, updatedAt = System.currentTimeMillis())
-            current[index] = updated
-            val sorted = current.sortedByDescending { it.updatedAt }
-            _sessions.value = sorted
-            persistSessionsIndex(sorted)
-        }
+    suspend fun renameSession(sessionId: String, newTitle: String) = withContext(Dispatchers.IO) {
+        chatDao.renameSession(sessionId, newTitle, System.currentTimeMillis())
     }
 
-    suspend fun deleteSession(sessionId: String) = mutex.withLock {
-        withContext(Dispatchers.IO) {
-            val msgFile = File(baseDir, "messages_${sessionId}.json")
-            if (msgFile.exists()) msgFile.delete()
-        }
-        val updated = _sessions.value.filter { it.id != sessionId }
-        _sessions.value = updated
-        persistSessionsIndex(updated)
+    suspend fun deleteSession(sessionId: String) = withContext(Dispatchers.IO) {
+        chatDao.deleteSession(sessionId)
     }
 
-    suspend fun clearAllSessions() = mutex.withLock {
-        withContext(Dispatchers.IO) {
-            baseDir.listFiles()?.forEach { it.delete() }
-        }
-        _sessions.value = emptyList()
+    suspend fun clearAllSessions() = withContext(Dispatchers.IO) {
+        chatDao.clearAllSessions()
     }
 
     suspend fun loadMessages(sessionId: String): List<LocalChatMessage> = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            try {
-                val file = File(baseDir, "messages_${sessionId}.json")
-                if (!file.exists()) return@withLock emptyList()
-                val jsonArr = JSONArray(file.readText())
-                val list = mutableListOf<LocalChatMessage>()
-                for (i in 0 until jsonArr.length()) {
-                    val obj = jsonArr.getJSONObject(i)
-                    list.add(
-                        LocalChatMessage(
-                            id = obj.getString("id"),
-                            sessionId = obj.getString("sessionId"),
-                            role = obj.getString("role"),
-                            content = obj.getString("content"),
-                            timestamp = obj.getLong("timestamp"),
-                            durationMs = obj.optLong("durationMs", 0L),
-                            tokenCount = obj.optInt("tokenCount", 0),
-                            tokPerSec = obj.optDouble("tokPerSec", 0.0),
-                            modelName = obj.optString("modelName", ""),
-                            isError = obj.optBoolean("isError", false)
-                        )
-                    )
-                }
-                list.sortedBy { it.timestamp }
-            } catch (e: Exception) {
-                emptyList()
-            }
-        }
+        chatDao.getMessages(sessionId).map { it.toModel() }
     }
 
     suspend fun saveMessages(sessionId: String, messages: List<LocalChatMessage>) = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            try {
-                val jsonArr = JSONArray()
-                for (m in messages) {
-                    val obj = JSONObject().apply {
-                        put("id", m.id)
-                        put("sessionId", m.sessionId)
-                        put("role", m.role)
-                        put("content", m.content)
-                        put("timestamp", m.timestamp)
-                        put("durationMs", m.durationMs)
-                        put("tokenCount", m.tokenCount)
-                        put("tokPerSec", m.tokPerSec)
-                        put("modelName", m.modelName)
-                        put("isError", m.isError)
-                    }
-                    jsonArr.put(obj)
-                }
-                val file = File(baseDir, "messages_${sessionId}.json")
-                val tmp = File(baseDir, "messages_${sessionId}.tmp")
-                tmp.writeText(jsonArr.toString())
-                tmp.renameTo(file)
+        chatDao.deleteMessagesForSession(sessionId)
+        chatDao.insertMessages(messages.map { it.toEntity() })
 
-                // Update session messageCount and updatedAt
-                val current = _sessions.value.toMutableList()
-                val sIdx = current.indexOfFirst { it.id == sessionId }
-                if (sIdx != -1) {
-                    val session = current[sIdx]
-                    val derivedTitle = if (session.title == "New Chat" && messages.isNotEmpty()) {
-                        val firstUser = messages.firstOrNull { it.role == "user" }?.content?.trim()
-                        if (!firstUser.isNullOrBlank()) {
-                            if (firstUser.length > 36) firstUser.take(34) + "…" else firstUser
-                        } else session.title
-                    } else session.title
+        val session = chatDao.getSession(sessionId)
+        if (session != null) {
+            val derivedTitle = if (session.title == "New Chat" && messages.isNotEmpty()) {
+                val firstUser = messages.firstOrNull { it.role == "user" }?.content?.trim()
+                if (!firstUser.isNullOrBlank()) {
+                    if (firstUser.length > 36) firstUser.take(34) + "…" else firstUser
+                } else session.title
+            } else session.title
 
-                    val updated = session.copy(
-                        title = derivedTitle,
-                        messageCount = messages.size,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                    current[sIdx] = updated
-                    val sorted = current.sortedByDescending { it.updatedAt }
-                    _sessions.value = sorted
-                    persistSessionsIndex(sorted)
-                }
-            } catch (_: Exception) {}
+            chatDao.updateSession(
+                session.copy(
+                    title = derivedTitle,
+                    messageCount = messages.size,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
         }
     }
 }
