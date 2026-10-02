@@ -145,6 +145,7 @@ fun HomeScreen(
     onScanDoc: () -> Unit = {},
     onStudyClick: () -> Unit = {},
     onLocalChatClick: () -> Unit = {},
+    onWelcomeClick: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val notes by viewModel.notes.collectAsState()
@@ -529,10 +530,17 @@ fun HomeScreen(
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text("Create your first note, record audio, or import a document to get started.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                                 Spacer(modifier = Modifier.height(20.dp))
-                                Button(onClick = onNewNote) {
-                                    Icon(Icons.Default.Add, null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Create Note")
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = onNewNote) {
+                                        Icon(Icons.Default.Add, null)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Create Note")
+                                    }
+                                    OutlinedButton(onClick = onWelcomeClick) {
+                                        Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Welcome Guide")
+                                    }
                                 }
                             } else {
                                 Icon(Icons.Default.SearchOff, null, modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)

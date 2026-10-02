@@ -13,7 +13,9 @@ import androidx.fragment.app.FragmentActivity
 import com.omnidocs.app.security.BiometricAuthManager
 import com.omnidocs.app.security.SecurityPreferences
 import com.omnidocs.app.ui.navigation.NotesNavHost
+import com.omnidocs.app.ui.navigation.Screen
 import com.omnidocs.app.ui.screens.security.AppLockScreen
+import com.omnidocs.app.ui.screens.welcome.OnboardingPreferences
 import com.omnidocs.app.ui.theme.NotesAppTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -27,6 +29,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var securityPreferences: SecurityPreferences
 
+    @Inject
+    lateinit var onboardingPreferences: OnboardingPreferences
+
     private var isUnlocked = mutableStateOf(false)
     private var authErrorMessage = mutableStateOf<String?>(null)
 
@@ -37,6 +42,7 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             val appLockEnabled by securityPreferences.isAppLockEnabled.collectAsState()
+            val hasCompletedOnboarding by onboardingPreferences.hasCompletedOnboarding.collectAsState()
             val unlocked by isUnlocked
             val errorMsg by authErrorMessage
 
@@ -57,7 +63,8 @@ class MainActivity : FragmentActivity() {
                             errorMessage = errorMsg
                         )
                     } else {
-                        NotesNavHost()
+                        val startDestination = if (hasCompletedOnboarding) Screen.Home.route else Screen.Welcome.route
+                        NotesNavHost(startDestination = startDestination)
                     }
                 }
             }

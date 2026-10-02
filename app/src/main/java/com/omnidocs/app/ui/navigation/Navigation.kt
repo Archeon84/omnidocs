@@ -31,6 +31,7 @@ import com.omnidocs.app.ui.screens.settings.PrivacySettingsScreen
 import com.omnidocs.app.ui.screens.study.StudyScreen
 import com.omnidocs.app.ui.screens.tasks.TaskListScreen
 import com.omnidocs.app.ui.screens.voice.VoiceCaptureOverlay
+import com.omnidocs.app.ui.screens.welcome.WelcomeScreen
 import com.omnidocs.app.ui.theme.MotionTokens
 import com.omnidocs.app.ui.theme.screenEnterTransition
 import com.omnidocs.app.ui.theme.screenExitTransition
@@ -38,6 +39,7 @@ import com.omnidocs.app.ui.theme.screenPopEnterTransition
 import com.omnidocs.app.ui.theme.screenPopExitTransition
 
 sealed class Screen(val route: String) {
+    object Welcome : Screen("welcome")
     object Home : Screen("home")
     object Editor : Screen("editor?noteId={noteId}&highlight={highlight}") {
         fun createRoute(noteId: String? = null, highlight: String? = null): String {
@@ -70,12 +72,29 @@ sealed class Screen(val route: String) {
 
 @Composable
 fun NotesNavHost(
-    navController: NavHostController = rememberNavController()
+    navController: NavHostController = rememberNavController(),
+    startDestination: String = Screen.Home.route
 ) {
     NavHost(
         navController = navController,
-        startDestination = Screen.Home.route
+        startDestination = startDestination
     ) {
+        composable(
+            route = Screen.Welcome.route,
+            enterTransition = { screenEnterTransition() },
+            exitTransition = { screenExitTransition() },
+            popEnterTransition = { screenPopEnterTransition() },
+            popExitTransition = { screenPopExitTransition() }
+        ) {
+            WelcomeScreen(
+                onFinish = {
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(Screen.Welcome.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
         composable(
             route = Screen.Home.route,
             enterTransition = { screenEnterTransition() },
@@ -119,6 +138,9 @@ fun NotesNavHost(
                 },
                 onLocalChatClick = {
                     navController.navigate(Screen.LocalChat.route)
+                },
+                onWelcomeClick = {
+                    navController.navigate(Screen.Welcome.route)
                 }
             )
         }
@@ -270,6 +292,9 @@ fun NotesNavHost(
                 },
                 onLocalChatClick = {
                     navController.navigate(Screen.LocalChat.route)
+                },
+                onWelcomeClick = {
+                    navController.navigate(Screen.Welcome.route)
                 },
                 lifecycleOwner = backStackEntry
             )

@@ -42,6 +42,7 @@ fun SettingsScreen(
     onPrivacyClick: () -> Unit = {},
     onAgentJobsClick: () -> Unit = {},
     onLocalChatClick: () -> Unit = {},
+    onWelcomeClick: () -> Unit = {},
     lifecycleOwner: LifecycleOwner? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
@@ -331,6 +332,15 @@ fun SettingsScreen(
             // ── About & Information ──
             item {
                 SettingsSection(title = "About OmniDocs") {
+                    SettingsTile(
+                        icon = Icons.Default.AutoAwesome,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                        title = "Welcome & Tutorial Guide",
+                        description = "Revisit the top features showcase and on-device AI download guide",
+                        trailingText = "Guide",
+                        onClick = onWelcomeClick
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.surfaceVariant)
                     SettingsTile(
                         icon = Icons.Default.Update,
                         iconTint = MaterialTheme.colorScheme.primary,
