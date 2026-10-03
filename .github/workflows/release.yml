@@ -1,23 +1,44 @@
-name: Release Build
+name: Release & Distribution Pipeline
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag or Version Name (e.g., v1.0.0)'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark this release as a pre-release'
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: 'Create as a draft release'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build-release:
     name: Build & Publish Release
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -38,17 +59,91 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Build Debug & Release APKs
-        run: ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
+      - name: Build Release Binaries (APK & AAB)
+        run: |
+          ./gradlew assembleDebug assembleRelease bundleRelease --no-daemon --stacktrace
 
-      - name: Create GitHub Release
+      - name: Prepare & Sign Release Artifacts
+        id: prepare-artifacts
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG="v1.0.0-snapshot"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          mkdir -p release-artifacts
+
+          # Copy Debug APK
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk "release-artifacts/omnidocs-${TAG}-debug.apk"
+          fi
+
+          # Copy Release AAB (App Bundle)
+          if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+            cp app/build/outputs/bundle/release/app-release.aab "release-artifacts/omnidocs-${TAG}-release.aab"
+          fi
+
+          # Find apksigner binary
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name apksigner | sort -V | tail -n 1)
+
+          RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
+          UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Signing with provided GitHub Secrets release keystore..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+            $APKSIGNER sign \
+              --ks release.keystore \
+              --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
+              --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+              --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+              --out "release-artifacts/omnidocs-${TAG}-release-signed.apk" \
+              "$UNSIGNED_APK"
+            rm -f release.keystore
+          elif [ -f "$RELEASE_APK" ]; then
+            cp "$RELEASE_APK" "release-artifacts/omnidocs-${TAG}-release.apk"
+          elif [ -f "$UNSIGNED_APK" ]; then
+            echo "Signing unsigned release APK with debug keystore for sideloading convenience..."
+            $APKSIGNER sign \
+              --ks ~/.android/debug.keystore \
+              --ks-key-alias androiddebugkey \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --out "release-artifacts/omnidocs-${TAG}-release.apk" \
+              "$UNSIGNED_APK" || cp "$UNSIGNED_APK" "release-artifacts/omnidocs-${TAG}-release-unsigned.apk"
+          fi
+
+          # Archive R8 / ProGuard Mapping for Crash Deobfuscation
+          if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
+            zip -j "release-artifacts/omnidocs-${TAG}-mapping.zip" app/build/outputs/mapping/release/mapping.txt
+          fi
+
+          # Generate SHA-256 Checksums for integrity verification
+          cd release-artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cd ..
+
+      - name: Upload Run Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts-${{ steps.prepare-artifacts.outputs.tag }}
+          path: release-artifacts/*
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.prepare-artifacts.outputs.tag }}
+          name: "OmniDocs ${{ steps.prepare-artifacts.outputs.tag }}"
+          draft: ${{ inputs.draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
           generate_release_notes: true
-          draft: false
-          prerelease: false
-          files: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/release/*.apk
+          files: release-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

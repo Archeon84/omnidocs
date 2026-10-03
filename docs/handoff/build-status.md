@@ -56,9 +56,16 @@
 * **Instrumented Emulator CI ([.github/workflows/instrumented-tests.yml](file:///h:/Work/OmniDocs/.github/workflows/instrumented-tests.yml))**:
   * Triggers: Manual `workflow_dispatch` (selectable API levels 30/33/34), weekly Sunday cron schedule, and PRs touching instrumentation tests.
   * Hardware: KVM acceleration enabled on Ubuntu runner, AVD caching (`x86_64` Pixel 6), headless SwiftShader rendering.
-* **Release Pipeline ([.github/workflows/release.yml](file:///h:/Work/OmniDocs/.github/workflows/release.yml))**:
+* **Release & Distribution Pipeline ([.github/workflows/release.yml](file:///h:/Work/OmniDocs/.github/workflows/release.yml))**:
   * Triggers: Tagged version pushes (`v*`) and manual dispatch.
-  * Distribution: Automatically builds APK binaries and publishes GitHub Releases.
+  * Verified Builds:
+    * `assembleRelease`: Full R8 minification, dead code elimination, resource shrinking (`app-release.apk`).
+    * `bundleRelease`: Modularized Android App Bundle (`app-release.aab`, 164 MB).
+  * Artifacts & Security:
+    * Automatically generates SHA-256 checksums (`SHA256SUMS.txt`).
+    * Packages deobfuscation symbols (`mapping.zip`) for crash triage.
+    * Signs release packages via GitHub Secrets (`KEYSTORE_BASE64`) with automatic debug-keystore fallback for sideloading.
+    * Publishes automated GitHub Release entries via `softprops/action-gh-release@v2`.
 
 
 

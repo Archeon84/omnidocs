@@ -2,6 +2,7 @@
 
 [![CI - Build & Test](https://github.com/Archeon84/omnidocs/actions/workflows/ci.yml/badge.svg)](https://github.com/Archeon84/omnidocs/actions/workflows/ci.yml)
 [![Instrumented Tests (Emulator)](https://github.com/Archeon84/omnidocs/actions/workflows/instrumented-tests.yml/badge.svg)](https://github.com/Archeon84/omnidocs/actions/workflows/instrumented-tests.yml)
+[![Release & Distribution Pipeline](https://github.com/Archeon84/omnidocs/actions/workflows/release.yml/badge.svg)](https://github.com/Archeon84/omnidocs/actions/workflows/release.yml)
 
 A privacy-first, offline-centric Android document and personal knowledge intelligence application with on-device LLM, neural OCR, offline speech recognition, hybrid semantic search, and encrypted backup.
 
