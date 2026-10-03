@@ -6,8 +6,8 @@
 * **Purpose**: OmniDocs is a privacy-first, offline-centric Android personal knowledge and document intelligence application. It combines a tri-mode note editor (Rich HTML / Raw Markdown / Preview), multi-format document conversion (PDF, Office, HTML, Markdown, TXT), on-device speech-to-text (Sherpa-ONNX Whisper/Moonshine), on-device neural language model inference (Google LiteRT-LM / Gemma 4), hybrid lexical-vector retrieval (Room FTS4 + USearch HNSW), interactive knowledge graph visualization (vis.js WebView), and local/cloud backup. All AI/ML inference executes locally on-device without telemetry.
 * **Repository State**:
   * **Branch**: `feature/markdown-edit-preview`
-  * **Head Commit**: `e40e5d5a9e49bcb8eb37e0ec695751ae13950c65` (*"feat(onboarding): implement first-run welcome tutorial, update documentation, and record as-built handoff"*)
-  * **Worktree State**: **CLEAN / COMMITTED**. First-run `WelcomeScreen` onboarding flow integrated and tested, `README.md` updated to accurately describe architecture, and decoupled native assets preserved.
+  * **Head Commit**: `8dbbd2c13a51204b6eaeae3c024e307d52311c0d` (*"docs(handoff): record resolution of all audit risks and gaps"*)
+  * **Worktree State**: **CLEAN / COMMITTED**. Zero untracked or dirty files; submodule `llama.cpp` cleanly pinned; all audit gaps (Local Chat SQLCipher Room migration v18, `androidTest` suite, and native C++ documentation) fully resolved and committed.
 * **Inspection Date**: October 3, 2026.
 * **Areas Not Inspected**: External Google Drive live OAuth credential exchange; remote Hugging Face endpoint uptime.
 
