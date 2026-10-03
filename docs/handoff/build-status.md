@@ -43,18 +43,23 @@
   2. **LiteRT Embedding Runtime**: Verified on-device loading and execution of `multilingual-e5-small-q8_0.gguf` under `com.google.ai.edge.litertlm.EmbeddingEngine` without falling back to N-gram hashing.
 
 ### 2.4 Android Instrumented Test Suite (`./gradlew connectedAndroidTest`)
-* **Status**: **TESTS CREATED & READY FOR CI/DEVICE EXECUTION**
+* **Status**: **COMPILED & PACKAGED (`assembleDebugAndroidTest` PASSED)**
+* **Artifact**: `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` (1,028,892 bytes) successfully built.
 * **Suites in `app/src/androidTest/`**:
   * [NotesDatabaseInstrumentationTest.kt](file:///h:/Work/OmniDocs/app/src/androidTest/java/com/omnidocs/app/data/local/NotesDatabaseInstrumentationTest.kt): Tests SQLCipher database creation on Android runtime, Room schema v18, Note CRUD, Chat thread insertion, and foreign key cascade deletion.
   * [AppSmokeInstrumentationTest.kt](file:///h:/Work/OmniDocs/app/src/androidTest/java/com/omnidocs/app/ui/AppSmokeInstrumentationTest.kt): Verifies that Jetpack Compose runtime, typography, and Material 3 theme render cleanly on Android OS.
 
-### 2.5 Automated CI/CD Pipeline (`.github/workflows/ci.yml`)
-* **Status**: **CONFIGURED & ACTIVE**
-* **Triggers**: Pushes & PRs to `main`, `release/**`, and manual `workflow_dispatch`.
-* **Jobs**:
-  1. `unit-tests`: JDK 21 + NDK r27, executes `./gradlew testDebugUnitTest`, publishes test reports.
-  2. `assemble-debug`: Builds debug APK with native C++ `usearch-android` library, uploads `app-debug.apk` as downloadable build artifact.
-  3. `lint`: Executes `./gradlew lintDebug`, publishes HTML/XML lint diagnostics.
+### 2.5 Continuous Integration & Delivery Pipelines
+* **Core CI ([.github/workflows/ci.yml](file:///h:/Work/OmniDocs/.github/workflows/ci.yml))**:
+  * Triggers: Pushes & PRs to `main`, `release/**`, manual `workflow_dispatch`.
+  * Jobs: `unit-tests` (54 suites), `assemble-debug` (`app-debug.apk`), `lint` (diagnostics report).
+* **Instrumented Emulator CI ([.github/workflows/instrumented-tests.yml](file:///h:/Work/OmniDocs/.github/workflows/instrumented-tests.yml))**:
+  * Triggers: Manual `workflow_dispatch` (selectable API levels 30/33/34), weekly Sunday cron schedule, and PRs touching instrumentation tests.
+  * Hardware: KVM acceleration enabled on Ubuntu runner, AVD caching (`x86_64` Pixel 6), headless SwiftShader rendering.
+* **Release Pipeline ([.github/workflows/release.yml](file:///h:/Work/OmniDocs/.github/workflows/release.yml))**:
+  * Triggers: Tagged version pushes (`v*`) and manual dispatch.
+  * Distribution: Automatically builds APK binaries and publishes GitHub Releases.
+
 
 
 ---

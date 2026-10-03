@@ -50,6 +50,9 @@ class NotesDatabaseInstrumentationTest {
             title = "Instrumented Test Note",
             content = "# Hello\nThis is an on-device test.",
             plainText = "Hello This is an on-device test.",
+            isPinned = false,
+            language = "en",
+            imageUrl = null,
             tags = "[\"test\", \"android\"]",
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
