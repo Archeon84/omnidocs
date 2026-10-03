@@ -1,3 +1,7 @@
+# OmniDocs — Developer Working Rules & AI Assistant Guidelines
+
+> **Document Role**: AI assistant behavioral guidelines, coding standards, and developer constraints.
+
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
 Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.

@@ -1,4 +1,7 @@
-# OmniDocs - Application Profile
+# OmniDocs — Application Profile
+
+> **Document Role**: Product Context, Strategic Architecture & Feature Inventory.  
+> **Source of Truth**: For technical setup and builds, refer to [README.md](file:///h:/Work/OmniDocs/README.md). For engineering handoff, refer to [docs/handoff/overview.md](file:///h:/Work/OmniDocs/docs/handoff/overview.md).
 
 ## 1. Identity
 
