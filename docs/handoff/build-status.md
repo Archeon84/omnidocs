@@ -48,6 +48,15 @@
   * [NotesDatabaseInstrumentationTest.kt](file:///h:/Work/OmniDocs/app/src/androidTest/java/com/omnidocs/app/data/local/NotesDatabaseInstrumentationTest.kt): Tests SQLCipher database creation on Android runtime, Room schema v18, Note CRUD, Chat thread insertion, and foreign key cascade deletion.
   * [AppSmokeInstrumentationTest.kt](file:///h:/Work/OmniDocs/app/src/androidTest/java/com/omnidocs/app/ui/AppSmokeInstrumentationTest.kt): Verifies that Jetpack Compose runtime, typography, and Material 3 theme render cleanly on Android OS.
 
+### 2.5 Automated CI/CD Pipeline (`.github/workflows/ci.yml`)
+* **Status**: **CONFIGURED & ACTIVE**
+* **Triggers**: Pushes & PRs to `main`, `release/**`, and manual `workflow_dispatch`.
+* **Jobs**:
+  1. `unit-tests`: JDK 21 + NDK r27, executes `./gradlew testDebugUnitTest`, publishes test reports.
+  2. `assemble-debug`: Builds debug APK with native C++ `usearch-android` library, uploads `app-debug.apk` as downloadable build artifact.
+  3. `lint`: Executes `./gradlew lintDebug`, publishes HTML/XML lint diagnostics.
+
+
 ---
 
 ## 3. Execution Limitations & Known Caveats

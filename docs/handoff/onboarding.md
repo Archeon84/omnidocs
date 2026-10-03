@@ -50,6 +50,12 @@ Verify that the Android Gradle Plugin and CMake compile the native C++ libraries
 The output APK is generated at:
 `app/build/outputs/apk/debug/app-debug.apk`
 
+### Step 5: GitHub Actions Continuous Integration
+Every pull request and push to `main` or `release/**` automatically triggers [.github/workflows/ci.yml](file:///h:/Work/OmniDocs/.github/workflows/ci.yml), which runs:
+- **`unit-tests`**: Validates all 54 unit test suites against JDK 21 and NDK r27.
+- **`assemble-debug`**: Compiles native C++ (`libusearch-android.so`) and publishes a downloadable `app-debug.apk` artifact.
+- **`lint`**: Generates static code analysis diagnostics.
+
 ---
 
 ## 3. High-Value Files to Read First

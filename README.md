@@ -1,5 +1,7 @@
 # OmniDocs
 
+[![CI - Build & Test](https://github.com/Archeon84/omnidocs/actions/workflows/ci.yml/badge.svg)](https://github.com/Archeon84/omnidocs/actions/workflows/ci.yml)
+
 A privacy-first, offline-centric Android document and personal knowledge intelligence application with on-device LLM, neural OCR, offline speech recognition, hybrid semantic search, and encrypted backup.
 
 ---
