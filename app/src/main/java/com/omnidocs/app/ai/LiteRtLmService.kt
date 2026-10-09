@@ -40,7 +40,8 @@ class LiteRtLmService @Inject constructor(
     private val modelDownloadManager: ModelDownloadManager,
     private val modelPreferences: ModelPreferences,
     private val thermalBudgetManager: ThermalBudgetManager? = null,
-    private val nativeMemoryManager: Provider<NativeMemoryManager>? = null
+    private val nativeMemoryManager: Provider<NativeMemoryManager>? = null,
+    private val deviceCapabilityManager: DeviceCapabilityManager? = null
 ) : ComponentCallbacks2 {
 
     private var engine: Engine? = null
@@ -91,9 +92,10 @@ class LiteRtLmService @Inject constructor(
      * Flagship devices (>=10GB RAM) allow 8,192 tokens.
      * Mid-tier devices (6-8GB RAM) use 6,144 tokens.
      * Budget devices (<6GB RAM) clamp to 4,096 tokens to avoid Low Memory Killer (LMK).
+     * Hardware-constrained devices further clamp to 2,048 tokens.
      */
-    fun computeMaxContextTokens(): Int {
-        return try {
+    fun computeMaxContextTokens(model: ModelInfo? = null): Int {
+        val baseTokens = try {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             val memInfo = ActivityManager.MemoryInfo()
             am?.getMemoryInfo(memInfo)
@@ -106,6 +108,14 @@ class LiteRtLmService @Inject constructor(
         } catch (_: Exception) {
             4096
         }
+
+        if (model != null && deviceCapabilityManager != null) {
+            if (!deviceCapabilityManager.isModelSafeForHardware(model)) {
+                Log.w(TAG, "Hardware constraint detected for ${model.name}; clamping context to 2048")
+                return minOf(baseTokens, 2048)
+            }
+        }
+        return baseTokens
     }
 
     suspend fun loadModel(modelId: String? = null): Boolean {
@@ -151,7 +161,7 @@ class LiteRtLmService @Inject constructor(
 
                     Log.d(TAG, "Loading LiteRT model: ${model.name} from $modelPath (${file.length() / 1024 / 1024}MB)")
 
-                    val maxTokens = computeMaxContextTokens()
+                    val maxTokens = computeMaxContextTokens(model)
                     val cacheDir = File(context.cacheDir, "litertlm").apply { mkdirs() }.absolutePath
 
                     val initialized = withContext(Dispatchers.IO) {

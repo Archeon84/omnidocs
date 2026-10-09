@@ -59,6 +59,22 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      - name: Setup Signing Keystore
+        id: setup-keystore
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Decoding release keystore from GitHub Secrets..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/release.keystore" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "has_keystore=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No production keystore secret configured; building default artifacts."
+            echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build Release Binaries (APK & AAB)
         run: |
           ./gradlew assembleDebug assembleRelease bundleRelease --no-daemon --stacktrace
@@ -82,7 +98,7 @@ jobs:
             cp app/build/outputs/apk/debug/app-debug.apk "release-artifacts/omnidocs-${TAG}-debug.apk"
           fi
 
-          # Copy Release AAB (App Bundle)
+          # Copy Release AAB (App Bundle for Play Store)
           if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
             cp app/build/outputs/bundle/release/app-release.aab "release-artifacts/omnidocs-${TAG}-release.aab"
           fi
@@ -93,19 +109,18 @@ jobs:
           RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
           UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
 
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "Signing with provided GitHub Secrets release keystore..."
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+          if [ -f "$RELEASE_APK" ]; then
+            # Built and signed by Gradle signingConfigs
+            cp "$RELEASE_APK" "release-artifacts/omnidocs-${TAG}-release.apk"
+          elif [ -f "$UNSIGNED_APK" ] && [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Signing unsigned release APK with provided keystore..."
             $APKSIGNER sign \
               --ks release.keystore \
               --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
               --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
               --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-              --out "release-artifacts/omnidocs-${TAG}-release-signed.apk" \
+              --out "release-artifacts/omnidocs-${TAG}-release.apk" \
               "$UNSIGNED_APK"
-            rm -f release.keystore
-          elif [ -f "$RELEASE_APK" ]; then
-            cp "$RELEASE_APK" "release-artifacts/omnidocs-${TAG}-release.apk"
           elif [ -f "$UNSIGNED_APK" ]; then
             echo "Signing unsigned release APK with debug keystore for sideloading convenience..."
             $APKSIGNER sign \
@@ -116,6 +131,9 @@ jobs:
               --out "release-artifacts/omnidocs-${TAG}-release.apk" \
               "$UNSIGNED_APK" || cp "$UNSIGNED_APK" "release-artifacts/omnidocs-${TAG}-release-unsigned.apk"
           fi
+
+          # Securely purge decoded keystore file
+          rm -f release.keystore
 
           # Archive R8 / ProGuard Mapping for Crash Deobfuscation
           if [ -f app/build/outputs/mapping/release/mapping.txt ]; then

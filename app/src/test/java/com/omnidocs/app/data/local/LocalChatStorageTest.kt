@@ -32,6 +32,16 @@ class LocalChatStorageTest {
         storage = LocalChatStorage(context, chatDao)
     }
 
+    private fun <T : Any> captureNonNull(captor: ArgumentCaptor<T>, fallback: T): T {
+        captor.capture()
+        return fallback
+    }
+
+    private fun <T : Any> eqNonNull(value: T): T {
+        org.mockito.Mockito.eq(value)
+        return value
+    }
+
     @Test
     fun `createSession persists new session via ChatDao`() = runTest {
         val session = storage.createSession(title = "My Test Chat")
@@ -39,7 +49,7 @@ class LocalChatStorageTest {
         assertEquals("general", session.personaId)
 
         val captor = ArgumentCaptor.forClass(ChatSessionEntity::class.java)
-        verify(chatDao).insertSession(captor.capture())
+        verify(chatDao).insertSession(captureNonNull(captor, session.toEntity()))
         assertEquals(session.id, captor.value.id)
         assertEquals("My Test Chat", captor.value.title)
     }
@@ -47,7 +57,7 @@ class LocalChatStorageTest {
     @Test
     fun `renameSession calls chatDao renameSession with timestamp`() = runTest {
         storage.renameSession("session-123", "New Name")
-        verify(chatDao).renameSession(eq("session-123"), eq("New Name"), anyLong())
+        verify(chatDao).renameSession(eqNonNull("session-123"), eqNonNull("New Name"), anyLong())
     }
 
     @Test
@@ -111,7 +121,7 @@ class LocalChatStorageTest {
         verify(chatDao).insertMessages(anyList())
 
         val sessionCaptor = ArgumentCaptor.forClass(ChatSessionEntity::class.java)
-        verify(chatDao).updateSession(sessionCaptor.capture())
+        verify(chatDao).updateSession(captureNonNull(sessionCaptor, sessionEntity))
         assertEquals(1, sessionCaptor.value.messageCount)
         assertEquals("What is Kotlin coroutines?", sessionCaptor.value.title)
     }

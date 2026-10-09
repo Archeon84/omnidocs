@@ -46,7 +46,9 @@ data class ModelInfo(
     val addBos: Boolean = false,
     val isDownloaded: Boolean = false,
     /** True for reasoning models that emit <think> blocks unless told otherwise. */
-    val isThinkingModel: Boolean = false
+    val isThinkingModel: Boolean = false,
+    /** Minimum recommended RAM in GB to prevent Low Memory Killer (LMK) kills. */
+    val minRamGb: Int = 4
 )
 
 @Singleton
@@ -119,6 +121,17 @@ class ModelDownloadManager @Inject constructor(
 
     val availableModels = listOf(
         ModelInfo(
+            id = "qwen_2_5_0_5b",
+            name = "Qwen 2.5 0.5B (Ultra-Light)",
+            description = "High-efficiency sub-1B model for budget devices (<4GB RAM). Fast summarization, multilingual, minimal battery drain.",
+            size = "~546 MB",
+            downloadUrl = "https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
+            fileName = "Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
+            promptFormat = PromptFormat.CHATML,
+            addBos = false,
+            minRamGb = 3
+        ),
+        ModelInfo(
             id = "gemma_4_e2b",
             name = "Gemma 4 E2B (Default)",
             description = "Google's lightweight on-device model for text note intelligence, fast RAG Q&A, and auto-tagging.",
@@ -126,7 +139,8 @@ class ModelDownloadManager @Inject constructor(
             downloadUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
             fileName = "gemma-4-E2B-it.litertlm",
             promptFormat = PromptFormat.GEMMA,
-            addBos = false
+            addBos = false,
+            minRamGb = 6
         ),
         ModelInfo(
             id = "gemma_4_e4b",
@@ -136,7 +150,8 @@ class ModelDownloadManager @Inject constructor(
             downloadUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
             fileName = "gemma-4-E4B-it.litertlm",
             promptFormat = PromptFormat.GEMMA,
-            addBos = false
+            addBos = false,
+            minRamGb = 8
         )
     )
 
