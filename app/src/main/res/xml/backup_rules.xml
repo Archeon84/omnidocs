@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <include domain="database" path="notes_database" />
-    <include domain="sharedpref" path="." />
+    <!-- Exclude SQLCipher database and hardware-bound KeyStore encrypted prefs:
+         Android KeyStore keys are never backed up, so restoring notes_database
+         without its hardware key would render it undecryptable on a new device.
+         Users restore encrypted workspaces via Google Drive Sync or Local Backup. -->
     <include domain="file" path="attachments" />
-    <include domain="file" path="models" />
-    <exclude domain="root" />
+    <include domain="file" path="recordings" />
+    <exclude domain="database" path="notes_database" />
+    <exclude domain="database" path="notes_database-wal" />
+    <exclude domain="database" path="notes_database-shm" />
+    <exclude domain="sharedpref" path="crypto_prefs.xml" />
+    <exclude domain="file" path="models" />
 </full-backup-content>

@@ -257,9 +257,10 @@ class VoiceCaptureManager @Inject constructor(
                     pendingSystemFinal = fullText
                     if (fullText.isNotBlank()) {
                         // Show accumulated session + this session's final (prefix once).
-                        _transcript.value = listOf(sessionText, fullText)
+                        sessionText = listOf(sessionText, fullText)
                             .filter { it.isNotBlank() }
                             .joinToString(" ")
+                        _transcript.value = sessionText
                     }
                 }
 
@@ -299,18 +300,10 @@ class VoiceCaptureManager @Inject constructor(
             }
         } else {
             recognizer?.stopListening()
-            // The final onResults arrives asynchronously after stopListening()
-            // returns; poll for it so the session ends with the final words, not
-            // the last partial. onResults sets the raw text, onError sets "" to
-            // unblock immediately -- so this resolves in milliseconds normally.
-            val deadline = System.currentTimeMillis() + 2500
-            while (pendingSystemFinal == null && System.currentTimeMillis() < deadline) {
-                Thread.sleep(50)
-            }
             val newFinal = pendingSystemFinal
             if (newFinal.isNullOrBlank()) {
-                // No final delivered (e.g. no-match error): keep the last partial
-                // already shown, stripped of the session prefix so it is not doubled.
+                // No final delivered yet: keep the last partial already shown,
+                // stripped of the session prefix so it is not doubled.
                 val prefix = if (sessionText.isBlank()) "" else "$sessionText "
                 finalText = if (_transcript.value.startsWith(prefix))
                     _transcript.value.removePrefix(prefix) else _transcript.value
@@ -322,8 +315,6 @@ class VoiceCaptureManager @Inject constructor(
         _liveAudioLevel.value = 0f
 
         if (finalText.isNotBlank()) {
-            // Accumulate across Record More sessions; audio persistence is
-            // deferred to getLastRecordingResult() so it happens once at save.
             sessionText = if (sessionText.isBlank()) finalText else "$sessionText $finalText"
             _transcript.value = sessionText
         }

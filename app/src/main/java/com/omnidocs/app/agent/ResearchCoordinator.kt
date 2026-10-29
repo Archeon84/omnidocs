@@ -63,7 +63,7 @@ class ResearchCoordinator @Inject constructor(
                 type = "CLASSIFY_QUERY",
                 payload = mapOf("query" to searchQuery)
             )
-            val classifyResult = agentCoordinator.runAgent(jobId, queryClassifierAgent, classifyInput, privacyMode)
+            val classifyResult = agentCoordinator.runAgent(jobId, queryClassifierAgent, classifyInput, privacyMode, isFinalStep = false)
             val queryType = if (classifyResult is AgentResult.Success) {
                 classifyResult.payload["queryType"] as? String ?: "MIXED"
             } else "MIXED"
@@ -84,14 +84,15 @@ class ResearchCoordinator @Inject constructor(
                     "topK" to "10"
                 )
             )
-            val retrievalResult = agentCoordinator.runAgent(jobId, retrievalAgent, retrievalInput, privacyMode)
+            val retrievalResult = agentCoordinator.runAgent(jobId, retrievalAgent, retrievalInput, privacyMode, isFinalStep = false)
             val candidatesJson = if (retrievalResult is AgentResult.Success) {
                 retrievalResult.payload["candidatesJson"] as? String ?: "[]"
             } else "[]"
             val insufficientEvidenceInitial = (retrievalResult as? AgentResult.Success)?.payload?.get("insufficientEvidence") as? Boolean ?: false
 
             if (insufficientEvidenceInitial || candidatesJson == "[]") {
-                agentCoordinator.updateProgress(jobId, 100)
+                agentCoordinator.markJobSucceeded(jobId)
+            agentCoordinator.updateProgress(jobId, 100)
                 return@withContext GroundedResearchResult(
                     jobId = jobId,
                     question = question,
@@ -125,7 +126,7 @@ class ResearchCoordinator @Inject constructor(
                     "conversationHistoryJson" to historyJson.toString()
                 )
             )
-            val answerResult = agentCoordinator.runAgent(jobId, answerAgent, answerInput, privacyMode, onAnswerToken = onAnswerToken)
+            val answerResult = agentCoordinator.runAgent(jobId, answerAgent, answerInput, privacyMode, isFinalStep = false, onAnswerToken = onAnswerToken)
             val answerText = (answerResult as? AgentResult.Success)?.payload?.get("answer") as? String ?: "No answer could be generated."
             val citationsJson = (answerResult as? AgentResult.Success)?.payload?.get("citationsJson") as? String ?: "[]"
             val rawConfidence = (answerResult as? AgentResult.Success)?.payload?.get("confidence") as? String ?: "MEDIUM"
@@ -188,6 +189,7 @@ class ResearchCoordinator @Inject constructor(
                 citations.filter { it.sourceIndex in referencedIndices }
             } else citations
 
+            agentCoordinator.markJobSucceeded(jobId)
             agentCoordinator.updateProgress(jobId, 100)
             agentCoordinator.recordEvent(
                 jobId = jobId,

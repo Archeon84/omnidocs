@@ -128,7 +128,7 @@ class HealthCoordinator @Inject constructor(
         }
 
         // 3. Score Health & Finish (60% -> 100%)
-        agentCoordinator.updateProgress(jobId, 100)
+        agentCoordinator.markJobSucceeded(jobId)
         val totalEntities = (allNotes.size + totalBlocksScanned).coerceAtLeast(1)
         val healthyRatio = ((totalEntities - issues.size).coerceAtLeast(0).toFloat() / totalEntities).coerceIn(0f, 1f)
 

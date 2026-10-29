@@ -595,6 +595,31 @@ class SherpaOnnxSttEngine @Inject constructor(
         }
     }
 
+    /**
+     * Transcribe raw 16-bit 16kHz PCM audio bytes directly without microphone capture.
+     */
+    fun transcribePcm(pcmBytes: ByteArray): SttResult? {
+        val rec = recognizer ?: return null
+        if (pcmBytes.isEmpty()) return null
+        return try {
+            val stream = rec.createStream() ?: return null
+            val shortCount = pcmBytes.size / 2
+            val floatSamples = FloatArray(shortCount)
+            val buffer = java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            for (i in 0 until shortCount) {
+                floatSamples[i] = buffer.short / 32768.0f
+            }
+            stream.acceptWaveform(floatSamples, sampleRate = SAMPLE_RATE)
+            rec.decode(stream)
+            val text = rec.getResult(stream)?.text?.trim() ?: ""
+            stream.release()
+            if (text.isNotEmpty()) SttResult(text = text) else null
+        } catch (e: Exception) {
+            Log.e(TAG, "transcribePcm error: ${e.message}", e)
+            null
+        }
+    }
+
     override fun cancelListening() {
         isRecording.set(false)
 

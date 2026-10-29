@@ -6,7 +6,9 @@ import androidx.core.content.FileProvider
 import com.omnidocs.app.calendar.CalendarExportService
 import com.omnidocs.app.data.local.ActionItemDao
 import com.omnidocs.app.data.local.ClaimDao
+import com.omnidocs.app.data.local.FlashcardDao
 import com.omnidocs.app.data.local.NoteDao
+import com.omnidocs.app.data.local.entity.ClaimEntity
 import com.omnidocs.app.data.local.entity.NoteEntity
 import com.omnidocs.app.graph.GraphEngine
 import com.omnidocs.app.graph.GraphExportService
@@ -44,7 +46,8 @@ class WorkspaceExportService @Inject constructor(
     private val graphEngine: GraphEngine,
     private val graphExportService: GraphExportService,
     private val calendarExportService: CalendarExportService,
-    private val studyExportService: StudyExportService
+    private val studyExportService: StudyExportService,
+    private val flashcardDao: FlashcardDao? = null
 ) {
 
     /**
@@ -53,6 +56,15 @@ class WorkspaceExportService @Inject constructor(
     suspend fun buildWorkspaceZip(zipFile: File): Long = withContext(Dispatchers.IO) {
         val notes = noteDao.getAllNotes().first()
         val allActionItems = actionItemDao.getAllActionItems().first()
+        val allClaims = mutableListOf<ClaimEntity>()
+        for (note in notes) {
+            val noteClaims = try {
+                claimDao.getClaimsByNoteId(note.id)?.first() ?: emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            allClaims.addAll(noteClaims)
+        }
         val graphData = graphEngine.buildGraph()
 
         ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
@@ -63,6 +75,7 @@ class WorkspaceExportService @Inject constructor(
                 put("exportDate", System.currentTimeMillis())
                 put("noteCount", notes.size)
                 put("actionItemCount", allActionItems.size)
+                put("claimCount", allClaims.size)
                 put("graphNodeCount", graphData.nodes.size)
                 put("graphEdgeCount", graphData.edges.size)
             }
@@ -111,22 +124,47 @@ class WorkspaceExportService @Inject constructor(
             }
             writeZipEntry(zos, "evidence/action_items.json", actionsArray.toString(2))
 
-            // 6. Study Decks
+            val claimsArray = JSONArray()
+            for (claim in allClaims) {
+                claimsArray.put(JSONObject().apply {
+                    put("id", claim.id)
+                    put("noteId", claim.noteId)
+                    put("text", claim.text)
+                    put("claimType", claim.claimType)
+                    put("confidence", claim.confidence)
+                    put("status", claim.status)
+                    put("createdAt", claim.createdAt)
+                    put("updatedAt", claim.updatedAt)
+                })
+            }
+            writeZipEntry(zos, "evidence/claims.json", claimsArray.toString(2))
+
+            // 6. Study Decks (prefer persisted SM-2 flashcards from FlashcardDao; fall back to note summary cards)
             val allCards = mutableListOf<Flashcard>()
-            for (note in notes.take(20)) {
-                if (note.title.isNotBlank() && note.plainText.length > 30) {
-                    allCards.add(
-                        Flashcard(
-                            id = note.id,
-                            noteId = note.id,
-                            type = StudyCardType.QA,
-                            prompt = "What is discussed in \"${note.title}\"?",
-                            answer = note.plainText.take(250),
-                            sourceSnippet = note.plainText.take(150),
-                            sourceTitle = note.title,
-                            tags = listOf("note_review")
+            for (note in notes) {
+                val persisted = try {
+                    flashcardDao?.getFlashcardsByNoteId(note.id).orEmpty().map { it.toFlashcard() }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                allCards.addAll(persisted)
+            }
+            if (allCards.isEmpty()) {
+                for (note in notes.take(20)) {
+                    if (note.title.isNotBlank() && note.plainText.length > 30) {
+                        allCards.add(
+                            Flashcard(
+                                id = note.id,
+                                noteId = note.id,
+                                type = StudyCardType.QA,
+                                prompt = "What is discussed in \"${note.title}\"?",
+                                answer = note.plainText.take(250),
+                                sourceSnippet = note.plainText.take(150),
+                                sourceTitle = note.title,
+                                tags = listOf("note_review")
+                            )
                         )
-                    )
+                    }
                 }
             }
             if (allCards.isNotEmpty()) {

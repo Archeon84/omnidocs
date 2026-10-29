@@ -73,7 +73,7 @@ class SettingsViewModel @Inject constructor(
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
-            initialValue = ModelPreferences.DEFAULT_MODEL_ID
+            initialValue = modelPreferences.getDefaultModelId()
         )
 
     init {
@@ -150,7 +150,7 @@ class SettingsViewModel @Inject constructor(
         // If the deleted model was the selected one, reset to default
         if (model.id == selectedModelId.value) {
             viewModelScope.launch {
-                modelPreferences.setSelectedModelId(ModelPreferences.DEFAULT_MODEL_ID)
+                modelPreferences.setSelectedModelId(modelPreferences.getDefaultModelId())
             }
         }
         _snackbarEvent.tryEmit("${model.name} deleted")

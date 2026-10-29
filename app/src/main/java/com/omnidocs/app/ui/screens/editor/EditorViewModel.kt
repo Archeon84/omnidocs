@@ -28,6 +28,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -53,6 +55,9 @@ class EditorViewModel @Inject constructor(
     private val recordingDao: RecordingDao,
     private val audioPlaybackController: AudioPlaybackController,
     private val contentBlockDao: ContentBlockDao,
+    private val claimDao: com.omnidocs.app.data.local.ClaimDao,
+    private val noteVersionDao: com.omnidocs.app.data.local.NoteVersionDao,
+    private val transcriptSegmentDao: com.omnidocs.app.data.local.TranscriptSegmentDao? = null,
     thermalBudgetManager: ThermalBudgetManager? = null
 ) : ViewModel() {
 
@@ -112,6 +117,42 @@ class EditorViewModel @Inject constructor(
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val claims: StateFlow<List<com.omnidocs.app.data.local.entity.ClaimEntity>> = _currentNote
+        .flatMapLatest { note ->
+            if (note != null) claimDao.getClaimsByNoteId(note.id)
+            else flowOf(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val versions: StateFlow<List<com.omnidocs.app.data.local.entity.NoteVersionEntity>> = _currentNote
+        .flatMapLatest { note ->
+            if (note != null) noteVersionDao.getVersionsByNoteId(note.id)
+            else flowOf(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun approveClaim(claim: com.omnidocs.app.data.local.entity.ClaimEntity) {
+        viewModelScope.launch {
+            claimDao.updateClaimStatus(claim.id, "approved")
+        }
+    }
+
+    fun rejectClaim(claim: com.omnidocs.app.data.local.entity.ClaimEntity) {
+        viewModelScope.launch {
+            claimDao.updateClaimStatus(claim.id, "rejected")
+        }
+    }
+
+    fun restoreVersion(version: com.omnidocs.app.data.local.entity.NoteVersionEntity) {
+        pushUndo()
+        _contentSource.value = ContentSource.PROGRAMMATIC
+        _content.value = version.content
+        isDirty = true
+        scheduleAutoSave()
+    }
+
     private val _snackbarEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val snackbarEvent: SharedFlow<String> = _snackbarEvent.asSharedFlow()
 
@@ -162,6 +203,10 @@ class EditorViewModel @Inject constructor(
     private val _contentBlocks = MutableStateFlow<List<ContentBlockEntity>>(emptyList())
     val contentBlocks: StateFlow<List<ContentBlockEntity>> = _contentBlocks.asStateFlow()
 
+    private val _ocrImageUrl = MutableStateFlow<String?>(null)
+    val ocrImageUrl: StateFlow<String?> = _ocrImageUrl.asStateFlow()
+    private var pendingOcrBlocksJson: String? = null
+
     val hasOcrBlocks: StateFlow<Boolean> = _contentBlocks.map { blocks ->
         blocks.any { it.boundingBoxJson != null }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -171,6 +216,55 @@ class EditorViewModel @Inject constructor(
 
     private val _selectedBlockIndex = MutableStateFlow<Int?>(null)
     val selectedBlockIndex: StateFlow<Int?> = _selectedBlockIndex.asStateFlow()
+
+    fun applyOcrProvenance(imageUrl: String?, blocksJson: String?) {
+        if (!imageUrl.isNullOrBlank()) {
+            _ocrImageUrl.value = imageUrl
+            _currentNote.value = _currentNote.value?.copy(imageUrl = imageUrl)
+        }
+        if (!blocksJson.isNullOrBlank() && blocksJson != "[]") {
+            pendingOcrBlocksJson = blocksJson
+            val parsed = parseOcrBlocksJson(blocksJson, _currentNote.value?.id)
+            if (parsed.isNotEmpty()) {
+                _contentBlocks.value = parsed
+                val existingNoteId = _currentNote.value?.id
+                if (existingNoteId != null) {
+                    viewModelScope.launch {
+                        try {
+                            contentBlockDao.insertBlocks(parsed)
+                            pendingOcrBlocksJson = null
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+        }
+    }
+
+    private fun parseOcrBlocksJson(blocksJson: String, noteId: String?): List<ContentBlockEntity> {
+        return try {
+            val arr = org.json.JSONArray(blocksJson)
+            val now = System.currentTimeMillis()
+            (0 until arr.length()).mapNotNull { idx ->
+                val obj = arr.optJSONObject(idx) ?: return@mapNotNull null
+                val content = obj.optString("content", "")
+                if (content.isBlank()) return@mapNotNull null
+                ContentBlockEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    noteId = noteId,
+                    blockIndex = obj.optInt("blockIndex", idx),
+                    blockType = obj.optString("blockType", "ocr_block"),
+                    content = content,
+                    boundingBoxJson = obj.optString("boundingBoxJson", "").takeIf { it.isNotBlank() },
+                    confidence = if (obj.has("confidence") && !obj.isNull("confidence")) {
+                        obj.optDouble("confidence", 0.0).toFloat()
+                    } else null,
+                    createdAt = now
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 
     fun openOcrInspector() {
         _showOcrInspector.value = true
@@ -268,10 +362,50 @@ class EditorViewModel @Inject constructor(
     private val _recordings = MutableStateFlow<List<RecordingEntity>>(emptyList())
     val recordings: StateFlow<List<RecordingEntity>> = _recordings.asStateFlow()
 
+    private val _transcriptSegments = MutableStateFlow<List<com.omnidocs.app.data.local.entity.TranscriptSegmentEntity>>(emptyList())
+    val transcriptSegments: StateFlow<List<com.omnidocs.app.data.local.entity.TranscriptSegmentEntity>> = _transcriptSegments.asStateFlow()
+
     val playingRecordingKey: StateFlow<String?> = audioPlaybackController.currentPlayingKey
+    val playbackPositionMs: StateFlow<Long> = audioPlaybackController.playbackPositionMs
+    val playbackDurationMs: StateFlow<Long> = audioPlaybackController.playbackDurationMs
+    val isPlaybackPaused: StateFlow<Boolean> = audioPlaybackController.isPaused
+
+    private val _playbackSpeed = MutableStateFlow(1f)
+    val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
 
     fun togglePlayback(recording: RecordingEntity) {
         audioPlaybackController.toggle(recording.storageKey)
+    }
+
+    fun togglePausePlayback(recording: RecordingEntity) {
+        audioPlaybackController.togglePause(recording.storageKey)
+    }
+
+    fun seekPlaybackTo(positionMs: Long) {
+        audioPlaybackController.seekTo(positionMs)
+    }
+
+    fun playSegment(
+        recording: RecordingEntity,
+        segment: com.omnidocs.app.data.local.entity.TranscriptSegmentEntity
+    ) {
+        if (audioPlaybackController.currentPlayingKey.value != recording.storageKey) {
+            audioPlaybackController.play(recording.storageKey)
+        } else if (audioPlaybackController.isPaused.value) {
+            audioPlaybackController.resume()
+        }
+        audioPlaybackController.seekTo(segment.startMs)
+    }
+
+    fun cyclePlaybackSpeed() {
+        val next = when (_playbackSpeed.value) {
+            1f -> 1.25f
+            1.25f -> 1.5f
+            1.5f -> 2f
+            else -> 1f
+        }
+        _playbackSpeed.value = next
+        audioPlaybackController.setSpeed(next)
     }
 
     fun stopPlayback() {
@@ -316,6 +450,15 @@ class EditorViewModel @Inject constructor(
         viewModelScope.launch {
             recordingDao.getRecordingsByNoteId(noteId).collect { recordings ->
                 _recordings.value = recordings
+            }
+        }
+
+        // Load timestamped transcript segments belonging to this note.
+        transcriptSegmentDao?.let { segDao ->
+            viewModelScope.launch {
+                segDao.getSegmentsByNoteId(noteId).collect { segments ->
+                    _transcriptSegments.value = segments
+                }
             }
         }
 
@@ -408,18 +551,11 @@ class EditorViewModel @Inject constructor(
     fun updateMarkdown(text: String) {
         _markdownText.value = text
         markdownDirty = true
-        // Keep _content (the HTML source of truth saveNoteInternal persists) in
-        // sync as the user types, so every exit path (back from any mode, mode
-        // toggle) saves the current markdown. We deliberately do NOT schedule an
-        // autosave here: typing would otherwise fire the save -> on-device model
-        // re-index pipeline repeatedly and amplify a pre-existing native GGML
-        // lifecycle crash. Markdown is a distinct editing session that commits
-        // on exit. Converting never replaces richHtmlSnapshot, so the fidelity
-        // guard is preserved.
         val html = MarkdownCodec.markdownToHtml(text)
         _contentSource.value = ContentSource.PROGRAMMATIC
         _content.value = html
         isDirty = true
+        scheduleAutoSave()
     }
 
     /** Markdown source shown in Preview mode. From RICH it re-derives from HTML so
@@ -444,17 +580,19 @@ class EditorViewModel @Inject constructor(
         }
     }
 
+    private val saveMutex = Mutex()
+
     private fun scheduleAutoSave() {
         autoSaveJob?.cancel()
         autoSaveJob = viewModelScope.launch {
             delay(AUTO_SAVE_DELAY)
-            saveNote()
+            saveNoteInternal(isAutoSave = true)
         }
     }
 
     fun saveNote() {
         viewModelScope.launch {
-            saveNoteInternal()
+            saveNoteInternal(isAutoSave = false)
         }
     }
 
@@ -464,7 +602,7 @@ class EditorViewModel @Inject constructor(
      */
     fun saveAndNavigate(onNavigated: () -> Unit) {
         viewModelScope.launch {
-            saveNoteInternal()
+            saveNoteInternal(isAutoSave = false)
             // Trigger evidence extraction exactly once per deliberate save, not on
             // every 3-second auto-save. The EvidenceExtractor's isExtracting guard
             // and content-hash check ensure only one GGML call runs at a time and
@@ -503,44 +641,83 @@ class EditorViewModel @Inject constructor(
         }
     }
 
-    private suspend fun saveNoteInternal() {
-        _isSaving.value = true
-        try {
-            val note = _currentNote.value
-            if (note != null) {
-                val updatedNote = note.copy(
-                    title = _title.value,
-                    content = _content.value,
-                    plainText = stripHtml(_content.value),
-                    language = _currentLanguage.value,
-                    updatedAt = System.currentTimeMillis()
-                )
-                repository.updateNote(updatedNote)
-                // DB now matches the editor; allow the Room flow to re-sync.
-                isDirty = false
-            } else {
-                val newNote = repository.createNote(
-                    title = _title.value,
-                    content = _content.value,
-                    plainText = stripHtml(_content.value),
-                    language = _currentLanguage.value
-                )
-                _currentNote.value = newNote
-                // DB now matches the editor; allow the Room flow to re-sync.
-                isDirty = false
-                // Auto-tag new notes with sufficient content. Fire-and-forget so
-                // the slow offline-LLM call never blocks save.
-                if (_content.value.length > 100) {
-                    autoTagger.tagNoteAsync(newNote)
+    private suspend fun saveNoteInternal(isAutoSave: Boolean = false) {
+        saveMutex.withLock {
+            _isSaving.value = true
+            try {
+                val note = _currentNote.value
+                if (note != null) {
+                    val updatedNote = note.copy(
+                        title = _title.value,
+                        content = _content.value,
+                        plainText = stripHtml(_content.value),
+                        language = _currentLanguage.value,
+                        imageUrl = _ocrImageUrl.value ?: note.imageUrl,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    repository.updateNote(updatedNote)
+                    _currentNote.value = updatedNote
+                    // DB now matches the editor; allow the Room flow to re-sync.
+                    isDirty = false
+                } else {
+                    val createdNote = repository.createNote(
+                        title = _title.value,
+                        content = _content.value,
+                        plainText = stripHtml(_content.value),
+                        language = _currentLanguage.value
+                    )
+                    val newNote = if (_ocrImageUrl.value != null) {
+                        val withImage = createdNote.copy(imageUrl = _ocrImageUrl.value)
+                        repository.updateNoteMetadataOnly(withImage)
+                        withImage
+                    } else {
+                        createdNote
+                    }
+                    _currentNote.value = newNote
+                    // DB now matches the editor; allow the Room flow to re-sync.
+                    isDirty = false
+                    // Auto-tag new notes with sufficient content. Fire-and-forget so
+                    // the slow offline-LLM call never blocks save.
+                    if (_content.value.length > 100) {
+                        autoTagger.tagNoteAsync(newNote)
+                    }
                 }
-                // Evidence extraction for new notes happens in saveAndNavigate(), not
-                // here, to avoid repeated GGML invocations on every auto-save.
+                val savedNoteId = _currentNote.value?.id
+                val pendingBlocks = pendingOcrBlocksJson
+                if (savedNoteId != null && !pendingBlocks.isNullOrBlank()) {
+                    val blocks = parseOcrBlocksJson(pendingBlocks, savedNoteId)
+                    if (blocks.isNotEmpty()) {
+                        try {
+                            contentBlockDao.insertBlocks(blocks)
+                            _contentBlocks.value = blocks
+                            pendingOcrBlocksJson = null
+                        } catch (_: Exception) {}
+                    }
+                }
+                if (!isAutoSave) {
+                    val savedId = note?.id ?: _currentNote.value?.id
+                    if (savedId != null) {
+                        val latestVer = noteVersionDao.getLatestVersion(savedId)?.version ?: 0
+                        noteVersionDao.insertVersion(
+                            com.omnidocs.app.data.local.entity.NoteVersionEntity(
+                                id = java.util.UUID.randomUUID().toString(),
+                                noteId = savedId,
+                                version = latestVer + 1,
+                                content = _content.value,
+                                plainText = com.omnidocs.app.util.HtmlSanitizer.toPlainText(_content.value),
+                                createdAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                    _snackbarEvent.tryEmit("Note saved")
+                }
+            } catch (e: Exception) {
+                if (!isAutoSave) {
+                    _snackbarEvent.tryEmit("Failed to save note: ${e.message ?: "Unknown error"}")
+                }
+            } finally {
+                _isSaving.value = false
             }
-            _snackbarEvent.tryEmit("Note saved")
-        } catch (e: Exception) {
-            _snackbarEvent.tryEmit("Failed to save note: ${e.message ?: "Unknown error"}")
-        } finally {
-            _isSaving.value = false
         }
     }
 

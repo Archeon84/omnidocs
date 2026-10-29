@@ -14,8 +14,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.omnidocs.app.security.BiometricAuthManager
 import com.omnidocs.app.security.SecurityPreferences
+import com.omnidocs.app.ui.screens.privacy.PrivacyDashboardViewModel
 
 /**
  * Privacy and security settings screen.
@@ -25,7 +27,8 @@ import com.omnidocs.app.security.SecurityPreferences
 @Composable
 fun PrivacySettingsScreen(
     onBack: () -> Unit,
-    onDashboardClick: () -> Unit = {}
+    onDashboardClick: () -> Unit = {},
+    dashboardViewModel: PrivacyDashboardViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val securityPreferences = remember { SecurityPreferences(context) }
@@ -34,11 +37,11 @@ fun PrivacySettingsScreen(
     val isAppLockEnabled by securityPreferences.isAppLockEnabled.collectAsState()
     val canAuthenticate = remember { biometricAuthManager.canAuthenticate() }
 
-    var localOnlyProcessing by remember { mutableStateOf(true) }
-    var cloudOptIn by remember { mutableStateOf(false) }
-    var deleteAudioAfterTranscription by remember { mutableStateOf(false) }
-    var disableAiSuggestions by remember { mutableStateOf(false) }
-    var audioRetentionDays by remember { mutableIntStateOf(90) }
+    val localOnlyProcessing by securityPreferences.localOnlyProcessing.collectAsState()
+    val cloudOptIn by securityPreferences.cloudOptIn.collectAsState()
+    val deleteAudioAfterTranscription by securityPreferences.deleteAudioAfterTranscription.collectAsState()
+    val disableAiSuggestions by securityPreferences.disableAiSuggestions.collectAsState()
+    val audioRetentionDays by securityPreferences.audioRetentionDays.collectAsState()
     var showDeleteAllDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -176,7 +179,7 @@ fun PrivacySettingsScreen(
                         }
                         Switch(
                             checked = localOnlyProcessing,
-                            onCheckedChange = { localOnlyProcessing = it }
+                            onCheckedChange = { securityPreferences.setLocalOnlyProcessing(it) }
                         )
                     }
 
@@ -196,7 +199,7 @@ fun PrivacySettingsScreen(
                         }
                         Switch(
                             checked = cloudOptIn,
-                            onCheckedChange = { cloudOptIn = it },
+                            onCheckedChange = { securityPreferences.setCloudOptIn(it) },
                             enabled = !localOnlyProcessing
                         )
                     }
@@ -226,7 +229,7 @@ fun PrivacySettingsScreen(
                         }
                         Switch(
                             checked = deleteAudioAfterTranscription,
-                            onCheckedChange = { deleteAudioAfterTranscription = it }
+                            onCheckedChange = { securityPreferences.setDeleteAudioAfterTranscription(it) }
                         )
                     }
 
@@ -235,7 +238,7 @@ fun PrivacySettingsScreen(
                     Text("Audio retention: $audioRetentionDays days", fontWeight = FontWeight.Medium)
                     Slider(
                         value = audioRetentionDays.toFloat(),
-                        onValueChange = { audioRetentionDays = it.toInt() },
+                        onValueChange = { securityPreferences.setAudioRetentionDays(it.toInt()) },
                         valueRange = 7f..365f,
                         steps = 50
                     )
@@ -272,7 +275,7 @@ fun PrivacySettingsScreen(
                         }
                         Switch(
                             checked = disableAiSuggestions,
-                            onCheckedChange = { disableAiSuggestions = it }
+                            onCheckedChange = { securityPreferences.setDisableAiSuggestions(it) }
                         )
                     }
                 }
@@ -288,7 +291,7 @@ fun PrivacySettingsScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     OutlinedButton(
-                        onClick = { /* TODO: Export all data */ },
+                        onClick = { dashboardViewModel.exportAllData(context) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.FileDownload, contentDescription = null)
@@ -312,5 +315,35 @@ fun PrivacySettingsScreen(
                 }
             }
         }
+    }
+
+    if (showDeleteAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAllDialog = false },
+            title = { Text("Delete All Notes & Data?") },
+            text = {
+                Text(
+                    "This will permanently delete all local notes, embeddings, flashcards, and audio recordings from this device. This action cannot be undone."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteAllDialog = false
+                        dashboardViewModel.deleteAllNotesAndData()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Delete Everything")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAllDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }

@@ -253,13 +253,34 @@
             notifyContentChanged();
         });
 
+        function getCleanHtml() {
+            const clone = editor.cloneNode(true);
+            clone.querySelectorAll('.collapsible-content').forEach(wrapper => {
+                while (wrapper.firstChild) {
+                    wrapper.parentNode.insertBefore(wrapper.firstChild, wrapper);
+                }
+                wrapper.remove();
+            });
+            clone.querySelectorAll('.collapsible-heading').forEach(h => {
+                h.classList.remove('collapsible-heading', 'expanded', 'collapsed');
+                if (h.classList.length === 0) h.removeAttribute('class');
+            });
+            clone.querySelectorAll('.citation-highlight').forEach(span => {
+                while (span.firstChild) {
+                    span.parentNode.insertBefore(span.firstChild, span);
+                }
+                span.remove();
+            });
+            return clone.innerHTML;
+        }
+
         // Notify Android of content changes
         function notifyContentChanged() {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(function() {
                 if (isComposing) return;
                 if (window.Android && window.Android.onContentChanged) {
-                    window.Android.onContentChanged(editor.innerHTML);
+                    window.Android.onContentChanged(getCleanHtml());
                 }
             }, 300);
         }
@@ -385,6 +406,7 @@
                 // Insert code snippet at cursor
                 document.execCommand('insertHTML', false, '<code>&nbsp;</code>');
             }
+            notifyContentChanged();
             notifyFormatState();
         }
 
@@ -406,7 +428,7 @@
 
         // Get content for Android
         function getContent() {
-            return editor.innerHTML;
+            return getCleanHtml();
         }
 
         // Clear editor
@@ -455,7 +477,13 @@
             document.querySelectorAll('h2, h3').forEach(heading => {
                 if (heading.classList.contains('collapsible-heading')) return;
                 heading.classList.add('collapsible-heading', 'expanded');
-                heading.onclick = () => toggleCollapse(heading);
+                heading.onclick = (e) => {
+                    const rect = heading.getBoundingClientRect();
+                    if (e.clientX - rect.left < 36) {
+                        e.preventDefault();
+                        toggleCollapse(heading);
+                    }
+                };
 
                 let content = [];
                 let sibling = heading.nextElementSibling;

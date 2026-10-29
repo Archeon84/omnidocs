@@ -19,8 +19,11 @@ import javax.inject.Inject
 class WelcomeViewModel @Inject constructor(
     val modelDownloadManager: ModelDownloadManager,
     private val modelPreferences: ModelPreferences,
-    private val onboardingPreferences: OnboardingPreferences
+    private val onboardingPreferences: OnboardingPreferences,
+    private val demoNotebookSeeder: com.omnidocs.app.data.repository.DemoNotebookSeeder? = null
 ) : ViewModel() {
+
+    val recommendedModelId: String = modelPreferences.getDefaultModelId()
 
     val availableLlmModels: List<ModelInfo> = modelDownloadManager.availableModels
     val availableEmbeddingModels: List<ModelInfo> = modelDownloadManager.embeddingModels
@@ -59,25 +62,34 @@ class WelcomeViewModel @Inject constructor(
     fun downloadModel(model: ModelInfo) {
         viewModelScope.launch {
             modelDownloadManager.downloadModel(model)
-            modelPreferences.setSelectedModelId(model.id)
+            if (downloadState.value !is DownloadState.Error) {
+                modelPreferences.setSelectedModelId(model.id)
+            }
         }
     }
 
     fun downloadEmbeddingModel(model: ModelInfo) {
         viewModelScope.launch {
             modelDownloadManager.downloadEmbeddingModel(model)
-            modelPreferences.setSelectedEmbeddingModelId(model.id)
+            if (embeddingDownloadState.value !is DownloadState.Error) {
+                modelPreferences.setSelectedEmbeddingModelId(model.id)
+            }
         }
     }
 
     fun downloadSttModel(model: SttModelInfo) {
         viewModelScope.launch {
             modelDownloadManager.downloadSttModel(model)
-            modelPreferences.setSelectedSttModelId(model.id)
+            if (sttDownloadState.value !is DownloadState.Error) {
+                modelPreferences.setSelectedSttModelId(model.id)
+            }
         }
     }
 
     fun completeOnboarding() {
         onboardingPreferences.setOnboardingCompleted(true)
+        viewModelScope.launch {
+            demoNotebookSeeder?.seedIfEmptyWorkspace()
+        }
     }
 }

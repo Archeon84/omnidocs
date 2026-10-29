@@ -316,7 +316,7 @@ class GraphEngine @Inject constructor(
                 }
             val updated = note.copy(relatedNotes = JSONArray(related).toString())
             if (updated.relatedNotes != note.relatedNotes) {
-                repository.updateNote(updated)
+                repository.updateNoteMetadataOnly(updated)
             }
         }
 

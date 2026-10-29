@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Upsert
 import com.omnidocs.app.data.local.entity.ChatMessageEntity
 import com.omnidocs.app.data.local.entity.ChatSessionEntity
 import kotlinx.coroutines.flow.Flow
@@ -21,10 +22,10 @@ interface ChatDao {
     @Query("SELECT * FROM chat_sessions WHERE id = :id LIMIT 1")
     suspend fun getSession(id: String): ChatSessionEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertSession(session: ChatSessionEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertSessions(sessions: List<ChatSessionEntity>)
 
     @Update
@@ -45,10 +46,10 @@ interface ChatDao {
     @Query("SELECT * FROM chat_messages WHERE sessionId = :sessionId ORDER BY timestamp ASC")
     suspend fun getMessages(sessionId: String): List<ChatMessageEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertMessage(message: ChatMessageEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertMessages(messages: List<ChatMessageEntity>)
 
     @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId")

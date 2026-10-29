@@ -55,16 +55,20 @@ class DriveService @Inject constructor(
     private suspend fun getAccessToken(): String? = withContext(Dispatchers.IO) {
         try {
             val account = GoogleSignIn.getLastSignedInAccount(context) ?: return@withContext null
+            val googleAccount = account.account ?: return@withContext null
             GoogleAuthUtil.getToken(
                 context,
-                account.account!!,
-                "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
+                googleAccount,
+                "oauth2:https://www.googleapis.com/auth/drive.file"
             )
         } catch (e: GoogleAuthException) {
             Log.e(TAG, "Auth error", e)
             null
         } catch (e: IOException) {
             Log.e(TAG, "Network error", e)
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected token retrieval error", e)
             null
         }
     }
@@ -98,13 +102,19 @@ class DriveService @Inject constructor(
                     }
                 }
 
-                val response = client.newCall(requestBuilder.build()).execute()
-                val responseBody = response.body?.string()
-
-                if (response.isSuccessful) {
-                    responseBody
-                } else {
-                    null
+                client.newCall(requestBuilder.build()).execute().use { response ->
+                    if (response.code == 401) {
+                        try {
+                            GoogleAuthUtil.clearToken(context, token)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to clear expired token", e)
+                        }
+                    }
+                    if (response.isSuccessful) {
+                        response.body?.string()
+                    } else {
+                        null
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "makeRequest failed", e)
@@ -162,12 +172,16 @@ class DriveService @Inject constructor(
                 // Anything edited mid-upload keeps isSynced=0 and rides the next pass;
                 // the old code marked everything, silently dropping those edits.
                 val snapshot = notes.associate { it.id to it.updatedAt }
-                val current = noteDao.getNotesByIdsIncludeDeleted(snapshot.keys.toList())
+                val current = snapshot.keys.chunked(500).flatMap { chunk ->
+                    noteDao.getNotesByIdsIncludeDeleted(chunk)
+                }
                 val unchanged = current
                     .filter { snapshot[it.id] == it.updatedAt }
                     .map { it.id }
                 if (unchanged.isNotEmpty()) {
-                    noteDao.markAsSynced(unchanged)
+                    for (chunk in unchanged.chunked(500)) {
+                        noteDao.markAsSynced(chunk)
+                    }
                 }
                 true
             } else {
@@ -320,7 +334,6 @@ class DriveService @Inject constructor(
             return GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
                 .requestEmail()
                 .requestScopes(Scope("https://www.googleapis.com/auth/drive.file"))
-                .requestScopes(Scope("https://www.googleapis.com/auth/drive.appdata"))
                 .build()
         }
     }

@@ -128,6 +128,10 @@ class NotesRepository @Inject constructor(
         reindexOnSave(note.toEntity())
     }
 
+    suspend fun updateNoteMetadataOnly(note: Note) {
+        noteDao.updateNote(note.toEntity())
+    }
+
     /**
      * Refresh a note's semantic embedding after a save so search stays current.
      * Always enqueued: the n-gram fallback is cheap CPU, and the real-model

@@ -121,17 +121,22 @@ class VocabularyDictionaryService @Inject constructor() {
             result = result.replace(regex, replacement)
         }
 
-        // 2. Optionally expand acronyms or standardize their casing
-        if (expandAcronymsInPlace) {
-            for ((acronym, expansion) in getAllKnownAcronyms()) {
-                val regex = Regex("(?i)\\b${Regex.escape(acronym)}\\b")
-                result = result.replace(regex, "$acronym ($expansion)")
-            }
-        } else {
-            // Standardize acronym casing (e.g. "lhdn" -> "LHDN", "kwsp" -> "KWSP")
-            for (acronym in getAllKnownAcronyms().keys) {
-                val regex = Regex("(?i)\\b${Regex.escape(acronym)}\\b")
-                result = result.replace(regex, acronym)
+        // 2. Optionally expand acronyms or standardize their casing in a single pass
+        //    (prevents mutual acronyms like PERKESO <-> SOCSO or SPRM <-> MACC from recursively expanding)
+        val knownAcronyms = getAllKnownAcronyms()
+        if (knownAcronyms.isNotEmpty()) {
+            val pattern = knownAcronyms.keys
+                .sortedByDescending { it.length }
+                .joinToString("|") { Regex.escape(it) }
+            val combinedRegex = Regex("(?i)\\b($pattern)\\b")
+            result = combinedRegex.replace(result) { match ->
+                val canonical = match.value.uppercase()
+                val expansion = knownAcronyms[canonical]
+                if (expandAcronymsInPlace && expansion != null) {
+                    "$canonical ($expansion)"
+                } else {
+                    canonical
+                }
             }
         }
 

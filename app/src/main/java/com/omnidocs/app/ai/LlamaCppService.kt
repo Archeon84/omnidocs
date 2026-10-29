@@ -68,11 +68,22 @@ class LlamaCppService @Inject constructor(
         modelId: String? = null
     ): String? = liteRtLmService.generate(prompt, maxTokens, applyThermalBudget, modelId)
 
+    suspend fun generate(
+        prompt: String,
+        maxTokens: Int,
+        applyThermalBudget: Boolean,
+        modelId: String?,
+        temperature: Float?,
+        topP: Float?
+    ): String? = liteRtLmService.generate(prompt, maxTokens, applyThermalBudget, modelId, temperature, topP)
+
     fun generateFlow(
         prompt: String,
         maxTokens: Int = 2048,
-        modelId: String? = null
-    ): Flow<String> = liteRtLmService.generateFlow(prompt, maxTokens, modelId)
+        modelId: String? = null,
+        temperature: Float? = null,
+        topP: Float? = null
+    ): Flow<String> = liteRtLmService.generateFlow(prompt, maxTokens, modelId, temperature, topP)
 
     fun stopGeneration() {
         liteRtLmService.stopGeneration()

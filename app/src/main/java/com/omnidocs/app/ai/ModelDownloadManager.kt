@@ -127,6 +127,7 @@ class ModelDownloadManager @Inject constructor(
             size = "~546 MB",
             downloadUrl = "https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
             fileName = "Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
+            sha256 = "e608953f169aeb1bd7b9155fec2559825e08453fc209b84eda3a781ed0452fd2",
             promptFormat = PromptFormat.CHATML,
             addBos = false,
             minRamGb = 3
@@ -135,9 +136,10 @@ class ModelDownloadManager @Inject constructor(
             id = "gemma_4_e2b",
             name = "Gemma 4 E2B (Default)",
             description = "Google's lightweight on-device model for text note intelligence, fast RAG Q&A, and auto-tagging.",
-            size = "~1.1 GB",
+            size = "~2.5 GB",
             downloadUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
             fileName = "gemma-4-E2B-it.litertlm",
+            sha256 = "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c",
             promptFormat = PromptFormat.GEMMA,
             addBos = false,
             minRamGb = 6
@@ -146,9 +148,10 @@ class ModelDownloadManager @Inject constructor(
             id = "gemma_4_e4b",
             name = "Gemma 4 E4B (Pro)",
             description = "High-capacity reasoning model from Google for complex syntheses, multi-document research, and deep analysis.",
-            size = "~3.2 GB",
+            size = "~3.6 GB",
             downloadUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
             fileName = "gemma-4-E4B-it.litertlm",
+            sha256 = "0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0",
             promptFormat = PromptFormat.GEMMA,
             addBos = false,
             minRamGb = 8
@@ -215,16 +218,13 @@ class ModelDownloadManager @Inject constructor(
      */
     val embeddingModels = listOf(
         ModelInfo(
-            id = "multilingual_e5_small",
-            name = "Multilingual E5 Small (Q8_0)",
-            description = "384-dim multilingual embedding model for semantic search. Covers Malay and 99+ languages.",
-            size = "~126 MB",
-            downloadUrl = "https://huggingface.co/cstr/multilingual-e5-small-GGUF/resolve/main/multilingual-e5-small-q8_0.gguf",
-            fileName = "multilingual-e5-small-q8_0.gguf",
-            // Verified 2026-09-07: upstream republished the file under resolve/main
-            // (131,624,960 bytes); the previous hash looped every install into a
-            // download → mismatch → delete cycle with no UI signal.
-            sha256 = "0a34067a40f25d3149b36885faa62bee0e5284d0f9edc102acfc00e115d953e8"
+            id = "embeddinggemma_2_270m",
+            name = "EmbeddingGemma 2 (270M)",
+            description = "Google's 157 MB on-device multilingual & code embedding model (.litertlm). Powers local semantic search and Graph RAG.",
+            size = "~157 MB",
+            downloadUrl = "https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm/resolve/main/embeddinggemma-2-text-270m.litertlm",
+            fileName = "embeddinggemma-2-text-270m.litertlm",
+            sha256 = "2d079ee2f6f066b1f368e8d7c819f55214eaef1d0513b312321901f30ab286fb"
         )
     )
 
@@ -259,7 +259,7 @@ class ModelDownloadManager @Inject constructor(
     }
 
     private suspend fun downloadSingleGgufLocked(model: ModelInfo, state: MutableStateFlow<DownloadState>) {
-        withContext(Dispatchers.IO) {
+        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
             var connection: HttpURLConnection? = null
             try {
                 Log.d(TAG, "Starting download for ${model.name}")
@@ -508,7 +508,7 @@ class ModelDownloadManager @Inject constructor(
     }
 
     private suspend fun downloadSttModelLocked(model: SttModelInfo) {
-        withContext(Dispatchers.IO) {
+        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
             var connection: HttpURLConnection? = null
             try {
                 Log.d(TAG, "Starting STT model download: ${model.name}")

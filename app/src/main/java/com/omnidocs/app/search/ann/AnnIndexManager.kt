@@ -224,7 +224,7 @@ class AnnIndexManager(
             try {
                 NativeUSearchIndex(dimensions)
             } catch (e: Throwable) {
-                Log.w(TAG, "Native USearch init failed: . Using Kotlin fallback.", e)
+                Log.w(TAG, "Native USearch init failed: ${e.message}. Using Kotlin fallback.", e)
                 KotlinMemoryIndex(dimensions)
             }
         } else {
@@ -251,12 +251,12 @@ class AnnIndexManager(
         // Try loading/viewing on-disk index
         val indexPath = getIndexPath(modelName)
         if (indexPath != null) {
-            val graphFile = File(".usearch")
-            val vecFile = File(".usearch.vec")
+            val graphFile = File("$indexPath.usearch")
+            val vecFile = File("$indexPath.usearch.vec")
             if (graphFile.exists() && vecFile.exists()) {
                 val loaded = index.view(indexPath) || index.load(indexPath)
                 if (loaded) {
-                    Log.i(TAG, "Successfully loaded ANN index from disk (), size=")
+                    Log.i(TAG, "Successfully loaded ANN index from disk ($indexPath), size=${index.size()}")
                 }
             }
         }

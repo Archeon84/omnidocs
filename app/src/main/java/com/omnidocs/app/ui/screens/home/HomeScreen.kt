@@ -136,6 +136,7 @@ fun HomeScreen(
     onNoteClick: (String, String?) -> Unit,
     onNewNote: () -> Unit,
     onSettingsClick: () -> Unit,
+    onNewNoteWithTemplate: (String?) -> Unit = { onNewNote() },
     onFeedClick: () -> Unit = {},
     onVoiceCapture: () -> Unit = {},
     onGraphClick: () -> Unit = {},
@@ -146,6 +147,8 @@ fun HomeScreen(
     onStudyClick: () -> Unit = {},
     onLocalChatClick: () -> Unit = {},
     onWelcomeClick: () -> Unit = {},
+    pendingSharePayload: com.omnidocs.app.ShareIntentPayload? = null,
+    onConsumeSharePayload: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val notes by viewModel.notes.collectAsState()
@@ -186,6 +189,14 @@ fun HomeScreen(
     LaunchedEffect(Unit) {
         viewModel.snackbarEvent.collect { message ->
             snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+        }
+    }
+
+    LaunchedEffect(pendingSharePayload) {
+        val payload = pendingSharePayload ?: return@LaunchedEffect
+        onConsumeSharePayload()
+        viewModel.ingestSharedPayload(payload) { createdNoteId ->
+            onNoteClick(createdNoteId, null)
         }
     }
 
@@ -283,6 +294,13 @@ fun HomeScreen(
                                 Icon(
                                     imageVector = Icons.Default.AccountTree,
                                     contentDescription = "Knowledge Graph",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            IconButton(onClick = onRecordingsClick) {
+                                Icon(
+                                    imageVector = Icons.Default.GraphicEq,
+                                    contentDescription = "Audio Recordings",
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                             }
@@ -650,9 +668,9 @@ fun HomeScreen(
 
     if (showTemplateSheet) {
         TemplatePickerSheet(
-            onTemplateSelected = { _ ->
+            onTemplateSelected = { templateId ->
                 showTemplateSheet = false
-                onNewNote()
+                onNewNoteWithTemplate(templateId ?: "blank")
             },
             onDismiss = { showTemplateSheet = false }
         )

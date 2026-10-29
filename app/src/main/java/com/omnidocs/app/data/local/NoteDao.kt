@@ -1,6 +1,7 @@
 package com.omnidocs.app.data.local
 
 import androidx.room.*
+import androidx.room.Upsert
 import com.omnidocs.app.data.local.entity.NoteEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -40,8 +41,11 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE id IN (:ids)")
     suspend fun getNotesByIdsIncludeDeleted(ids: List<String>): List<NoteEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertNote(note: NoteEntity)
+
+    @Upsert
+    suspend fun insertNotes(notes: List<NoteEntity>)
 
     @Update
     suspend fun updateNote(note: NoteEntity)

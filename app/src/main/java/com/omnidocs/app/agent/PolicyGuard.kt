@@ -3,6 +3,7 @@ package com.omnidocs.app.agent
 import com.omnidocs.app.ai.ModelDownloadManager
 import com.omnidocs.app.ai.ModelPreferences
 import com.omnidocs.app.ai.isAnyModelDownloaded
+import com.omnidocs.app.security.SecurityPreferences
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,7 +29,8 @@ interface PolicyGuard {
 @Singleton
 class DefaultPolicyGuard @Inject constructor(
     private val modelPreferences: ModelPreferences,
-    private val modelDownloadManager: ModelDownloadManager
+    private val modelDownloadManager: ModelDownloadManager,
+    private val securityPreferences: SecurityPreferences? = null
 ) : PolicyGuard {
 
     override fun evaluate(
@@ -37,12 +39,16 @@ class DefaultPolicyGuard @Inject constructor(
         requiresCloud: Boolean
     ): PolicyDecision {
         // Enforce Local-Only privacy constraint
-        if (privacyMode == PrivacyMode.LOCAL_ONLY && requiresCloud) {
+        val localOnlyEnforced = privacyMode == PrivacyMode.LOCAL_ONLY ||
+            (securityPreferences != null && securityPreferences.localOnlyProcessing.value)
+        if (localOnlyEnforced && requiresCloud) {
             return PolicyDecision.Denied("Cloud processing is forbidden in LOCAL_ONLY privacy mode.")
         }
 
-        // If cloud is required, verify provider allowance
-        if (requiresCloud && !modelPolicy.allowedProviders.any { it != "llama_cpp" }) {
+        // If cloud is required, verify provider allowance and user opt-in
+        val cloudAllowedByProvider = modelPolicy.allowedProviders.any { it != "llama_cpp" }
+        val cloudOptedIn = securityPreferences?.cloudOptIn?.value ?: true
+        if (requiresCloud && (!cloudAllowedByProvider || !cloudOptedIn)) {
             return PolicyDecision.RequiresUserConsent("Operation requires cloud AI provider which is not enabled.")
         }
 

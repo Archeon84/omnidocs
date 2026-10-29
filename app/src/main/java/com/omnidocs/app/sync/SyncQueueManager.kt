@@ -65,37 +65,17 @@ class SyncQueueManager @Inject constructor(
         try {
             var pullSucceeded = true
 
-            // 1. Push local unsynced changes to peer (tombstones included so
-            //    deletions propagate instead of silently reviving on other devices).
-            //    Paginated so a large offline backlog never ships in one giant RPC.
-            val unsyncedLocal = noteDao.getUnsyncedNotesIncludingDeleted()
-            if (unsyncedLocal.isNotEmpty()) {
-                val acceptedIds = mutableListOf<String>()
-                var pushFailed = false
-                for (page in unsyncedLocal.chunked(PUSH_PAGE_SIZE)) {
-                    val pushResult = peer.pushNotes(page)
-                    pushResult.onSuccess { acceptedIds.addAll(it) }
-                        .onFailure { pushFailed = true }
-                    if (pushFailed) break
-                }
-                if (pushFailed) {
-                    failed += unsyncedLocal.size
-                    pullSucceeded = false
-                } else if (acceptedIds.isNotEmpty()) {
-                    noteDao.markAsSynced(acceptedIds)
-                    synced += acceptedIds.size
-                }
-            }
-
-            // 2. Fetch remote changes since last sync
+            // 1. Fetch remote changes since last sync and apply/merge locally FIRST.
+            //    (Pull before push avoids clobbering another device's remote state).
             val lastSyncTime = _syncStats.value.lastSyncTimestampMs ?: 0L
             val pullResult = peer.fetchRemoteChanges(lastSyncTime)
 
             pullResult.onSuccess { remoteNotes ->
-                // Single batch fetch for all remote IDs instead of one query per note
+                // Single batch fetch for all remote IDs in chunks of 500 (avoid SQLite 999-param limit)
                 val localsById = if (remoteNotes.isNotEmpty()) {
-                    noteDao.getNotesByIdsIncludeDeleted(remoteNotes.map { it.id })
-                        .associateBy { it.id }
+                    remoteNotes.map { it.id }.chunked(500).flatMap { chunk ->
+                        noteDao.getNotesByIdsIncludeDeleted(chunk)
+                    }.associateBy { it.id }
                 } else {
                     emptyMap()
                 }
@@ -137,6 +117,30 @@ class SyncQueueManager @Inject constructor(
             }.onFailure {
                 failed++
                 pullSucceeded = false
+            }
+
+            // 2. Push local unsynced changes to peer (now including merged results,
+            //    which were saved with isSynced = false so they propagate to the cloud).
+            if (pullSucceeded) {
+                val unsyncedLocal = noteDao.getUnsyncedNotesIncludingDeleted()
+                if (unsyncedLocal.isNotEmpty()) {
+                    val acceptedIds = mutableListOf<String>()
+                    var pushFailed = false
+                    for (page in unsyncedLocal.chunked(PUSH_PAGE_SIZE)) {
+                        val pushResult = peer.pushNotes(page)
+                        pushResult.onSuccess { acceptedIds.addAll(it) }
+                            .onFailure { pushFailed = true }
+                        if (pushFailed) break
+                    }
+                    if (pushFailed) {
+                        failed += unsyncedLocal.size
+                    } else if (acceptedIds.isNotEmpty()) {
+                        for (chunk in acceptedIds.chunked(500)) {
+                            noteDao.markAsSynced(chunk)
+                        }
+                        synced += acceptedIds.size
+                    }
+                }
             }
 
             _pendingConflicts.value = detectedConflictReports
@@ -253,17 +257,22 @@ class SyncQueueManager @Inject constructor(
         val remoteWonContent = merged.content == remote.content && merged.content != local.content
         val contentSide = if (remoteWonContent) remote else local
         val newerSide = if (remote.updatedAt >= local.updatedAt) remote else local
+        val resolvedPlainText = when {
+            merged.content == local.content -> local.plainText
+            merged.content == remote.content -> remote.plainText
+            else -> com.omnidocs.app.util.HtmlSanitizer.toPlainText(merged.content)
+        }
         return local.copy(
             title = merged.title,
             content = merged.content,
-            plainText = contentSide.plainText,
+            plainText = resolvedPlainText,
             attachments = contentSide.attachments,
             imageUrl = contentSide.imageUrl,
             language = contentSide.language,
             tags = merged.tags,
             isPinned = newerSide.isPinned,
             relatedNotes = newerSide.relatedNotes,
-            isSynced = true,
+            isSynced = remoteWonContent,
             updatedAt = System.currentTimeMillis()
         )
     }

@@ -28,7 +28,8 @@ class MarkdownDocumentConverter : DocumentConverter {
 
             val title = extractTitle(markdown, fileName)
             val document = parser.parse(markdown)
-            val html = renderer.render(document)
+            val rawHtml = renderer.render(document)
+            val html = com.omnidocs.app.util.HtmlSanitizer.sanitize(rawHtml)
 
             ConversionOutcome.Success(
                 ConversionResult(

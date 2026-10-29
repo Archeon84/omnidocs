@@ -65,7 +65,7 @@ class AskNotesViewModel @Inject constructor(
     val error: StateFlow<String?> = _error.asStateFlow()
 
     val activeModelId = modelPreferences.selectedModelId
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ModelPreferences.DEFAULT_MODEL_ID)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), modelPreferences.getDefaultModelId())
 
     /** True when the device is thermally throttled: answers will be slow.
      * Shown as a notice so a long spinner reads as "warm phone", not "broken". */

@@ -96,4 +96,31 @@ class DeviceCapabilityManager @Inject constructor(
         }
         return null
     }
+
+    /**
+     * Returns true if the device reports strictly less than 6.0 GB of physical RAM.
+     */
+    fun isLowRamDevice(customMemInfo: ActivityManager.MemoryInfo? = null): Boolean {
+        return getMemoryProfile(customMemInfo).totalRamGb < LOW_RAM_THRESHOLD_GB
+    }
+
+    /**
+     * Resolves the hardware-recommended default model ID:
+     * - "qwen_2_5_0_5b" (Qwen 2.5 0.5B) when physical RAM < 6.0 GB
+     * - "gemma_4_e2b" (Gemma 4 E2B) when physical RAM >= 6.0 GB
+     */
+    fun getDefaultModelId(customMemInfo: ActivityManager.MemoryInfo? = null): String {
+        return if (isLowRamDevice(customMemInfo)) DEFAULT_LOW_RAM_MODEL_ID else DEFAULT_HIGH_RAM_MODEL_ID
+    }
+
+    companion object {
+        /**
+         * Physical RAM threshold in gigabytes. Devices reporting less than 6.0 GB
+         * automatically default to lightweight sub-1B models to prevent LMK kills.
+         */
+        const val LOW_RAM_THRESHOLD_GB = 6.0
+
+        const val DEFAULT_LOW_RAM_MODEL_ID = "qwen_2_5_0_5b"
+        const val DEFAULT_HIGH_RAM_MODEL_ID = "gemma_4_e2b"
+    }
 }

@@ -18,51 +18,53 @@ class DocxDocumentConverter : DocumentConverter {
         return try {
             val inputStream = context.contentResolver.openInputStream(uri)
                 ?: return ConversionOutcome.Failure("Couldn't open \"$fileName\"")
-            val doc = XWPFDocument(inputStream)
+            val (title, html, plain) = inputStream.use { stream ->
+                XWPFDocument(stream).use { doc ->
+                    val docTitle = try {
+                        doc.properties?.coreProperties?.title?.ifBlank { null }
+                            ?: fileName.substringBeforeLast('.')
+                    } catch (e: Exception) {
+                        fileName.substringBeforeLast('.')
+                    }
 
-            val title = try {
-                doc.properties?.coreProperties?.title?.ifBlank { null }
-                    ?: fileName.substringBeforeLast('.')
-            } catch (e: Exception) {
-                fileName.substringBeforeLast('.')
-            }
+                    val htmlBuilder = StringBuilder()
+                    val plainBuilder = StringBuilder()
 
-            val htmlBuilder = StringBuilder()
-            val plainBuilder = StringBuilder()
-
-            for (body in doc.bodyElements) {
-                when (body) {
-                    is org.apache.poi.xwpf.usermodel.XWPFParagraph -> {
-                        val text = body.text.trim()
-                        if (text.isNotEmpty()) {
-                            val tag = headingTag(body.style)
-                            if (tag != null) {
-                                htmlBuilder.appendLine("<$tag>$text</$tag>")
-                            } else {
-                                htmlBuilder.appendLine("<p>$text</p>")
+                    for (body in doc.bodyElements) {
+                        when (body) {
+                            is org.apache.poi.xwpf.usermodel.XWPFParagraph -> {
+                                val text = body.text.trim()
+                                if (text.isNotEmpty()) {
+                                    val escaped = escapeHtml(text)
+                                    val tag = headingTag(body.style)
+                                    if (tag != null) {
+                                        htmlBuilder.appendLine("<$tag>$escaped</$tag>")
+                                    } else {
+                                        htmlBuilder.appendLine("<p>$escaped</p>")
+                                    }
+                                    plainBuilder.appendLine(text)
+                                }
                             }
-                            plainBuilder.appendLine(text)
+                            is org.apache.poi.xwpf.usermodel.XWPFTable -> {
+                                htmlBuilder.appendLine(renderTable(body))
+                                plainBuilder.appendLine(renderTablePlainText(body))
+                            }
                         }
                     }
-                    is org.apache.poi.xwpf.usermodel.XWPFTable -> {
-                        htmlBuilder.appendLine(renderTable(body))
-                        plainBuilder.appendLine(renderTablePlainText(body))
-                    }
+                    Triple(docTitle, htmlBuilder.toString(), plainBuilder.toString())
                 }
             }
 
-            doc.close()
+            val trimmedHtml = html.trim()
+            val trimmedPlain = plain.trim()
 
-            val html = htmlBuilder.toString().trim()
-            val plain = plainBuilder.toString().trim()
-
-            if (html.isEmpty()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
+            if (trimmedHtml.isEmpty()) return ConversionOutcome.Failure("No text content found in \"$fileName\"")
 
             ConversionOutcome.Success(
                 ConversionResult(
                     title = title,
-                    htmlContent = html,
-                    plainText = plain
+                    htmlContent = trimmedHtml,
+                    plainText = trimmedPlain
                 )
             )
         } catch (e: Exception) {
@@ -88,7 +90,7 @@ class DocxDocumentConverter : DocumentConverter {
             sb.append("<tr>")
             for (cell in row.tableCells) {
                 val text = cell.text.trim()
-                sb.append("<td>$text</td>")
+                sb.append("<td>${escapeHtml(text)}</td>")
             }
             sb.append("</tr>")
         }
@@ -103,5 +105,13 @@ class DocxDocumentConverter : DocumentConverter {
             sb.appendLine(cells.joinToString(" | "))
         }
         return sb.toString()
+    }
+
+    private fun escapeHtml(text: String): String {
+        return text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
     }
 }

@@ -8,6 +8,14 @@
 -keep class com.omnidocs.app.ai.EmbeddingEngine { native <methods>; }
 -keep class com.omnidocs.app.ai.EmbeddingEngine$Companion { *; }
 
+# ---- USearch (Native ANN) ----
+-keep class com.omnidocs.app.search.ann.USearchNative { native <methods>; *; }
+-keep class com.omnidocs.app.search.ann.USearchNative$Companion { *; }
+
+# ---- Google LiteRT-LM ----
+-keep class com.google.ai.edge.litertlm.** { *; }
+-dontwarn com.google.ai.edge.litertlm.**
+
 # ---- Sherpa-onnx / STT ----
 -keep class com.k2fsa.sherpa.onnx.** { *; }
 -dontwarn com.k2fsa.sherpa.onnx.**

@@ -36,7 +36,7 @@ object OcrHtmlBuilder {
                 text.lines()
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
-                    .joinToString("\n") { "<p>$it</p>" }
+                    .joinToString("\n") { "<p>${escapeHtml(it)}</p>" }
             }
             Grouping.PARAGRAPH -> {
                 val paragraphs = mutableListOf<MutableList<String>>()
@@ -54,7 +54,7 @@ object OcrHtmlBuilder {
                 }
                 if (current.isNotEmpty()) paragraphs.add(current)
 
-                paragraphs.joinToString("\n") { "<p>${it.joinToString(" ")}</p>" }
+                paragraphs.joinToString("\n") { "<p>${escapeHtml(it.joinToString(" "))}</p>" }
             }
         }
     }
@@ -68,6 +68,13 @@ object OcrHtmlBuilder {
     fun fromBlocks(blocks: List<OcrBlock>): String {
         return blocks
             .filter { it.text.isNotBlank() }
-            .joinToString("\n") { "<p>${it.text.trim()}</p>" }
+            .joinToString("\n") { "<p>${escapeHtml(it.text.trim())}</p>" }
+    }
+
+    private fun escapeHtml(str: String): String {
+        return str.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
     }
 }

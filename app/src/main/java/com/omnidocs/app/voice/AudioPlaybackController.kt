@@ -253,24 +253,18 @@ class AudioPlaybackController @Inject constructor(
     }
 
     /**
-     * Read the raw PCM file, prepend a 44-byte RIFF/WAVE header, and write the
-     * result to a cache file MediaPlayer can consume. Cache files are cleaned by
-     * the OS; the recordings themselves are never modified.
+     * Read the raw PCM file, prepend a 44-byte RIFF/WAVE header, and stream the
+     * result to a cache file MediaPlayer can consume without allocating the full
+     * audio buffer on the heap.
      */
     private fun wrapInWav(pcmFile: File, storageKey: String): File? {
-        val pcmBytes = pcmFile.readBytes()
-        if (pcmBytes.isEmpty()) return null
+        val pcmLength = pcmFile.length()
+        if (pcmLength == 0L || pcmLength > Int.MAX_VALUE - 44) return null
 
-        val wavBytes = buildWav(pcmBytes)
         val safeName = storageKey.substringBeforeLast('.', storageKey).replace(Regex("[^a-zA-Z0-9_-]"), "") + ".wav"
         val wavFile = File(context.cacheDir, safeName)
-        wavFile.writeBytes(wavBytes)
-        return wavFile
-    }
 
-    /** Prepend the standard 44-byte RIFF/WAVE header to raw PCM16 mono audio. */
-    private fun buildWav(pcm: ByteArray): ByteArray {
-        val dataSize = pcm.size
+        val dataSize = pcmLength.toInt()
         val byteRate = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8)
         val blockAlign = CHANNELS * (BITS_PER_SAMPLE / 8)
 
@@ -289,6 +283,17 @@ class AudioPlaybackController @Inject constructor(
         header.put("data".toByteArray(Charsets.US_ASCII))
         header.putInt(dataSize)
 
-        return header.array() + pcm
+        return try {
+            wavFile.outputStream().use { out ->
+                out.write(header.array())
+                pcmFile.inputStream().use { inp ->
+                    inp.copyTo(out, bufferSize = 8192)
+                }
+            }
+            wavFile
+        } catch (e: Exception) {
+            Log.e(TAG, "wrapInWav streaming copy failed", e)
+            null
+        }
     }
 }

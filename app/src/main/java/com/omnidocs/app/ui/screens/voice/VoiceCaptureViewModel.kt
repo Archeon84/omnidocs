@@ -225,23 +225,41 @@ class VoiceCaptureViewModel @Inject constructor(
         )
         recordingDao.insertRecording(recording)
 
-        // Create transcript segment (full transcript as single segment for now)
-        // Future: split into timed segments when word-level timestamps are available
-        val segment = TranscriptSegmentEntity(
-            id = UUID.randomUUID().toString(),
-            recordingId = recordingId,
-            noteId = noteId,
-            speakerId = null,
-            startMs = 0,
-            endMs = recResult.durationMs,
-            rawText = rawText,
-            correctedText = null,
-            language = language,
-            confidence = 1.0f,
-            createdAt = now,
-            updatedAt = now
-        )
-        transcriptSegmentDao.insertSegment(segment)
+        // Split into sentence-level timed segments proportional to character length
+        val sentences = rawText
+            .split(Regex("""(?<=[.!?。\n])\s+"""))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .ifEmpty { listOf(rawText) }
+
+        val totalChars = sentences.sumOf { it.length }.coerceAtLeast(1)
+        val totalDuration = recResult.durationMs.coerceAtLeast(1000L)
+        var cursorChars = 0
+
+        for ((idx, sentence) in sentences.withIndex()) {
+            val startMs = (totalDuration * cursorChars) / totalChars
+            cursorChars += sentence.length
+            val endMs = if (idx == sentences.lastIndex) {
+                totalDuration
+            } else {
+                (totalDuration * cursorChars) / totalChars
+            }
+            val segment = TranscriptSegmentEntity(
+                id = UUID.randomUUID().toString(),
+                recordingId = recordingId,
+                noteId = noteId,
+                speakerId = null,
+                startMs = startMs,
+                endMs = endMs.coerceAtLeast(startMs),
+                rawText = sentence,
+                correctedText = null,
+                language = language,
+                confidence = 1.0f,
+                createdAt = now,
+                updatedAt = now
+            )
+            transcriptSegmentDao.insertSegment(segment)
+        }
     }
 
     fun dismiss() {

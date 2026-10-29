@@ -13,6 +13,7 @@ suspend fun resolveActiveModel(
     val selectedId = modelPreferences.selectedModelId.first()
     val downloaded = modelDownloadManager.getDownloadedModels()
     return downloaded.find { it.id == selectedId && it.isDownloaded }
+        ?: downloaded.find { it.id == modelPreferences.getDefaultModelId() && it.isDownloaded }
         ?: downloaded.firstOrNull { it.isDownloaded }
 }
 

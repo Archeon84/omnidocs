@@ -75,7 +75,7 @@ class MeetingPipelineCoordinator @Inject constructor(
                     "language" to language
                 )
             )
-            val sttResult = agentCoordinator.runAgent(jobId, sttAgent, sttInput, privacyMode)
+            val sttResult = agentCoordinator.runAgent(jobId, sttAgent, sttInput, privacyMode, isFinalStep = false)
             if (sttResult !is AgentResult.Success) {
                 return@withContext failure(jobId, "STT recognition failed: ${(sttResult as? AgentResult.PermanentFailure)?.reason ?: "error"}")
             }
@@ -89,7 +89,7 @@ class MeetingPipelineCoordinator @Inject constructor(
                 type = "NORMALIZE_TRANSCRIPT",
                 payload = mapOf("rawTranscript" to rawText, "segmentsJson" to rawSegmentsJson)
             )
-            val normResult = agentCoordinator.runAgent(jobId, transcriptNormalizerAgent, normInput, privacyMode)
+            val normResult = agentCoordinator.runAgent(jobId, transcriptNormalizerAgent, normInput, privacyMode, isFinalStep = false)
             val normalizedSegmentsJson = (normResult as? AgentResult.Success)?.payload?.get("normalizedSegmentsJson") as? String ?: "[]"
             val fullNormalizedText = (normResult as? AgentResult.Success)?.payload?.get("fullNormalizedText") as? String ?: rawText
             val segmentCount = (normResult as? AgentResult.Success)?.payload?.get("segmentCount") as? Int ?: 0
@@ -100,7 +100,7 @@ class MeetingPipelineCoordinator @Inject constructor(
                 type = "EXTRACT_TASKS",
                 payload = mapOf("text" to fullNormalizedText)
             )
-            val taskResult = agentCoordinator.runAgent(jobId, taskAgent, taskInput, privacyMode)
+            val taskResult = agentCoordinator.runAgent(jobId, taskAgent, taskInput, privacyMode, isFinalStep = false)
             val tasksJson = (taskResult as? AgentResult.Success)?.payload?.get("tasksJson") as? String ?: "[]"
             val taskCount = (taskResult as? AgentResult.Success)?.payload?.get("taskCount") as? Int ?: 0
 
@@ -110,7 +110,7 @@ class MeetingPipelineCoordinator @Inject constructor(
                 type = "GENERATE_SUMMARY",
                 payload = mapOf("title" to meetingTitle, "text" to fullNormalizedText)
             )
-            val summaryResult = agentCoordinator.runAgent(jobId, summaryAgent, summaryInput, privacyMode)
+            val summaryResult = agentCoordinator.runAgent(jobId, summaryAgent, summaryInput, privacyMode, isFinalStep = false)
             val summaryText = (summaryResult as? AgentResult.Success)?.payload?.get("summary") as? String
                 ?: "### Meeting Summary\n$fullNormalizedText"
 

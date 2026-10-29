@@ -2,6 +2,7 @@ package com.omnidocs.app.data.local
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -77,6 +78,7 @@ abstract class NotesDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
 
     companion object {
+        private const val TAG = "NotesDatabase"
         @Volatile
         private var INSTANCE: NotesDatabase? = null
 
@@ -176,23 +178,31 @@ abstract class NotesDatabase : RoomDatabase() {
                         // passphrase is NOT restored. Decrypting then silently generates a
                         // fresh random passphrase, which would not match the existing DB.
                         //
-                        // A valid, deliberate rotation (legacy -> KeyStore) always has the
-                        // plaintext still readable from the legacy pref at rotation time, so
-                        // we can prove we have the correct passphrase. When that proof is
-                        // absent, deleting the workspace is permanent data loss. Fail loudly
-                        // and recoverably instead of destroying user data.
-                        if (!passwordResult.verified) {
-                            throw IllegalStateException(
-                                "Database is encrypted with a passphrase that cannot be recovered " +
-                                    "after restore. KeyStore material is unavailable. Do NOT delete data. " +
-                                    "Recover by restoring a matching backup, or clear app data manually."
-                            )
+                        // We preserve the unopenable database file by renaming it so no bytes
+                        // are deleted, and initialize a fresh database with the new key so
+                        // the app can launch and restore from cloud sync or local backup.
+                        val timestamp = System.currentTimeMillis()
+                        val archivedFile = File(dbFile.parentFile, "notes_database.unrecoverable.$timestamp")
+                        dbFile.renameTo(archivedFile)
+                        File(dbFile.absolutePath + "-wal").renameTo(File(archivedFile.absolutePath + "-wal"))
+                        File(dbFile.absolutePath + "-shm").renameTo(File(archivedFile.absolutePath + "-shm"))
+
+                        Log.e(TAG, "Database cannot be opened with available KeyStore material. Preserved existing DB as ${archivedFile.name} and initialized fresh database.", e)
+
+                        // Persist the new passphrase for the fresh database
+                        val rawPass = password.removePrefix("omnidocs_db_")
+                        val prefs = context.getSharedPreferences("crypto_prefs", Context.MODE_PRIVATE)
+                        val keyStoreManager = try { com.omnidocs.app.security.KeyStoreManager() } catch (ex: Exception) { null }
+                        if (keyStoreManager != null) {
+                            try {
+                                val enc = keyStoreManager.encryptString(rawPass)
+                                prefs.edit().putString(KEY_KEYSTORE_ENCRYPTED, enc).apply()
+                            } catch (ex: Exception) {
+                                prefs.edit().putString(KEY_LEGACY, rawPass).apply()
+                            }
+                        } else {
+                            prefs.edit().putString(KEY_LEGACY, rawPass).apply()
                         }
-                        // Proof of a deliberate passphrase rotation exists; the DB is stale and
-                        // safe to recreate.
-                        dbFile.delete()
-                        File(dbFile.absolutePath + "-wal").delete()
-                        File(dbFile.absolutePath + "-shm").delete()
                     }
                 }
 

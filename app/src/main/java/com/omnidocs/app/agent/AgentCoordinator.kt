@@ -127,6 +127,7 @@ class AgentCoordinator @Inject constructor(
         privacyMode: PrivacyMode = PrivacyMode.LOCAL_ONLY,
         modelPolicy: ModelPolicy = ModelPolicy(),
         requiresCloud: Boolean = false,
+        isFinalStep: Boolean = true,
         onAnswerToken: (String) -> Unit = {}
     ): AgentResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
@@ -182,8 +183,10 @@ class AgentCoordinator @Inject constructor(
 
             when (result) {
                 is AgentResult.Success -> {
-                    agentJobDao.updateJobStatus(jobId, AgentJobEntity.STATUS_SUCCEEDED, System.currentTimeMillis())
-                    agentJobDao.updateProgress(jobId, 100)
+                    if (isFinalStep) {
+                        agentJobDao.updateJobStatus(jobId, AgentJobEntity.STATUS_SUCCEEDED, System.currentTimeMillis())
+                        agentJobDao.updateProgress(jobId, 100)
+                    }
                     recordEvent(jobId, agent.id, "AGENT_SUCCEEDED", "{}", durationMs)
                 }
                 is AgentResult.NeedsUserInput -> {
@@ -240,6 +243,11 @@ class AgentCoordinator @Inject constructor(
      */
     suspend fun updateProgress(jobId: String, progress: Int) = withContext(Dispatchers.IO) {
         agentJobDao.updateProgress(jobId, progress.coerceIn(0, 100))
+    }
+
+    suspend fun markJobSucceeded(jobId: String) = withContext(Dispatchers.IO) {
+        agentJobDao.updateJobStatus(jobId, AgentJobEntity.STATUS_SUCCEEDED, System.currentTimeMillis())
+        agentJobDao.updateProgress(jobId, 100)
     }
 
     private suspend fun updateJobStatus(jobId: String, status: String) {

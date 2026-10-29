@@ -38,10 +38,10 @@ class WelcomeViewModelTest {
     )
 
     private val dummyEmbedding = ModelInfo(
-        id = "multilingual_e5_small",
-        name = "Multilingual E5 Small",
+        id = "embeddinggemma_2_270m",
+        name = "EmbeddingGemma 2 270M",
         description = "Test Embeddings",
-        size = "126 MB",
+        size = "284 MB",
         downloadUrl = "https://example.com/emb.bin",
         fileName = "emb.bin"
     )
@@ -93,7 +93,7 @@ class WelcomeViewModelTest {
         assertEquals(1, viewModel.availableLlmModels.size)
         assertEquals("gemma_4_e2b", viewModel.availableLlmModels[0].id)
         assertEquals(1, viewModel.availableEmbeddingModels.size)
-        assertEquals("multilingual_e5_small", viewModel.availableEmbeddingModels[0].id)
+        assertEquals("embeddinggemma_2_270m", viewModel.availableEmbeddingModels[0].id)
         assertEquals(1, viewModel.availableSttModels.size)
         assertEquals("moonshine_tiny_en", viewModel.availableSttModels[0].id)
     }
@@ -113,7 +113,7 @@ class WelcomeViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
 
         verify(modelDownloadManager).downloadEmbeddingModel(dummyEmbedding)
-        verify(modelPreferences).setSelectedEmbeddingModelId("multilingual_e5_small")
+        verify(modelPreferences).setSelectedEmbeddingModelId("embeddinggemma_2_270m")
     }
 
     @Test

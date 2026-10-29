@@ -36,6 +36,9 @@ class OcrViewModel @Inject constructor(
     private val _recognizedHtml = MutableStateFlow("")
     val recognizedHtml: StateFlow<String> = _recognizedHtml.asStateFlow()
 
+    private val _recognizedBlocks = MutableStateFlow<List<com.omnidocs.app.ocr.OcrBlock>>(emptyList())
+    val recognizedBlocks: StateFlow<List<com.omnidocs.app.ocr.OcrBlock>> = _recognizedBlocks.asStateFlow()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -97,6 +100,7 @@ class OcrViewModel @Inject constructor(
                     _originalText.value = result.text
                     _recognizedText.value = result.text
                     _recognizedHtml.value = result.html
+                    _recognizedBlocks.value = result.blocks
 
                     // Auto-translate if target is set
                     _translationTarget.value?.let { targetLang ->
@@ -150,6 +154,7 @@ class OcrViewModel @Inject constructor(
                     _originalText.value = result.text
                     _recognizedText.value = result.text
                     _recognizedHtml.value = result.html
+                    _recognizedBlocks.value = result.blocks
 
                     // Auto-translate if target is set
                     _translationTarget.value?.let { targetLang ->
@@ -246,6 +251,9 @@ class OcrViewModel @Inject constructor(
             if (engine is com.omnidocs.app.ocr.MlKitOcrEngine) {
                 val result = engine.recognizeFromMediaImage(image, rotationDegrees, _ocrLanguage.value)
                 Log.d(TAG, "recognizeFromMediaImage: success, ${result?.text?.length ?: 0} chars")
+                if (result != null) {
+                    _recognizedBlocks.value = result.blocks
+                }
                 return result?.let { Pair(it.text, it.html) }
             }
             return null
@@ -265,5 +273,28 @@ class OcrViewModel @Inject constructor(
                 _ocrError.value = "Translation failed: ${e.message ?: "Unknown error"}"
             }
         }
+    }
+
+    fun buildBlocksJson(): String {
+        val blocks = _recognizedBlocks.value
+        if (blocks.isEmpty()) return "[]"
+        val arr = org.json.JSONArray()
+        for ((idx, block) in blocks.withIndex()) {
+            val bbox = org.json.JSONObject().apply {
+                put("left", block.boundingBox.left.toDouble())
+                put("top", block.boundingBox.top.toDouble())
+                put("right", block.boundingBox.right.toDouble())
+                put("bottom", block.boundingBox.bottom.toDouble())
+            }
+            val obj = org.json.JSONObject().apply {
+                put("blockIndex", idx)
+                put("blockType", "ocr_block")
+                put("content", block.text)
+                put("confidence", block.confidence.toDouble())
+                put("boundingBoxJson", bbox.toString())
+            }
+            arr.put(obj)
+        }
+        return arr.toString()
     }
 }

@@ -19,13 +19,18 @@ private val Context.modelDataStore: DataStore<Preferences> by preferencesDataSto
  */
 @Singleton
 class ModelPreferences @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val deviceCapabilityManager: DeviceCapabilityManager? = null
 ) {
     private val selectedModelKey = stringPreferencesKey("selected_model_id")
 
-    /** The currently selected model ID. Defaults to qwen3_1.7b. */
+    fun getDefaultModelId(): String {
+        return deviceCapabilityManager?.getDefaultModelId() ?: DEFAULT_MODEL_ID
+    }
+
+    /** The currently selected model ID. Defaults to qwen_2_5_0_5b on <6GB RAM, or gemma_4_e2b on >=6GB RAM. */
     val selectedModelId: Flow<String> = context.modelDataStore.data.map { prefs ->
-        prefs[selectedModelKey] ?: DEFAULT_MODEL_ID
+        prefs[selectedModelKey] ?: getDefaultModelId()
     }
 
     suspend fun setSelectedModelId(id: String) {
@@ -103,6 +108,7 @@ class ModelPreferences @Inject constructor(
     }
 
     companion object {
-        const val DEFAULT_MODEL_ID = "gemma_4_e2b"
+        const val DEFAULT_MODEL_ID = DeviceCapabilityManager.DEFAULT_HIGH_RAM_MODEL_ID
+        const val LOW_RAM_MODEL_ID = DeviceCapabilityManager.DEFAULT_LOW_RAM_MODEL_ID
     }
 }

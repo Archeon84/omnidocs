@@ -16,6 +16,9 @@ target_link_libraries(usearch-android
     ${log-lib}
 )
 
+# Android 15+ (targetSdk 35) 16 KB ELF page size alignment requirement
+target_link_options(usearch-android PRIVATE "-Wl,-z,max-page-size=16384")
+
 target_include_directories(usearch-android PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/usearch

@@ -88,7 +88,7 @@ class ImportPipelineCoordinator @Inject constructor(
                 type = "CAPTURE_INPUT",
                 payload = mapOf("uri" to uri, "mimeType" to mimeType, "fileName" to fileName)
             )
-            val captureResult = agentCoordinator.runAgent(jobId, captureAgent, captureInput, privacyMode)
+            val captureResult = agentCoordinator.runAgent(jobId, captureAgent, captureInput, privacyMode, isFinalStep = false)
             if (captureResult !is AgentResult.Success) {
                 return@withContext failure(jobId, "Capture phase failed: ${(captureResult as? AgentResult.PermanentFailure)?.reason ?: "error"}")
             }
@@ -101,13 +101,15 @@ class ImportPipelineCoordinator @Inject constructor(
                 type = "EXTRACTION_INPUT",
                 payload = mapOf("uri" to uri, "mimeType" to mimeType, "fileName" to fileName)
             )
-            val extractionResult = agentCoordinator.runAgent(jobId, extractionAgent, extractionInput, privacyMode)
+            val extractionResult = agentCoordinator.runAgent(jobId, extractionAgent, extractionInput, privacyMode, isFinalStep = false)
             if (extractionResult !is AgentResult.Success) {
                 return@withContext failure(jobId, "Extraction phase failed: ${(extractionResult as? AgentResult.PermanentFailure)?.reason ?: "error"}")
             }
             val rawTitle = extractionResult.payload["title"] as? String ?: fileName
             val rawHtml = extractionResult.payload["htmlContent"] as? String ?: ""
             val rawPlainText = extractionResult.payload["plainText"] as? String ?: ""
+            val extractedBlocksJson = (extractionResult.payload["blocksJson"] as? String)
+                ?.takeIf { it.isNotBlank() && it != "[]" }
 
             // Step 3: Normalization (40% -> 60%)
             agentCoordinator.updateProgress(jobId, 50)
@@ -115,12 +117,12 @@ class ImportPipelineCoordinator @Inject constructor(
                 type = "NORMALIZATION_INPUT",
                 payload = mapOf("plainText" to rawPlainText, "htmlContent" to rawHtml)
             )
-            val normalizationResult = agentCoordinator.runAgent(jobId, normalizationAgent, normalizationInput, privacyMode)
+            val normalizationResult = agentCoordinator.runAgent(jobId, normalizationAgent, normalizationInput, privacyMode, isFinalStep = false)
             if (normalizationResult !is AgentResult.Success) {
                 return@withContext failure(jobId, "Normalization phase failed: ${(normalizationResult as? AgentResult.PermanentFailure)?.reason ?: "error"}")
             }
             val language = normalizationResult.payload["language"] as? String ?: "en"
-            val blocksJson = normalizationResult.payload["blocksJson"] as? String ?: "[]"
+            val blocksJson = extractedBlocksJson ?: (normalizationResult.payload["blocksJson"] as? String ?: "[]")
             val blockCount = normalizationResult.payload["blockCount"] as? Int ?: 0
             val normalizedText = normalizationResult.payload["normalizedText"] as? String ?: rawPlainText
             val normalizedHtml = normalizationResult.payload["normalizedHtml"] as? String ?: rawHtml
@@ -131,7 +133,7 @@ class ImportPipelineCoordinator @Inject constructor(
                 type = "ORGANIZATION_INPUT",
                 payload = mapOf("title" to rawTitle, "normalizedText" to normalizedText)
             )
-            val organizationResult = agentCoordinator.runAgent(jobId, organizationAgent, organizationInput, privacyMode)
+            val organizationResult = agentCoordinator.runAgent(jobId, organizationAgent, organizationInput, privacyMode, isFinalStep = false)
             val suggestedTitle = if (organizationResult is AgentResult.Success) {
                 organizationResult.payload["suggestedTitle"] as? String ?: rawTitle
             } else rawTitle
@@ -156,7 +158,7 @@ class ImportPipelineCoordinator @Inject constructor(
                 tags = tagsJson,
                 createdAt = now,
                 updatedAt = now,
-                imageUrl = null
+                imageUrl = if (mimeType.startsWith("image/")) uri else null
             )
             noteDao.insertNote(noteEntity)
             createdNoteId = noteId
@@ -170,11 +172,12 @@ class ImportPipelineCoordinator @Inject constructor(
                     "fullText" to normalizedText
                 )
             )
-            val indexingResult = agentCoordinator.runAgent(jobId, indexingAgent, indexingInput, privacyMode)
+            val indexingResult = agentCoordinator.runAgent(jobId, indexingAgent, indexingInput, privacyMode, isFinalStep = true)
             if (indexingResult !is AgentResult.Success) {
                 android.util.Log.w("ImportPipeline", "Indexing failed: note saved but unindexed")
             }
 
+            agentCoordinator.markJobSucceeded(jobId)
             agentCoordinator.updateProgress(jobId, 100)
             agentCoordinator.recordEvent(
                 jobId = jobId,

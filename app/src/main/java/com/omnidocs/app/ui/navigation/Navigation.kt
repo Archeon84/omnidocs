@@ -41,13 +41,13 @@ import com.omnidocs.app.ui.theme.screenPopExitTransition
 sealed class Screen(val route: String) {
     object Welcome : Screen("welcome")
     object Home : Screen("home")
-    object Editor : Screen("editor?noteId={noteId}&highlight={highlight}") {
-        fun createRoute(noteId: String? = null, highlight: String? = null): String {
-            return when {
-                noteId != null && highlight != null -> "editor?noteId=$noteId&highlight=${android.net.Uri.encode(highlight)}"
-                noteId != null -> "editor?noteId=$noteId"
-                else -> "editor"
-            }
+    object Editor : Screen("editor?noteId={noteId}&highlight={highlight}&templateId={templateId}") {
+        fun createRoute(noteId: String? = null, highlight: String? = null, templateId: String? = null): String {
+            val params = mutableListOf<String>()
+            if (noteId != null) params.add("noteId=$noteId")
+            if (highlight != null) params.add("highlight=${android.net.Uri.encode(highlight)}")
+            if (templateId != null) params.add("templateId=${android.net.Uri.encode(templateId)}")
+            return if (params.isEmpty()) "editor" else "editor?" + params.joinToString("&")
         }
     }
     object Ocr : Screen("ocr")
@@ -73,8 +73,24 @@ sealed class Screen(val route: String) {
 @Composable
 fun NotesNavHost(
     navController: NavHostController = rememberNavController(),
-    startDestination: String = Screen.Home.route
+    startDestination: String = Screen.Home.route,
+    pendingQuickAction: String? = null,
+    onConsumeQuickAction: () -> Unit = {},
+    pendingSharePayload: com.omnidocs.app.ShareIntentPayload? = null,
+    onConsumeSharePayload: () -> Unit = {}
 ) {
+    androidx.compose.runtime.LaunchedEffect(pendingQuickAction) {
+        val action = pendingQuickAction ?: return@LaunchedEffect
+        onConsumeQuickAction()
+        when (action) {
+            "new_note" -> navController.navigate(Screen.Editor.createRoute(templateId = "blank"))
+            "voice_capture" -> navController.navigate(Screen.Voice.route)
+            "ocr_scan" -> navController.navigate(Screen.Ocr.route)
+            "ask" -> navController.navigate(Screen.Ask.route)
+            "study" -> navController.navigate(Screen.Study.createRoute(null))
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = startDestination
@@ -103,11 +119,16 @@ fun NotesNavHost(
             popExitTransition = { screenPopExitTransition() }
         ) {
             HomeScreen(
+                pendingSharePayload = pendingSharePayload,
+                onConsumeSharePayload = onConsumeSharePayload,
                 onNoteClick = { noteId, highlight ->
                     navController.navigate(Screen.Editor.createRoute(noteId, highlight))
                 },
                 onNewNote = {
                     navController.navigate(Screen.Editor.createRoute())
+                },
+                onNewNoteWithTemplate = { templateId ->
+                    navController.navigate(Screen.Editor.createRoute(templateId = templateId))
                 },
                 onSettingsClick = {
                     navController.navigate(Screen.Settings.route)
@@ -187,6 +208,11 @@ fun NotesNavHost(
                     type = NavType.StringType
                     nullable = true
                     defaultValue = null
+                },
+                navArgument("templateId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
                 }
             ),
             enterTransition = {
@@ -220,9 +246,11 @@ fun NotesNavHost(
         ) { backStackEntry ->
             val noteId = backStackEntry.arguments?.getString("noteId")
             val highlight = backStackEntry.arguments?.getString("highlight")
+            val templateId = backStackEntry.arguments?.getString("templateId")
             EditorScreen(
                 noteId = noteId,
                 highlightText = highlight,
+                templateId = templateId,
                 onNavigateBack = {
                     navController.popBackStack()
                 },
@@ -247,18 +275,35 @@ fun NotesNavHost(
                 onTextExtracted = { text ->
                     val prevRoute = navController.previousBackStackEntry?.destination?.route
                     if (prevRoute?.startsWith("editor") == true) {
-                        // Pass text back to existing editor via savedStateHandle
                         navController.previousBackStackEntry
                             ?.savedStateHandle
                             ?.set("ocrText", text)
                         navController.popBackStack()
                     } else {
-                        // Launched from HomeScreen: pop OCR and navigate to Editor with extracted text
                         navController.popBackStack()
-                        navController.navigate(Screen.Editor.createRoute())
+                        navController.navigate(Screen.Editor.createRoute(templateId = "blank"))
                         navController.currentBackStackEntry
                             ?.savedStateHandle
                             ?.set("ocrText", text)
+                    }
+                },
+                onOcrExtractedWithProvenance = { text, imageUrl, blocksJson ->
+                    val prevRoute = navController.previousBackStackEntry?.destination?.route
+                    if (prevRoute?.startsWith("editor") == true) {
+                        navController.previousBackStackEntry?.savedStateHandle?.apply {
+                            set("ocrText", text)
+                            if (imageUrl != null) set("ocrImageUrl", imageUrl)
+                            if (blocksJson.isNotBlank() && blocksJson != "[]") set("ocrBlocksJson", blocksJson)
+                        }
+                        navController.popBackStack()
+                    } else {
+                        navController.popBackStack()
+                        navController.navigate(Screen.Editor.createRoute(templateId = "blank"))
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("ocrText", text)
+                            if (imageUrl != null) set("ocrImageUrl", imageUrl)
+                            if (blocksJson.isNotBlank() && blocksJson != "[]") set("ocrBlocksJson", blocksJson)
+                        }
                     }
                 },
                 onNavigateBack = {

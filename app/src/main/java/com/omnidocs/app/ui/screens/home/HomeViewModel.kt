@@ -67,10 +67,17 @@ class HomeViewModel @Inject constructor(
     private val importPipelineCoordinator: ImportPipelineCoordinator,
     private val aiArtifactDao: AiArtifactDao,
     private val actionItemDao: ActionItemDao,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val demoNotebookSeeder: com.omnidocs.app.data.repository.DemoNotebookSeeder? = null
 ) : ViewModel() {
 
     private val themeManager = ThemeManager(context)
+
+    init {
+        viewModelScope.launch {
+            demoNotebookSeeder?.seedIfEmptyWorkspace()
+        }
+    }
 
     val currentTheme: StateFlow<AppTheme> = themeManager.currentTheme
 
@@ -208,6 +215,75 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             repository.deleteNote(note)
             _snackbarEvent.tryEmit("Note deleted")
+        }
+    }
+
+    /**
+     * Ingests content shared from another Android app via `ACTION_SEND` / `ACTION_SEND_MULTIPLE`.
+     * - File URIs (PDF, DOCX, images, audio) are routed through [importFile].
+     * - Text / URLs are formatted into a rich note, saved, and opened directly in the editor.
+     */
+    fun ingestSharedPayload(
+        payload: com.omnidocs.app.ShareIntentPayload,
+        onNoteCreated: (String) -> Unit
+    ) {
+        if (payload.sharedUris.isNotEmpty()) {
+            val firstUri = payload.sharedUris.first()
+            val resolvedMime = context.contentResolver.getType(firstUri)
+                ?: payload.mimeType
+                ?: "application/octet-stream"
+            importFile(firstUri, resolvedMime)
+            return
+        }
+
+        val rawText = payload.sharedText?.trim()
+        if (rawText.isNullOrBlank()) return
+
+        viewModelScope.launch {
+            try {
+                val urlRegex = Regex("""https?://[^\s<>"]+""")
+                val matchedUrl = urlRegex.find(rawText)?.value
+                val derivedTitle = when {
+                    !payload.sharedTitle.isNullOrBlank() -> payload.sharedTitle.trim().take(80)
+                    matchedUrl != null -> {
+                        val host = try { Uri.parse(matchedUrl).host?.removePrefix("www.") } catch (_: Exception) { null }
+                        val nonUrlText = rawText.replace(matchedUrl, "").trim().lineSequence().firstOrNull { it.isNotBlank() }
+                        when {
+                            !nonUrlText.isNullOrBlank() -> nonUrlText.take(80)
+                            !host.isNullOrBlank() -> "Web Clip — $host"
+                            else -> "Shared Web Link"
+                        }
+                    }
+                    else -> rawText.lineSequence().firstOrNull { it.isNotBlank() }?.take(60) ?: "Shared Note"
+                }
+
+                val escapedParagraphs = rawText
+                    .split(Regex("\n{2,}"))
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .joinToString("") { para ->
+                        val escaped = com.omnidocs.app.util.sanitizeForHtml(para).replace("\n", "<br/>")
+                        "<p>$escaped</p>"
+                    }
+
+                val htmlContent = if (matchedUrl != null) {
+                    val safeUrl = com.omnidocs.app.util.sanitizeForHtml(matchedUrl)
+                    """<p><strong>Source URL:</strong> <a href="$safeUrl">$safeUrl</a></p><hr/>$escapedParagraphs"""
+                } else {
+                    escapedParagraphs
+                }
+
+                val note = repository.createNote(
+                    title = derivedTitle,
+                    content = htmlContent,
+                    plainText = rawText
+                )
+                _snackbarEvent.tryEmit("Saved shared content to OmniDocs")
+                onNoteCreated(note.id)
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Failed to save shared text", e)
+                _snackbarEvent.tryEmit("Failed to save shared content")
+            }
         }
     }
 
@@ -441,9 +517,128 @@ class HomeViewModel @Inject constructor(
                 "txt" -> shareAsTxt(selectedNotes, fileName)
                 "html" -> shareAsHtml(selectedNotes, fileName)
                 "md" -> shareAsMarkdown(selectedNotes, fileName)
+                "pdf" -> shareAsPdf(selectedNotes, fileName)
+                "doc", "docx" -> shareAsDocx(selectedNotes, fileName)
             }
             _selectedNoteIds.value = emptySet()
             _isSelectionMode.value = false
+        }
+    }
+
+    private suspend fun shareAsPdf(notes: List<Note>, fileName: String) {
+        try {
+            val cacheFile = withContext(Dispatchers.IO) {
+                val sharedDir = File(context.cacheDir, "shared_notes").also { it.mkdirs() }
+                val outFile = File(sharedDir, "$fileName.pdf")
+                val pdf = android.graphics.pdf.PdfDocument()
+                try {
+                    val pageWidth = 595 // A4 width in points
+                    val pageHeight = 842 // A4 height in points
+                    val margin = 48f
+                    val contentWidth = pageWidth - (margin * 2)
+
+                    val titlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        textSize = 18f
+                        isFakeBoldText = true
+                        color = android.graphics.Color.BLACK
+                    }
+                    val bodyPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        textSize = 12f
+                        color = android.graphics.Color.DKGRAY
+                    }
+
+                    var pageNum = 1
+                    var page = pdf.startPage(
+                        android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum).create()
+                    )
+                    var y = margin + 18f
+
+                    fun nextPage() {
+                        pdf.finishPage(page)
+                        pageNum++
+                        page = pdf.startPage(
+                            android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum).create()
+                        )
+                        y = margin + 18f
+                    }
+
+                    for ((idx, note) in notes.withIndex()) {
+                        if (idx > 0) {
+                            y += 24f
+                            if (y > pageHeight - margin) nextPage()
+                        }
+                        val titleText = note.title.ifBlank { "Untitled" }
+                        page.canvas.drawText(titleText, margin, y, titlePaint)
+                        y += 24f
+
+                        for (paragraph in note.plainText.split("\n")) {
+                            val words = paragraph.split(" ")
+                            var currentLine = StringBuilder()
+                            for (word in words) {
+                                val candidate = if (currentLine.isEmpty()) word else "$currentLine $word"
+                                if (bodyPaint.measureText(candidate) > contentWidth && currentLine.isNotEmpty()) {
+                                    if (y > pageHeight - margin) nextPage()
+                                    page.canvas.drawText(currentLine.toString(), margin, y, bodyPaint)
+                                    y += 18f
+                                    currentLine = StringBuilder(word)
+                                } else {
+                                    currentLine = StringBuilder(candidate)
+                                }
+                            }
+                            if (currentLine.isNotEmpty()) {
+                                if (y > pageHeight - margin) nextPage()
+                                page.canvas.drawText(currentLine.toString(), margin, y, bodyPaint)
+                                y += 18f
+                            }
+                            y += 6f
+                        }
+                    }
+
+                    pdf.finishPage(page)
+                    outFile.outputStream().use { pdf.writeTo(it) }
+                } finally {
+                    pdf.close()
+                }
+                outFile
+            }
+            shareFile(cacheFile, "application/pdf")
+        } catch (e: Exception) {
+            Log.e("HomeViewModel", "Failed to export PDF", e)
+            _snackbarEvent.tryEmit("Failed to export PDF")
+        }
+    }
+
+    private suspend fun shareAsDocx(notes: List<Note>, fileName: String) {
+        try {
+            val cacheFile = withContext(Dispatchers.IO) {
+                val sharedDir = File(context.cacheDir, "shared_notes").also { it.mkdirs() }
+                val outFile = File(sharedDir, "$fileName.docx")
+                org.apache.poi.xwpf.usermodel.XWPFDocument().use { doc ->
+                    for ((idx, note) in notes.withIndex()) {
+                        val titlePara = doc.createParagraph()
+                        if (idx > 0) {
+                            titlePara.isPageBreak = true
+                        }
+                        val titleRun = titlePara.createRun()
+                        titleRun.isBold = true
+                        titleRun.fontSize = 16
+                        titleRun.setText(note.title.ifBlank { "Untitled" })
+
+                        for (line in note.plainText.split("\n")) {
+                            val bodyPara = doc.createParagraph()
+                            val bodyRun = bodyPara.createRun()
+                            bodyRun.fontSize = 11
+                            bodyRun.setText(line)
+                        }
+                    }
+                    outFile.outputStream().use { doc.write(it) }
+                }
+                outFile
+            }
+            shareFile(cacheFile, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        } catch (e: Exception) {
+            Log.e("HomeViewModel", "Failed to export DOCX", e)
+            _snackbarEvent.tryEmit("Failed to export Word document")
         }
     }
 
@@ -482,6 +677,14 @@ class HomeViewModel @Inject constructor(
             val sharedDir = File(context.cacheDir, "shared_notes").also { it.mkdirs() }
             val cacheFile = File(sharedDir, fileName)
             cacheFile.writeText(content)
+            shareFile(cacheFile, mimeType)
+        } catch (e: Exception) {
+            _snackbarEvent.tryEmit("Failed to share notes")
+        }
+    }
+
+    private fun shareFile(cacheFile: File, mimeType: String) {
+        try {
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",

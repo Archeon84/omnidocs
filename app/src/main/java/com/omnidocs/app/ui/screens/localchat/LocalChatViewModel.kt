@@ -334,7 +334,9 @@ class LocalChatViewModel @Inject constructor(
                 llamaCppService.generateFlow(
                     prompt = formattedPrompt,
                     maxTokens = session.maxTokens,
-                    modelId = model.id
+                    modelId = model.id,
+                    temperature = session.temperature,
+                    topP = session.topP
                 ).collect { rawToken ->
                     val filtered = thinkingFilter.feed(rawToken)
                     if (filtered.isNotEmpty()) {

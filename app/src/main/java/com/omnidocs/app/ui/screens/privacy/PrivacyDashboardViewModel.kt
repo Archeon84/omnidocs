@@ -30,7 +30,8 @@ class PrivacyDashboardViewModel @Inject constructor(
     private val recordingDao: RecordingDao,
     private val agentJobDao: AgentJobDao,
     private val recordingStorage: RecordingStorage,
-    private val notesDatabase: NotesDatabase
+    private val notesDatabase: NotesDatabase,
+    private val workspaceExportService: com.omnidocs.app.export.WorkspaceExportService? = null
 ) : ViewModel() {
 
     private val _stats = MutableStateFlow(PrivacyStats())
@@ -68,6 +69,26 @@ class PrivacyDashboardViewModel @Inject constructor(
         viewModelScope.launch {
             _isWiping.value = true
             try {
+                val files = recordingStorage.listRecordings()
+                files.forEach { recordingStorage.deleteRecording(it.name) }
+                loadPrivacyStats()
+            } finally {
+                _isWiping.value = false
+            }
+        }
+    }
+
+    fun exportAllData(context: android.content.Context) {
+        viewModelScope.launch {
+            workspaceExportService?.exportAndShareWorkspace(context)
+        }
+    }
+
+    fun deleteAllNotesAndData() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _isWiping.value = true
+            try {
+                notesDatabase.clearAllTables()
                 val files = recordingStorage.listRecordings()
                 files.forEach { recordingStorage.deleteRecording(it.name) }
                 loadPrivacyStats()

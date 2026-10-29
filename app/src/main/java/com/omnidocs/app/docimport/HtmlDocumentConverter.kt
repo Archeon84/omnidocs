@@ -32,7 +32,8 @@ class HtmlDocumentConverter : DocumentConverter {
             val title = doc.title().ifBlank { fileName.substringBeforeLast('.') }
 
             // Get cleaned body HTML
-            val bodyHtml = doc.body()?.html() ?: rawHtml
+            val rawBody = doc.body()?.html() ?: rawHtml
+            val bodyHtml = com.omnidocs.app.util.HtmlSanitizer.sanitize(rawBody)
             val plainText = doc.body()?.text() ?: ""
 
             ConversionOutcome.Success(

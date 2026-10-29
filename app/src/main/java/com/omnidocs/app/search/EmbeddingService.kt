@@ -258,10 +258,11 @@ class EmbeddingService @Inject constructor(
 
         val modelPath = modelDownloadManager.getModelPath(model)
         Log.d(TAG, "embedInternal: loading model from $modelPath")
-        val loaded = embeddingEngine.isLoaded() || nativeMemoryManager.withSlot(
-            NativeModelSlot.EMBEDDINGS,
-            NativeMemoryManager.OWNER_EMBEDDINGS
-        ) {
+        val loaded = embeddingEngine.isLoaded() || run {
+            nativeMemoryManager.acquireSlot(
+                NativeModelSlot.EMBEDDINGS,
+                NativeMemoryManager.OWNER_EMBEDDINGS
+            )
             embeddingEngine.load(modelPath)
         }
         if (!loaded) {
@@ -270,7 +271,11 @@ class EmbeddingService @Inject constructor(
         }
         Log.d(TAG, "embedInternal: model loaded OK, generating embedding")
 
-        val prefixed = if (isQuery) "query: $text" else "passage: $text"
+        val prefixed = if (model.id.startsWith("embeddinggemma")) {
+            if (isQuery) "task: search query | text: $text" else "task: search result | text: $text"
+        } else {
+            if (isQuery) "query: $text" else "passage: $text"
+        }
         val vector = embeddingEngine.embed(prefixed)
         return if (vector != null) {
             // Include dimension in the model name tag so old embeddings from a

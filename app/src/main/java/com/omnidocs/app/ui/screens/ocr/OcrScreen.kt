@@ -59,10 +59,14 @@ private const val TAG = "OcrScreen"
 fun OcrScreen(
     onTextExtracted: (String) -> Unit,
     onNavigateBack: () -> Unit,
+    onOcrExtractedWithProvenance: (text: String, imageUrl: String?, blocksJson: String) -> Unit = { text, _, _ ->
+        onTextExtracted(text)
+    },
     viewModel: OcrViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val recognizedText by viewModel.recognizedText.collectAsState()
+    val recognizedBlocks by viewModel.recognizedBlocks.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val selectedImageUri by viewModel.selectedImageUri.collectAsState()
     val ocrLanguage by viewModel.ocrLanguage.collectAsState()
@@ -145,7 +149,8 @@ fun OcrScreen(
                     recognizeFromMediaImage = { image, rotation ->
                         viewModel.recognizeFromMediaImage(image, rotation)
                     },
-                    hasCaptured = hasCaptured
+                    hasCaptured = hasCaptured,
+                    ocrBlocks = recognizedBlocks
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -201,10 +206,17 @@ fun OcrScreen(
                     }
                     Button(
                         onClick = {
-                            if (liveDetectedHtml.isNotEmpty()) {
-                                onTextExtracted(liveDetectedHtml)
-                            } else if (liveDetectedText.isNotEmpty()) {
-                                onTextExtracted("<p>${liveDetectedText.replace("\n", "</p><p>")}</p>")
+                            val htmlOut = if (liveDetectedHtml.isNotEmpty()) {
+                                liveDetectedHtml
+                            } else {
+                                OcrHtmlBuilder.fromPlainText(liveDetectedText)
+                            }
+                            if (htmlOut.isNotEmpty()) {
+                                onOcrExtractedWithProvenance(
+                                    htmlOut,
+                                    selectedImageUri?.toString(),
+                                    viewModel.buildBlocksJson()
+                                )
                             }
                         },
                         modifier = Modifier.weight(1f),
@@ -578,11 +590,16 @@ fun OcrScreen(
                             onClick = {
                                 val textToShow = if (translatedText.isNotEmpty()) translatedText else recognizedText
                                 val html = viewModel.recognizedHtml.value
-                                if (html.isNotEmpty() && translatedText.isEmpty()) {
-                                    onTextExtracted(html)
+                                val finalHtml = if (html.isNotEmpty() && translatedText.isEmpty()) {
+                                    html
                                 } else {
-                                    onTextExtracted("<p>${textToShow.replace("\n", "</p><p>")}</p>")
+                                    OcrHtmlBuilder.fromPlainText(textToShow)
                                 }
+                                onOcrExtractedWithProvenance(
+                                    finalHtml,
+                                    selectedImageUri?.toString(),
+                                    viewModel.buildBlocksJson()
+                                )
                             },
                             modifier = Modifier.weight(1.5f)
                         ) {
@@ -603,7 +620,8 @@ fun LiveCameraOcrView(
     isFrozen: Boolean,
     language: String,
     recognizeFromMediaImage: (android.media.Image, Int) -> Pair<String, String>?,
-    hasCaptured: Boolean
+    hasCaptured: Boolean,
+    ocrBlocks: List<OcrBlock> = emptyList()
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -611,9 +629,6 @@ fun LiveCameraOcrView(
 
     // Store camera provider so it can be unbound in DisposableEffect
     var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
-
-    // Bounding boxes for overlay
-    var ocrBlocks by remember { mutableStateOf<List<OcrBlock>>(emptyList()) }
 
     // Keep Compose state that always reflects the latest flags.
     // The AndroidView factory runs once and captures variables by reference;

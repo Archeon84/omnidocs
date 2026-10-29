@@ -447,7 +447,11 @@ private fun TutorialLlmSetupPage(
                 .padding(start = 4.dp, bottom = 8.dp)
         )
 
-        viewModel.availableLlmModels.forEach { model ->
+        val sortedLlmModels = remember(viewModel.recommendedModelId, viewModel.availableLlmModels) {
+            viewModel.availableLlmModels.sortedByDescending { it.id == viewModel.recommendedModelId }
+        }
+
+        sortedLlmModels.forEach { model ->
             val isDownloaded = downloadedModels.any { it.id == model.id && it.isDownloaded }
             val isDownloading = when (downloadState) {
                 is DownloadState.Downloading -> downloadState.modelId == model.id
@@ -466,6 +470,7 @@ private fun TutorialLlmSetupPage(
                 title = model.name,
                 size = model.size,
                 description = model.description,
+                isRecommended = model.id == viewModel.recommendedModelId,
                 isDownloaded = isDownloaded,
                 isDownloading = isDownloading,
                 progress = progress,
@@ -933,6 +938,7 @@ private fun ModelDownloadTutorialCard(
     title: String,
     size: String,
     description: String,
+    isRecommended: Boolean = false,
     isDownloaded: Boolean,
     isDownloading: Boolean,
     progress: Float,
@@ -976,6 +982,21 @@ private fun ModelDownloadTutorialCard(
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold
                             )
+                        }
+                        if (isRecommended) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f)
+                            ) {
+                                Text(
+                                    text = "RECOMMENDED",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.height(4.dp))

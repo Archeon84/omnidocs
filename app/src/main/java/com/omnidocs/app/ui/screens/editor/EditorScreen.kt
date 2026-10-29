@@ -225,6 +225,7 @@ fun EditorScreen(
     onOcrClick: () -> Unit,
     navController: NavController,
     highlightText: String? = null,
+    templateId: String? = null,
     onStudyClick: (String) -> Unit = {},
     viewModel: EditorViewModel = hiltViewModel()
 ) {
@@ -267,14 +268,30 @@ fun EditorScreen(
     // OCR Provenance & Bounding Boxes state (toolbar needs the cheap flags;
     // block lists/selection are collected inside the inspector host).
     val contentBlocks by viewModel.contentBlocks.collectAsState()
+    val ocrImageUrl by viewModel.ocrImageUrl.collectAsState()
     val hasOcrBlocks by viewModel.hasOcrBlocks.collectAsState()
     val showOcrInspector by viewModel.showOcrInspector.collectAsState()
+    val claims by viewModel.claims.collectAsState()
+    val versions by viewModel.versions.collectAsState()
+    var showVersionHistory by remember { mutableStateOf(false) }
+    var showEvidencePanel by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
     val snackbarHostState = remember { SnackbarHostState() }
     val titleFocusRequester = remember { FocusRequester() }
-    var showTemplateDialog by remember { mutableStateOf(noteId == null) }
+    var showTemplateDialog by remember { mutableStateOf(noteId == null && templateId == null && content.isBlank()) }
+
+    LaunchedEffect(templateId) {
+        if (noteId == null && !templateId.isNullOrBlank() && templateId != "blank") {
+            com.omnidocs.app.templates.TemplateManager.getTemplate(templateId)?.let { tpl ->
+                if (title.isBlank()) viewModel.updateTitle(tpl.name)
+                if (content.isBlank() && tpl.htmlContent.isNotEmpty()) {
+                    viewModel.updateContent(tpl.htmlContent)
+                }
+            }
+        }
+    }
 
     // Pull the latest DOM content out of the WebView, push it to the ViewModel,
     // and save before leaving. Shared by the top-bar back arrow and the system
@@ -441,7 +458,15 @@ fun EditorScreen(
 
         val observer = androidx.lifecycle.Observer<String> { text ->
             if (text.isNotEmpty()) {
+                showTemplateDialog = false
                 viewModel.appendToContent(text)
+                val imgUrl = savedStateHandle?.get<String>("ocrImageUrl")
+                val blocksJson = savedStateHandle?.get<String>("ocrBlocksJson")
+                if (!imgUrl.isNullOrBlank() || !blocksJson.isNullOrBlank()) {
+                    viewModel.applyOcrProvenance(imgUrl, blocksJson)
+                    savedStateHandle?.remove<String>("ocrImageUrl")
+                    savedStateHandle?.remove<String>("ocrBlocksJson")
+                }
                 // Clear the text after applying
                 savedStateHandle?.remove<String>("ocrText")
             }
@@ -510,6 +535,17 @@ fun EditorScreen(
                         }
                     }
 
+                    // Evidence & Claims button
+                    if (claims.isNotEmpty()) {
+                        IconButton(onClick = { showEvidencePanel = !showEvidencePanel }) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Evidence & Claims (${claims.size})",
+                                tint = if (showEvidencePanel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     // Save indicator
                     if (isSaving) {
                         CircularProgressIndicator(
@@ -550,6 +586,18 @@ fun EditorScreen(
                                     text = { Text("Study flashcards") },
                                     onClick = { showOverflowMenu = false; onStudyClick(noteId) },
                                     leadingIcon = { Icon(Icons.Default.School, null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Version history (${versions.size})") },
+                                    onClick = { showOverflowMenu = false; showVersionHistory = true },
+                                    leadingIcon = { Icon(Icons.Default.History, null) }
+                                )
+                            }
+                            if (claims.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Evidence & claims (${claims.size})") },
+                                    onClick = { showOverflowMenu = false; showEvidencePanel = !showEvidencePanel },
+                                    leadingIcon = { Icon(Icons.Default.CheckCircle, null) }
                                 )
                             }
                             if (hasOcrBlocks) {
@@ -662,6 +710,21 @@ fun EditorScreen(
                 }
             }
 
+            // Evidence Panel for AI-extracted claims
+            AnimatedVisibility(
+                visible = showEvidencePanel && claims.isNotEmpty(),
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                EvidencePanel(
+                    claims = claims,
+                    onApprove = { claim -> viewModel.approveClaim(claim) },
+                    onReject = { claim -> viewModel.rejectClaim(claim) },
+                    onDismiss = { showEvidencePanel = false },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+            }
+
             // Formatting toolbar - spring slide-in from top with stagger
             val toolbarAlpha by animateFloatAsState(
                 targetValue = if (contentReady) 1f else 0f,
@@ -705,23 +768,20 @@ fun EditorScreen(
             }
             }
 
-            // Voice-note recordings attached to this note (playback chips).
+            // Voice-note recordings attached to this note (playback chips + synced transcript).
             // Hidden when the note has no recordings.
             if (noteRecordings.isNotEmpty()) {
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(noteRecordings, key = { it.id }) { recording ->
-                        RecordingPlaybackChip(
-                            recording = recording,
-                            isPlaying = playingRecordingKey == recording.storageKey,
-                            onTogglePlay = { viewModel.togglePlayback(recording) },
-                            modifier = Modifier.width(220.dp)
-                        )
+                SyncedAudioTranscriptHost(
+                    recordings = noteRecordings,
+                    playingRecordingKey = playingRecordingKey,
+                    viewModel = viewModel,
+                    onHighlightSegmentText = { segmentText ->
+                        webViewRef?.let { wv ->
+                            val escaped = org.json.JSONObject.quote(segmentText)
+                            wv.evaluateJavascript("findAndScrollToText($escaped)", null)
+                        }
                     }
-                }
+                )
             }
 
             // Rich text editor - spring slide-in from bottom with stagger
@@ -911,36 +971,33 @@ fun EditorScreen(
         )
     }
 
-    // Template selection dialog for new notes
+    // Template selection sheet for new notes
     if (showTemplateDialog) {
-        AlertDialog(
-            onDismissRequest = { showTemplateDialog = false },
-            title = { Text("Choose a template") },
-            text = {
-                LazyColumn {
-                    items(noteTemplates) { template ->
-                        ListItem(
-                            headlineContent = { Text(template.name) },
-                            leadingContent = { Text(template.icon, style = MaterialTheme.typography.headlineSmall) },
-                            modifier = Modifier.clickable {
-                                viewModel.updateTitle(template.title)
-                                if (template.content.isNotEmpty()) {
-                                    viewModel.updateContent(template.content)
-                                }
-                                showTemplateDialog = false
-                            }
-                        )
+        com.omnidocs.app.ui.screens.home.TemplatePickerSheet(
+            onTemplateSelected = { selectedId ->
+                if (!selectedId.isNullOrBlank()) {
+                    com.omnidocs.app.templates.TemplateManager.getTemplate(selectedId)?.let { template ->
+                        viewModel.updateTitle(template.name)
+                        if (template.htmlContent.isNotEmpty()) {
+                            viewModel.updateContent(template.htmlContent)
+                        }
                     }
                 }
+                showTemplateDialog = false
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    showTemplateDialog = false
-                    onNavigateBack()
-                }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { showTemplateDialog = false }
+        )
+    }
+
+    // Version History bottom sheet
+    if (showVersionHistory) {
+        VersionHistorySheet(
+            versions = versions,
+            onRestore = { version ->
+                viewModel.restoreVersion(version)
+                showVersionHistory = false
+            },
+            onDismiss = { showVersionHistory = false }
         )
     }
 
@@ -959,7 +1016,7 @@ fun EditorScreen(
     if (showOcrInspector) {
         OcrInspectorHost(
             viewModel = viewModel,
-            imageUrl = currentNote?.imageUrl,
+            imageUrl = currentNote?.imageUrl ?: ocrImageUrl,
             contentBlocks = contentBlocks
         )
     }
@@ -1024,6 +1081,198 @@ private fun OcrInspectorHost(
         onSelectBlock = { viewModel.selectBlock(it) },
         onDismiss = { viewModel.closeOcrInspector() }
     )
+}
+
+/**
+ * Interactive Audio-Synced Transcript Player Host.
+ * Isolates 250ms playback position ticks so only the audio scrubber and active
+ * transcript segment recompose during playback, never the full EditorScreen or WebView.
+ */
+@Composable
+private fun SyncedAudioTranscriptHost(
+    recordings: List<com.omnidocs.app.data.local.entity.RecordingEntity>,
+    playingRecordingKey: String?,
+    viewModel: EditorViewModel,
+    onHighlightSegmentText: (String) -> Unit
+) {
+    val segments by viewModel.transcriptSegments.collectAsState()
+    val positionMs by viewModel.playbackPositionMs.collectAsState()
+    val durationMs by viewModel.playbackDurationMs.collectAsState()
+    val isPaused by viewModel.isPlaybackPaused.collectAsState()
+    val speed by viewModel.playbackSpeed.collectAsState()
+    var showTranscriptList by remember { mutableStateOf(false) }
+
+    val activeRecording = recordings.find { it.storageKey == playingRecordingKey } ?: recordings.firstOrNull()
+    val activeSegments = remember(segments, activeRecording?.id) {
+        if (activeRecording == null) emptyList()
+        else segments.filter { it.recordingId == activeRecording.id }
+    }
+
+    val currentSegmentId = remember(positionMs, playingRecordingKey, activeSegments) {
+        if (playingRecordingKey == null) null
+        else activeSegments.firstOrNull { positionMs in it.startMs..it.endMs }?.id
+    }
+
+    LaunchedEffect(currentSegmentId) {
+        if (currentSegmentId != null && !isPaused) {
+            val seg = activeSegments.firstOrNull { it.id == currentSegmentId }
+            val text = (seg?.correctedText ?: seg?.rawText)?.trim()
+            if (!text.isNullOrBlank() && text.length >= 8) {
+                onHighlightSegmentText(text.take(80))
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LazyRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(recordings, key = { it.id }) { recording ->
+                    val isThisActive = playingRecordingKey == recording.storageKey
+                    RecordingPlaybackChip(
+                        recording = recording,
+                        isPlaying = isThisActive && !isPaused,
+                        onTogglePlay = { viewModel.togglePausePlayback(recording) },
+                        modifier = Modifier.width(210.dp)
+                    )
+                }
+            }
+            if (activeSegments.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                AssistChip(
+                    onClick = { showTranscriptList = !showTranscriptList },
+                    label = {
+                        Text(
+                            if (showTranscriptList) "Hide Sync" else "Synced (${activeSegments.size})",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.GraphicEq,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                )
+            }
+        }
+
+        // Scrubber bar when a recording is active
+        if (activeRecording != null && playingRecordingKey == activeRecording.storageKey) {
+            val effectiveDuration = if (durationMs > 0L) durationMs else activeRecording.durationMs.coerceAtLeast(1L)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = com.omnidocs.app.ui.screens.recordings.formatDurationMs(positionMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Slider(
+                    value = positionMs.coerceIn(0L, effectiveDuration).toFloat(),
+                    onValueChange = { viewModel.seekPlaybackTo(it.toLong()) },
+                    valueRange = 0f..effectiveDuration.toFloat(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                )
+                Text(
+                    text = com.omnidocs.app.ui.screens.recordings.formatDurationMs(effectiveDuration),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                TextButton(
+                    onClick = { viewModel.cyclePlaybackSpeed() },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                ) {
+                    Text(
+                        text = if (speed == 1f) "1x" else "${speed}x",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+        }
+
+        // Expandable interactive timestamped transcript list ("Tap any sentence to hear that moment")
+        AnimatedVisibility(
+            visible = showTranscriptList && activeRecording != null && activeSegments.isNotEmpty(),
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .heightIn(max = 160.dp)
+            ) {
+                LazyColumn(
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(activeSegments, key = { it.id }) { seg ->
+                        val isCurrent = seg.id == currentSegmentId
+                        val text = (seg.correctedText ?: seg.rawText).trim()
+                        Surface(
+                            color = if (isCurrent) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                Color.Transparent
+                            },
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    activeRecording?.let { rec ->
+                                        viewModel.playSegment(rec, seg)
+                                        if (text.isNotBlank()) {
+                                            onHighlightSegmentText(text.take(80))
+                                        }
+                                    }
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = com.omnidocs.app.ui.screens.recordings.formatDurationMs(seg.startMs),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isCurrent) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1609,18 +1858,24 @@ fun RichTextEditor(
                                 orderedList = obj.optBoolean("orderedList"),
                                 unorderedList = obj.optBoolean("unorderedList")
                             )
-                            onFormatStateChange(fs)
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                onFormatStateChange(fs)
+                            }
                         } catch (_: Exception) { }
                     }
 
                     @JavascriptInterface
                     fun onEditorFocusChanged(focused: Boolean) {
-                        onEditorFocusChanged(focused)
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            onEditorFocusChanged(focused)
+                        }
                     }
 
                     @JavascriptInterface
                     fun onTextSelectionChanged(selectedText: String) {
-                        onTextSelectionChanged(selectedText)
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            onTextSelectionChanged(selectedText)
+                        }
                     }
                 }, "Android")
 
@@ -1778,13 +2033,26 @@ private fun MarkdownPreview(
     highlightText: String? = null,
     modifier: Modifier = Modifier
 ) {
+    val colorScheme = MaterialTheme.colorScheme
+    var previewWebView by remember { mutableStateOf<WebView?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            previewWebView?.destroy()
+            previewWebView = null
+        }
+    }
+
     AndroidView(
         factory = { context ->
             WebView(context).apply {
+                previewWebView = this
                 settings.javaScriptEnabled = true
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
+                        val themeJson = buildEditorThemeJson(colorScheme)
+                        view?.evaluateJavascript("setTheme($themeJson)", null)
                         if (!highlightText.isNullOrBlank()) {
                             val escaped = org.json.JSONObject.quote(highlightText)
                             view?.postDelayed({
@@ -1795,12 +2063,19 @@ private fun MarkdownPreview(
                 }
                 val htmlTemplate = context.assets.open("editor.html").bufferedReader().use { it.readText() }
                 val rendered = MarkdownCodec.markdownToHtml(markdown)
-                val html = htmlTemplate.replace("<!-- CONTENT_PLACEHOLDER -->", rendered)
+                val sanitized = HtmlSanitizer.sanitize(rendered)
+                val html = htmlTemplate.replace("<!-- CONTENT_PLACEHOLDER -->", sanitized)
                     .replace("contenteditable=\"true\"", "contenteditable=\"false\"")
                 loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
             }
         },
         update = { wv ->
+            val rendered = MarkdownCodec.markdownToHtml(markdown)
+            val sanitized = HtmlSanitizer.sanitize(rendered)
+            val escapedHtml = org.json.JSONObject.quote(sanitized)
+            wv.evaluateJavascript("updateContent($escapedHtml)", null)
+            val themeJson = buildEditorThemeJson(colorScheme)
+            wv.evaluateJavascript("setTheme($themeJson)", null)
             if (!highlightText.isNullOrBlank()) {
                 val escaped = org.json.JSONObject.quote(highlightText)
                 wv.evaluateJavascript("findAndScrollToText($escaped)", null)

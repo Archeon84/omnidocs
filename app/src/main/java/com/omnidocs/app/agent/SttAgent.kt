@@ -57,19 +57,34 @@ class SttAgent @Inject constructor(
         val engine = sttEngineFactory.getEngine()
         val engineName = if (engine != null) "sherpa_onnx" else "system"
 
+        val pcmBytes = try {
+            if (audioFile.exists()) audioFile.readBytes() else ByteArray(0)
+        } catch (e: Exception) {
+            ByteArray(0)
+        }
+
+        val sttResult = if (engine is com.omnidocs.app.stt.SherpaOnnxSttEngine && pcmBytes.isNotEmpty()) {
+            engine.transcribePcm(pcmBytes)
+        } else {
+            null
+        }
+
+        val finalTranscript = sttResult?.text?.ifBlank { null }
+            ?: "Audio recording processed (${audioFile.name})"
+
         // Generate transcript segments
         val segmentsArray = JSONArray()
         val estimatedDurationMs = audioFile.length() / 32 // ~16kHz 16-bit mono approximation
         val segmentObj = JSONObject()
         segmentObj.put("startMs", 0)
         segmentObj.put("endMs", estimatedDurationMs)
-        segmentObj.put("text", "Recording transcript from $storageKey")
-        segmentObj.put("confidence", 0.85)
+        segmentObj.put("text", finalTranscript)
+        segmentObj.put("confidence", sttResult?.confidence?.toDouble() ?: 0.85)
         segmentsArray.put(segmentObj)
 
         return AgentResult.Success(
             payload = mapOf(
-                "rawTranscript" to "Audio recording processed (${audioFile.name})",
+                "rawTranscript" to finalTranscript,
                 "segmentsJson" to segmentsArray.toString(),
                 "engineUsed" to engineName,
                 "durationMs" to estimatedDurationMs

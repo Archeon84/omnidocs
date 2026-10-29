@@ -8,8 +8,10 @@ import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.SamplerConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -222,13 +224,17 @@ class LiteRtLmService @Inject constructor(
                 }
             }
 
-            if (slotManager != null) {
-                slotManager.withSlot(NativeModelSlot.GENERATIVE_LLM, NativeMemoryManager.OWNER_LLM) {
-                    loadBlock()
+            val success = if (slotManager != null) {
+                slotManager.acquireSlot(NativeModelSlot.GENERATIVE_LLM, NativeMemoryManager.OWNER_LLM)
+                val ok = loadBlock()
+                if (!ok) {
+                    slotManager.releaseSlot(NativeModelSlot.GENERATIVE_LLM, NativeMemoryManager.OWNER_LLM)
                 }
+                ok
             } else {
                 loadBlock()
             }
+            success
         } catch (e: Throwable) {
             Log.e(TAG, "Error loading LiteRT-LM model", e)
             false
@@ -242,6 +248,15 @@ class LiteRtLmService @Inject constructor(
         maxTokens: Int = 128,
         applyThermalBudget: Boolean = true,
         modelId: String? = null
+    ): String? = generate(prompt, maxTokens, applyThermalBudget, modelId, null, null)
+
+    suspend fun generate(
+        prompt: String,
+        maxTokens: Int,
+        applyThermalBudget: Boolean,
+        modelId: String?,
+        temperature: Float?,
+        topP: Float?
     ): String? {
         val effectiveMaxTokens = if (applyThermalBudget) {
             thermalBudgetManager?.getBudgetedMaxTokens(maxTokens) ?: maxTokens
@@ -269,11 +284,25 @@ class LiteRtLmService @Inject constructor(
                 val sb = StringBuilder()
                 try {
                     val currentEngine = engine ?: return@withTimeoutOrNull null
-                    val conversation = currentEngine.createConversation()
+                    val conversation = if (temperature != null || topP != null) {
+                currentEngine.createConversation(
+                    ConversationConfig(
+                        samplerConfig = SamplerConfig(
+                            topK = 40,
+                            topP = (topP ?: 0.95f).toDouble(),
+                            temperature = (temperature ?: 0.7f).toDouble(),
+                            seed = 0
+                        )
+                    )
+                )
+            } else {
+                currentEngine.createConversation()
+            }
                     activeConversation = conversation
 
+                    val sanitizedText = sanitizePromptForConversation(prompt)
                     conversation.sendMessageAsync(
-                        text = prompt,
+                        text = sanitizedText,
                         maxOutputToken = effectiveMaxTokens
                     ).collect { msg ->
                         val text = msg.contents.contents
@@ -300,7 +329,9 @@ class LiteRtLmService @Inject constructor(
     fun generateFlow(
         prompt: String,
         maxTokens: Int = 2048,
-        modelId: String? = null
+        modelId: String? = null,
+        temperature: Float? = null,
+        topP: Float? = null
     ): Flow<String> = callbackFlow<String> {
         lastStreamThermalCapped = false
         lastPromptTruncated = false
@@ -334,12 +365,26 @@ class LiteRtLmService @Inject constructor(
                 return@launch
             }
 
-            val conversation = currentEngine.createConversation()
+            val conversation = if (temperature != null || topP != null) {
+                currentEngine.createConversation(
+                    ConversationConfig(
+                        samplerConfig = SamplerConfig(
+                            topK = 40,
+                            topP = (topP ?: 0.95f).toDouble(),
+                            temperature = (temperature ?: 0.7f).toDouble(),
+                            seed = 0
+                        )
+                    )
+                )
+            } else {
+                currentEngine.createConversation()
+            }
             activeConversation = conversation
 
             try {
+                val sanitizedText = sanitizePromptForConversation(prompt)
                 conversation.sendMessageAsync(
-                    text = prompt,
+                    text = sanitizedText,
                     maxOutputToken = effectiveMaxTokens
                 ).collect { msg ->
                     val text = msg.contents.contents
@@ -416,6 +461,33 @@ class LiteRtLmService @Inject constructor(
                 Log.w(TAG, "Error releasing native slot", e)
             }
         }
+    }
+
+    /**
+     * Strips pre-formatted chat template turn markers from callers who invoked [PromptBuilder],
+     * preventing LiteRT-LM's Conversation.sendMessageAsync from double-wrapping turn markers.
+     */
+    private fun sanitizePromptForConversation(rawPrompt: String): String {
+        var p = rawPrompt.trim()
+        if (p.startsWith("<start_of_turn>user\n") || p.startsWith("<start_of_turn>user")) {
+            p = p.substringAfter("<start_of_turn>user").trimStart('\n')
+        }
+        if (p.endsWith("<start_of_turn>model\n") || p.endsWith("<start_of_turn>model")) {
+            p = p.substringBeforeLast("<start_of_turn>model").trimEnd('\n')
+        }
+        if (p.endsWith("<end_of_turn>")) {
+            p = p.removeSuffix("<end_of_turn>").trimEnd('\n')
+        }
+        if (p.startsWith("<|im_start|>user\n") || p.startsWith("<|im_start|>user")) {
+            p = p.substringAfter("<|im_start|>user").trimStart('\n')
+        }
+        if (p.endsWith("<|im_start|>assistant\n") || p.endsWith("<|im_start|>assistant")) {
+            p = p.substringBeforeLast("<|im_start|>assistant").trimEnd('\n')
+        }
+        if (p.endsWith("<|im_end|>")) {
+            p = p.removeSuffix("<|im_end|>").trimEnd('\n')
+        }
+        return p
     }
 
     override fun onTrimMemory(level: Int) {

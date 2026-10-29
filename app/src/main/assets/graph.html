@@ -423,7 +423,7 @@
                     detailEl.className = 'tooltip-detail';
                     var connCount = getNodeDegree(n.noteId);
                     var isHub = connCount >= 3 ? ' • Hub Note' : '';
-                    var tagStr = n.tags && n.tags.length ? '<br>#' + n.tags.join(' #') : '';
+                    var tagStr = n.tags && n.tags.length ? '<br>#' + n.tags.map(function(t){ return escHtml(t); }).join(' #') : '';
                     detailEl.innerHTML = n.wordCount + ' words • ' + connCount + ' connections' + isHub + tagStr;
                     tooltip.appendChild(titleEl);
                     tooltip.appendChild(detailEl);
@@ -485,7 +485,7 @@
                 }
                 lastTapTime = now;
 
-                if (n) { drag = n; n.fx = t.clientX; n.fy = t.clientY; }
+                if (n) { drag = n; n.fx = t.clientX; n.fy = t.clientY; drag.startX = t.clientX; drag.startY = t.clientY; drag.hasMoved = false; }
                 else { drag = { mode: '_pan', sx: t.clientX, sy: t.clientY, tx: transform.x, ty: transform.y }; }
             } else if (ev.touches.length === 2) {
                 drag = { mode: '_pinch' };
@@ -513,6 +513,9 @@
                 render();
             } else if (drag && drag.mode !== '_pan' && drag.mode !== '_pinch') {
                 var t = ev.touches[0];
+                var mdx = t.clientX - (drag.startX || 0);
+                var mdy = t.clientY - (drag.startY || 0);
+                if (mdx*mdx + mdy*mdy > 36) drag.hasMoved = true;
                 var wp = screenToWorld(t.clientX, t.clientY);
                 drag.x = wp.x; drag.y = wp.y;
                 render();
@@ -526,7 +529,11 @@
 
         canvas.addEventListener('touchend', function(ev) {
             if (drag && drag.mode !== '_pan' && drag.mode !== '_pinch' && drag.fx !== undefined) {
-                try { Android.onNodeTapped(drag.noteId); } catch(e) {}
+                if (!drag.hasMoved) {
+                    selectedNodeId = drag.noteId;
+                    render();
+                    try { Android.onNodeTapped(drag.noteId); } catch(e) {}
+                }
             }
             drag = null; pinchDist = null;
         });
