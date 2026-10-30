@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.omnidocs.app.data.local.entity.ChatMessageEntity
 import com.omnidocs.app.data.local.entity.ChatSessionEntity
 import com.omnidocs.app.data.local.entity.NoteEntity
+import com.omnidocs.app.data.local.entity.NoteLinkEntity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -17,7 +18,7 @@ import org.junit.runner.RunWith
 import java.io.IOException
 
 /**
- * Instrumented test verifying the Room database configuration, schema v18,
+ * Instrumented test verifying the Room database configuration, schema v19,
  * foreign key cascade relationships, and DAO transactions on device ART runtime.
  */
 @RunWith(AndroidJUnit4::class)
@@ -26,6 +27,7 @@ class NotesDatabaseInstrumentationTest {
     private lateinit var db: NotesDatabase
     private lateinit var noteDao: NoteDao
     private lateinit var chatDao: ChatDao
+    private lateinit var noteLinkDao: NoteLinkDao
 
     @Before
     fun createDb() {
@@ -35,6 +37,7 @@ class NotesDatabaseInstrumentationTest {
             .build()
         noteDao = db.noteDao()
         chatDao = db.chatDao()
+        noteLinkDao = db.noteLinkDao()
     }
 
     @After
@@ -146,5 +149,54 @@ class NotesDatabaseInstrumentationTest {
         assertNotNull(updated)
         assertEquals("Renamed Title", updated?.title)
         assertEquals(6000L, updated?.updatedAt)
+    }
+
+    @Test
+    fun noteLinkCascadeDeleteWhenParentNotePermanentlyDeleted() = runBlocking {
+        val note1 = NoteEntity(
+            id = "parent-note-1",
+            title = "Database Systems",
+            content = "Relational storage engine",
+            plainText = "Relational storage engine",
+            isPinned = false,
+            language = "en",
+            imageUrl = null,
+            createdAt = 1000L,
+            updatedAt = 1000L
+        )
+        val note2 = NoteEntity(
+            id = "parent-note-2",
+            title = "Indexing Mechanics",
+            content = "B-Tree and Hash index",
+            plainText = "B-Tree and Hash index",
+            isPinned = false,
+            language = "en",
+            imageUrl = null,
+            createdAt = 1000L,
+            updatedAt = 1000L
+        )
+        noteDao.insertNote(note1)
+        noteDao.insertNote(note2)
+
+        val link = NoteLinkEntity(
+            id = "link-1-2",
+            sourceNoteId = "parent-note-1",
+            targetNoteId = "parent-note-2",
+            linkType = "references",
+            confidence = 0.95f,
+            createdBy = "user",
+            createdAt = 1001L
+        )
+        noteLinkDao.insertLink(link)
+
+        val linksBefore = noteLinkDao.getAllLinksSync()
+        assertEquals(1, linksBefore.size)
+        assertEquals("link-1-2", linksBefore[0].id)
+
+        // Permanently deleting note1 must automatically cascade to note_links
+        noteDao.permanentlyDeleteNoteById("parent-note-1")
+
+        val linksAfter = noteLinkDao.getAllLinksSync()
+        assertTrue("NoteLink referencing parent-note-1 must be cascade deleted by SQLite", linksAfter.isEmpty())
     }
 }

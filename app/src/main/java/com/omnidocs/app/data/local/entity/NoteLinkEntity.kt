@@ -1,6 +1,7 @@
 package com.omnidocs.app.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
@@ -9,6 +10,20 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["sourceNoteId"]),
         Index(value = ["targetNoteId"])
+    ],
+    foreignKeys = [
+        ForeignKey(
+            entity = NoteEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sourceNoteId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = NoteEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["targetNoteId"],
+            onDelete = ForeignKey.CASCADE
+        )
     ]
 )
 data class NoteLinkEntity(
