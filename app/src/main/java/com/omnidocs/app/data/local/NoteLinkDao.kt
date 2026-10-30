@@ -23,4 +23,13 @@ interface NoteLinkDao {
 
     @Query("DELETE FROM note_links WHERE sourceNoteId = :noteId OR targetNoteId = :noteId")
     suspend fun deleteAllLinksForNote(noteId: String)
+
+    @Query("DELETE FROM note_links WHERE createdBy = 'rule' AND id NOT IN (:activeIds)")
+    suspend fun deleteStaleRuleLinks(activeIds: List<String>)
+
+    @Query("DELETE FROM note_links WHERE createdBy = 'rule'")
+    suspend fun deleteAllRuleLinks()
+
+    @Query("SELECT * FROM note_links")
+    suspend fun getAllLinksSync(): List<NoteLinkEntity>
 }

@@ -310,9 +310,9 @@ class RetrievalAgent(
         // ── 4. Graph RAG Multi-Hop Neighborhood Expansion ──────────────────
         // For the top retrieved seed notes, traverse explicit links, wikilinks,
         // and semantic connections in the note_links graph database.
-        // If Note A links to Note B (e.g. [[Database Schema]]), Note B carries
-        // essential contextual evidence even if it used different terminology!
-        // For high-confidence links (>= 0.75), we traverse 2 hops with score decay.
+        // Explicit user wikilinks ([[...]]) are authoritative cross-domain bridges.
+        // Rule-generated or automated links must satisfy query drift/relevance guards
+        // to prevent context pollution from uncurated edges.
         val seedNoteIds = topResults.map { it.note.id }.toSet()
         val graphExpandedCandidates = mutableListOf<EvidenceCandidate>()
         val seenGraphNoteIds = mutableSetOf<String>()
@@ -322,23 +322,42 @@ class RetrievalAgent(
             try {
                 val links = noteLinkDao.getLinksForNote(seed.note.id).first()
                 for (link in links) {
+                    // Only traverse links meeting precision confidence floor
+                    if (link.confidence < 0.60f) continue
+
                     val targetId = if (link.sourceNoteId == seed.note.id) link.targetNoteId else link.sourceNoteId
                     if (targetId !in seedNoteIds && targetId !in seenGraphNoteIds) {
+                        val neighbor = noteDao.getNoteById(targetId) ?: continue
+                        if (neighbor.plainText.isBlank()) continue
+
+                        // Relevance & Drift Guard for Graph Neighbors:
+                        // Explicit human-created links ("references", createdBy == "user") are authoritative
+                        // contextual links. Rule-generated or uncurated links MUST pass topical drift gate
+                        // (lexical overlap with query in title or body).
+                        val isExplicitUserLink = link.createdBy == "user" || link.linkType == "references"
+                        if (!isExplicitUserLink) {
+                            val passesNeighborGate = hasTopicalQueryOverlap(
+                                queryTermSet = queryTermSet,
+                                noteTitle = neighbor.title,
+                                notePlainText = neighbor.plainText
+                            )
+                            if (!passesNeighborGate) continue
+                        }
+
                         seenGraphNoteIds.add(targetId)
-                        val neighbor = noteDao.getNoteById(targetId)
-                        if (neighbor != null && neighbor.plainText.isNotBlank()) {
-                            val relationLabel = when (link.linkType) {
-                                "references" -> "linked from"
-                                "supports" -> "supports"
-                                "contradicts" -> "contradicts"
-                                "builds_on" -> "builds on"
-                                else -> "connected to"
-                            }
-                            val snippet = smartSnippetExtractor.extractSnippet(neighbor.plainText, normalizedQuery)
-                                .ifBlank { neighbor.plainText.take(400).trim() }
-                            if (snippet.isNotBlank()) {
-                                // 1-hop graph-propagated score: scaled by seed score and link confidence
-                                val graphScore = (seed.rawScore * link.confidence * 0.75f).coerceAtLeast(0.35f)
+                        val relationLabel = when (link.linkType) {
+                            "references" -> "linked from"
+                            "supports" -> "supports"
+                            "contradicts" -> "contradicts"
+                            "builds_on" -> "builds on"
+                            else -> "connected to"
+                        }
+                        val snippet = smartSnippetExtractor.extractSnippet(neighbor.plainText, normalizedQuery)
+                            .ifBlank { neighbor.plainText.take(400).trim() }
+                        if (snippet.isNotBlank()) {
+                            // 1-hop graph-propagated score: scaled by seed score and link confidence
+                            val graphScore = seed.rawScore * link.confidence * 0.75f
+                            if (graphScore >= 0.20f) {
                                 graphExpandedCandidates.add(
                                     EvidenceCandidate(
                                         noteId = neighbor.id,
@@ -350,45 +369,57 @@ class RetrievalAgent(
                                         score = graphScore
                                     )
                                 )
+                            }
 
-                                // 2-Hop Graph Traversal for high-confidence connections
-                                if (link.confidence >= 0.75f) {
-                                    try {
-                                        val secondHopLinks = noteLinkDao.getLinksForNote(neighbor.id).first()
-                                        for (secondLink in secondHopLinks.take(3)) {
-                                            val twoHopTargetId = if (secondLink.sourceNoteId == neighbor.id) {
-                                                secondLink.targetNoteId
-                                            } else {
-                                                secondLink.sourceNoteId
+                            // 2-Hop Graph Traversal for very high-confidence explicit connections (>= 0.85)
+                            if (link.confidence >= 0.85f && isExplicitUserLink) {
+                                try {
+                                    val secondHopLinks = noteLinkDao.getLinksForNote(neighbor.id).first()
+                                    for (secondLink in secondHopLinks.take(3)) {
+                                        if (secondLink.confidence < 0.85f) continue
+                                        val twoHopTargetId = if (secondLink.sourceNoteId == neighbor.id) {
+                                            secondLink.targetNoteId
+                                        } else {
+                                            secondLink.sourceNoteId
+                                        }
+                                        if (twoHopTargetId !in seedNoteIds && twoHopTargetId !in seenGraphNoteIds) {
+                                            val twoHopNeighbor = noteDao.getNoteById(twoHopTargetId) ?: continue
+                                            if (twoHopNeighbor.plainText.isBlank()) continue
+
+                                            val isTwoHopExplicit = secondLink.createdBy == "user" || secondLink.linkType == "references"
+                                            if (!isTwoHopExplicit) {
+                                                val passes = hasTopicalQueryOverlap(
+                                                    queryTermSet = queryTermSet,
+                                                    noteTitle = twoHopNeighbor.title,
+                                                    notePlainText = twoHopNeighbor.plainText
+                                                )
+                                                if (!passes) continue
                                             }
-                                            if (twoHopTargetId !in seedNoteIds && twoHopTargetId !in seenGraphNoteIds) {
-                                                seenGraphNoteIds.add(twoHopTargetId)
-                                                val twoHopNeighbor = noteDao.getNoteById(twoHopTargetId)
-                                                if (twoHopNeighbor != null && twoHopNeighbor.plainText.isNotBlank()) {
-                                                    val twoHopSnippet = smartSnippetExtractor.extractSnippet(twoHopNeighbor.plainText, normalizedQuery)
-                                                        .ifBlank { twoHopNeighbor.plainText.take(400).trim() }
-                                                    if (twoHopSnippet.isNotBlank()) {
-                                                        // 2-hop score decay factor: 0.50x
-                                                        val twoHopScore = (seed.rawScore * link.confidence * secondLink.confidence * 0.50f)
-                                                            .coerceAtLeast(0.30f)
-                                                        graphExpandedCandidates.add(
-                                                            EvidenceCandidate(
-                                                                noteId = twoHopNeighbor.id,
-                                                                noteTitle = "${twoHopNeighbor.title} (connected via [[${neighbor.title}]] from [[${seed.note.title}]])",
-                                                                text = twoHopSnippet,
-                                                                blockId = null,
-                                                                startOffset = 0,
-                                                                endOffset = twoHopSnippet.length,
-                                                                score = twoHopScore
-                                                            )
+
+                                            seenGraphNoteIds.add(twoHopTargetId)
+                                            val twoHopSnippet = smartSnippetExtractor.extractSnippet(twoHopNeighbor.plainText, normalizedQuery)
+                                                .ifBlank { twoHopNeighbor.plainText.take(400).trim() }
+                                            if (twoHopSnippet.isNotBlank()) {
+                                                // 2-hop score decay factor: 0.50x
+                                                val twoHopScore = seed.rawScore * link.confidence * secondLink.confidence * 0.50f
+                                                if (twoHopScore >= 0.20f) {
+                                                    graphExpandedCandidates.add(
+                                                        EvidenceCandidate(
+                                                            noteId = twoHopNeighbor.id,
+                                                            noteTitle = "${twoHopNeighbor.title} (connected via [[${neighbor.title}]] from [[${seed.note.title}]])",
+                                                            text = twoHopSnippet,
+                                                            blockId = null,
+                                                            startOffset = 0,
+                                                            endOffset = twoHopSnippet.length,
+                                                            score = twoHopScore
                                                         )
-                                                    }
+                                                    )
                                                 }
                                             }
                                         }
-                                    } catch (e: Exception) {
-                                        android.util.Log.w("RetrievalAgent", "2-hop graph expansion failed for note ${neighbor.id}", e)
                                     }
+                                } catch (e: Exception) {
+                                    android.util.Log.w("RetrievalAgent", "2-hop graph expansion failed for note ${neighbor.id}", e)
                                 }
                             }
                         }
@@ -401,7 +432,9 @@ class RetrievalAgent(
 
         candidates.addAll(graphExpandedCandidates)
 
-        return candidates.distinctBy { "${it.noteId}:${it.text.hashCode()}" }.take(topK)
+        return candidates.sortedByDescending { it.score }
+            .distinctBy { "${it.noteId}:${it.text.hashCode()}" }
+            .take(topK)
     }
 
     companion object {
@@ -434,6 +467,24 @@ class RetrievalAgent(
         ): Boolean {
             if (matchType != "semantic") return true
             if (score >= strongThreshold) return true
+            val foldedPlain = Tokenizer.normalizeForMatch(notePlainText.lowercase())
+            val foldedTitle = Tokenizer.normalizeForMatch(noteTitle.lowercase())
+            return queryTermSet.any {
+                Tokenizer.matchesToken(it, foldedPlain) ||
+                    Tokenizer.matchesToken(it, foldedTitle)
+            }
+        }
+
+        /**
+         * Checks whether a candidate note has lexical query overlap in title or body.
+         * Used to gate uncurated / rule-based graph connections from causing retrieval drift.
+         */
+        fun hasTopicalQueryOverlap(
+            queryTermSet: Set<String>,
+            noteTitle: String,
+            notePlainText: String
+        ): Boolean {
+            if (queryTermSet.isEmpty()) return false
             val foldedPlain = Tokenizer.normalizeForMatch(notePlainText.lowercase())
             val foldedTitle = Tokenizer.normalizeForMatch(noteTitle.lowercase())
             return queryTermSet.any {

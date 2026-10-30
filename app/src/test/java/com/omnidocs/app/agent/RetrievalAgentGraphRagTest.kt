@@ -292,4 +292,79 @@ class RetrievalAgentGraphRagTest {
             candidateC?.text?.contains("StrongBox") == true
         )
     }
+
+    @Test
+    fun `retrieveEvidence prunes unrelated rule-based links that drift from query intent`() = runTest {
+        val query = "machine learning models"
+
+        val noteA = NoteEntity(
+            id = "note_seed",
+            title = "Neural Networks",
+            content = "Overview of deep learning machine learning models.",
+            plainText = "Overview of deep learning machine learning models.",
+            isPinned = false,
+            language = "en",
+            createdAt = 1000L,
+            updatedAt = 1000L,
+            imageUrl = null
+        )
+
+        // Unrelated note linked by an uncurated/rule connection (e.g. historical tag or bm25 false positive)
+        val noteUnrelated = NoteEntity(
+            id = "note_unrelated",
+            title = "Dinner Recipe",
+            content = "Cook garlic and tomato sauce with basil for pasta.",
+            plainText = "Cook garlic and tomato sauce with basil for pasta.",
+            isPinned = false,
+            language = "en",
+            createdAt = 2000L,
+            updatedAt = 2000L,
+            imageUrl = null
+        )
+
+        val searchResultA = SearchResult(
+            note = noteA,
+            score = 0.90f,
+            matchType = "bm25",
+            explanation = "BM25 match",
+            rawScore = 0.90f
+        )
+
+        `when`(vectorSearch.hybridSearch(anyString(), anyFloat(), anyFloat(), anyInt()))
+            .thenReturn(listOf(searchResultA))
+
+        `when`(contentBlockDao.getBlocksForNoteIds(listOf("note_seed"))).thenReturn(emptyList())
+
+        // Rule-based automated link with zero query lexical overlap
+        val ruleLink = NoteLinkEntity(
+            id = "rule_link_seed_recipe",
+            sourceNoteId = "note_seed",
+            targetNoteId = "note_unrelated",
+            linkType = "related",
+            confidence = 0.65f,
+            createdBy = "rule",
+            createdAt = 1500L
+        )
+
+        `when`(noteLinkDao.getLinksForNote("note_seed")).thenReturn(flowOf(listOf(ruleLink)))
+        `when`(noteDao.getNoteById("note_unrelated")).thenReturn(noteUnrelated)
+
+        val candidates = retrievalAgent.retrieveEvidence(
+            query = query,
+            bm25Weight = 0.5f,
+            semanticWeight = 0.5f,
+            topK = 5
+        )
+
+        // Seed note must be present
+        val candidateA = candidates.find { it.noteId == "note_seed" }
+        assertNotNull("Seed note must be retrieved", candidateA)
+
+        // Unrelated rule-based neighbor must be dropped by the drift gate
+        val candidateUnrelated = candidates.find { it.noteId == "note_unrelated" }
+        org.junit.Assert.assertNull(
+            "Graph RAG must NOT expand to unrelated rule-based notes that drift from query intent",
+            candidateUnrelated
+        )
+    }
 }

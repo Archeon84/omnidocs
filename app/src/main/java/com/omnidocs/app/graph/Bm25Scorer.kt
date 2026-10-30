@@ -76,4 +76,26 @@ object Bm25Scorer {
             .take(n)
             .map { it.key }
     }
+
+    /**
+     * Extract top-N terms scored by TF * IDF rather than raw frequency.
+     * This ensures high-frequency corpus-wide terms (e.g. "system", "data", "use")
+     * do not dominate the note's signature, highlighting truly distinctive topical keywords.
+     */
+    fun topTermsByIdf(
+        tokens: List<String>,
+        idf: Map<String, Float>,
+        n: Int = 10
+    ): List<String> {
+        return tokens.groupBy { it }
+            .entries
+            .map { (term, list) ->
+                val termIdf = idf[term] ?: 0f
+                term to (list.size * termIdf)
+            }
+            .filter { it.second > 0f }
+            .sortedByDescending { it.second }
+            .take(n)
+            .map { it.first }
+    }
 }

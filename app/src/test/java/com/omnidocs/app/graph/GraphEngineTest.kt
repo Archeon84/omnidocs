@@ -30,12 +30,24 @@ class GraphEngineTest {
 
     class FakeNoteLinkDao : NoteLinkDao {
         val insertedLinks = mutableListOf<NoteLinkEntity>()
+        var staleRuleLinksDeletedWithIds: List<String>? = null
+        var allRuleLinksDeleted: Boolean = false
+
         override fun getLinksForNote(noteId: String): Flow<List<NoteLinkEntity>> = flowOf(emptyList())
         override fun getLinksByType(noteId: String, linkType: String): Flow<List<NoteLinkEntity>> = flowOf(emptyList())
         override suspend fun insertLink(link: NoteLinkEntity) { insertedLinks.add(link) }
         override suspend fun insertLinks(links: List<NoteLinkEntity>) { insertedLinks.addAll(links) }
         override suspend fun deleteLinkBetween(noteId: String, targetNoteId: String) {}
         override suspend fun deleteAllLinksForNote(noteId: String) {}
+        override suspend fun deleteStaleRuleLinks(activeIds: List<String>) {
+            staleRuleLinksDeletedWithIds = activeIds
+            insertedLinks.removeAll { it.createdBy == "rule" && it.id !in activeIds }
+        }
+        override suspend fun deleteAllRuleLinks() {
+            allRuleLinksDeleted = true
+            insertedLinks.removeAll { it.createdBy == "rule" }
+        }
+        override suspend fun getAllLinksSync(): List<NoteLinkEntity> = insertedLinks.toList()
     }
 
     @Before
@@ -144,5 +156,88 @@ class GraphEngineTest {
         val bm25Edge = graphData.edges.first()
         assertEquals("related to", bm25Edge.label)
         assertTrue("Strength should be positive", bm25Edge.strength > 0f)
+    }
+
+    @Test
+    fun testBuildGraph_rejectsConnectionsBetweenNotesSharingOnlyGenericStopTags() = runBlocking {
+        val note1 = Note(
+            id = "med1",
+            title = "Doctor Appointment",
+            content = "Prescription medication dosage and dental cleaning schedule.",
+            plainText = "Prescription medication dosage and dental cleaning schedule.",
+            tags = "[\"notes\",\"todo\"]",
+            createdAt = 1000L,
+            updatedAt = 1000L
+        )
+        val note2 = Note(
+            id = "math1",
+            title = "Differential Geometry",
+            content = "Riemannian manifolds metric tensor and curvature tensors.",
+            plainText = "Riemannian manifolds metric tensor and curvature tensors.",
+            tags = "[\"notes\",\"work\"]",
+            createdAt = 2000L,
+            updatedAt = 2000L
+        )
+
+        `when`(repository.getAllNotesSync()).thenReturn(listOf(note1, note2))
+
+        val graphData = graphEngine.buildGraph()
+        assertEquals(2, graphData.nodes.size)
+        assertTrue("Sharing only generic stop-tags (#notes, #todo, #work) must NOT create an edge", graphData.edges.isEmpty())
+    }
+
+    @Test
+    fun testBuildGraph_rejectsConnectionsForUnrelatedNotesWithNoSignificantLexicalOverlap() = runBlocking {
+        val noteA = Note(
+            id = "recipe1",
+            title = "Authentic Pasta Carbonara",
+            content = "Whisk eggs with pecorino romano cheese and fry guanciale until crispy in black pepper.",
+            plainText = "Whisk eggs with pecorino romano cheese and fry guanciale until crispy in black pepper.",
+            tags = "[\"cooking\"]",
+            createdAt = 1000L,
+            updatedAt = 1000L
+        )
+        val noteB = Note(
+            id = "crypto1",
+            title = "Zero Knowledge Proofs Protocol",
+            content = "Groth16 polynomial arithmetic elliptic curve pairings over alt-bn128 curve.",
+            plainText = "Groth16 polynomial arithmetic elliptic curve pairings over alt-bn128 curve.",
+            tags = "[\"cryptography\"]",
+            createdAt = 2000L,
+            updatedAt = 2000L
+        )
+
+        `when`(repository.getAllNotesSync()).thenReturn(listOf(noteA, noteB))
+
+        val graphData = graphEngine.buildGraph()
+        assertEquals(2, graphData.nodes.size)
+        assertTrue("Unrelated notes with zero semantic connection must have 0 edges", graphData.edges.isEmpty())
+    }
+
+    @Test
+    fun testBuildGraph_prunesStaleRuleLinksWhenConnectionsRemoved() = runBlocking {
+        val note1 = Note(
+            id = "n_solo",
+            title = "Isolated Note",
+            content = "Completely standalone thoughts with zero links.",
+            plainText = "Completely standalone thoughts with zero links.",
+            tags = "[]",
+            createdAt = 1000L,
+            updatedAt = 1000L
+        )
+        val note2 = Note(
+            id = "n_other",
+            title = "Another Note",
+            content = "Unrelated unrelated unrelated words words.",
+            plainText = "Unrelated unrelated unrelated words words.",
+            tags = "[]",
+            createdAt = 2000L,
+            updatedAt = 2000L
+        )
+
+        `when`(repository.getAllNotesSync()).thenReturn(listOf(note1, note2))
+
+        graphEngine.buildGraph()
+        assertTrue("Must call deleteAllRuleLinks when no rule edges remain", fakeNoteLinkDao.allRuleLinksDeleted)
     }
 }

@@ -31,6 +31,20 @@ class GraphEngine @Inject constructor(
     private val repository: NotesRepository,
     private val noteLinkDao: NoteLinkDao
 ) {
+    companion object {
+        /**
+         * Generic stop-tags that represent broad organizational metadata or status,
+         * rather than specific semantic concepts. Sharing only a generic stop-tag
+         * must NEVER create a direct knowledge graph connection.
+         */
+        val GENERIC_STOP_TAGS = setOf(
+            "note", "notes", "todo", "task", "tasks", "general", "misc", "draft",
+            "work", "personal", "temp", "archive", "meeting", "daily", "ideas",
+            "idea", "untitled", "document", "doc", "docs", "test", "demo", "sample",
+            "uncategorized", "default"
+        )
+    }
+
     private suspend fun getActiveModel(): ModelInfo? = withContext(Dispatchers.IO) {
         resolveActiveModel(modelPreferences, modelDownloadManager)
     }
@@ -38,8 +52,8 @@ class GraphEngine @Inject constructor(
     /**
      * Build a GraphData from all notes using an instant, high-performance approach:
      * 1. Deterministic explicit wikilinks [[Note Title]] and markdown links [Title](id)
-     * 2. Tag co-occurrence clustering
-     * 3. BM25 lexical relevance overlap
+     * 2. Tag co-occurrence clustering with stop-tag filtering and Jaccard similarity gating
+     * 3. BM25 lexical relevance overlap with TF-IDF signature terms and calibrated thresholds
      * Executes in under 30 milliseconds on Dispatchers.IO.
      * All discovered connections are synchronized into the encrypted note_links Room table.
      */
@@ -93,25 +107,57 @@ class GraphEngine @Inject constructor(
             }
         }
 
-        // ── Tier 2: Shared Tag Co-Occurrence ────────────────────────────────
+        // ── Tier 2: Shared Tag Co-Occurrence (Stop-Tag Filtered & Jaccard Gated) ──
+        // Compute corpus document frequency for every tag
+        val tagDocFrequency = mutableMapOf<String, Int>()
+        nodeTags.values.forEach { tagList ->
+            tagList.map { it.lowercase().trim() }.distinct().forEach { t ->
+                tagDocFrequency[t] = (tagDocFrequency[t] ?: 0) + 1
+            }
+        }
+
         for (i in notes.indices) {
-            val tagsA = nodeTags[notes[i].id]?.toSet() ?: emptySet()
+            val tagsA = nodeTags[notes[i].id].orEmpty()
+                .map { it.lowercase().trim() }
+                .filter { it.isNotBlank() && it !in GENERIC_STOP_TAGS }
+                .toSet()
             if (tagsA.isEmpty()) continue
+
             for (j in i + 1 until notes.size) {
-                val tagsB = nodeTags[notes[j].id]?.toSet() ?: emptySet()
+                val tagsB = nodeTags[notes[j].id].orEmpty()
+                    .map { it.lowercase().trim() }
+                    .filter { it.isNotBlank() && it !in GENERIC_STOP_TAGS }
+                    .toSet()
+                if (tagsB.isEmpty()) continue
+
                 val shared = tagsA.intersect(tagsB)
-                if (shared.isNotEmpty()) {
-                    val label = "shares #${shared.first()}"
-                    val strength = (0.5f + (shared.size - 1) * 0.1f).coerceAtMost(0.85f)
+                if (shared.isEmpty()) continue
+
+                val union = tagsA.union(tagsB)
+                val jaccard = shared.size.toFloat() / union.size.toFloat()
+
+                // Gating logic:
+                // 1. Two or more specific non-stop tags shared -> strong connection
+                // 2. Exactly one non-stop tag shared -> connect only if tag is not a high-frequency hub
+                //    (present in > 40% of notes when notes >= 5) AND tag sets are focused (Jaccard >= 0.33)
+                val isBroadTag = notes.size >= 5 && shared.all { (tagDocFrequency[it] ?: 0).toFloat() / notes.size > 0.40f }
+
+                if (shared.size >= 2) {
+                    val label = "shares #${shared.first()}" + if (shared.size > 1) " (+${shared.size - 1})" else ""
+                    val strength = (0.55f + 0.20f * jaccard + (shared.size - 1) * 0.05f).coerceAtMost(0.85f)
                     addEdgeIfAbsent(notes[i].id, notes[j].id, label, strength)
+                } else if (shared.size == 1 && !isBroadTag && (jaccard >= 0.33f || (tagsA.size <= 2 && tagsB.size <= 2))) {
+                    val sharedTag = shared.first()
+                    val strength = (0.50f + 0.20f * jaccard).coerceIn(0.50f, 0.70f)
+                    addEdgeIfAbsent(notes[i].id, notes[j].id, "shares #$sharedTag", strength)
                 }
             }
         }
 
-        // ── Tier 3: BM25 Relevance Overlap (Instant Fallback) ───────────────
+        // ── Tier 3: BM25 Relevance Overlap (Calibrated & Multi-Term Guarded) ──
         val candidatePairs = findCandidatePairs(notes, maxPairs = minOf(notes.size * 2, 40))
         for ((noteA, noteB, score) in candidatePairs) {
-            val normalizedStrength = (score / 4.0f).coerceIn(0.4f, 0.85f)
+            val normalizedStrength = (score / 6.0f).coerceIn(0.40f, 0.85f)
             addEdgeIfAbsent(noteA.id, noteB.id, "related to", normalizedStrength)
         }
 
@@ -198,8 +244,8 @@ class GraphEngine @Inject constructor(
 
     /**
      * Find candidate pairs by BM25 relevance scoring.
-     * For each note, extracts top terms and scores all other notes using BM25.
-     * Deduplicates pairs and keeps the highest-scoring direction with score.
+     * For each note, extracts signature terms scored by TF-IDF and scores all other notes.
+     * Enforces strict topical gates: rejects spurious single-word overlaps and noise.
      */
     private fun findCandidatePairs(
         notes: List<Note>,
@@ -210,9 +256,15 @@ class GraphEngine @Inject constructor(
         val avgDocLength = tokenized.map { it.size }.average().toFloat().coerceAtLeast(1f)
         val notesById = notes.associateBy { it.id }
 
-        // Precompute term frequencies and top terms for each note
+        // Score terms by TF-IDF if corpus is large enough (> 3 notes), or by frequency for small corpora
         val noteTopTerms = tokenized.map { tokens ->
-            Bm25Scorer.topTerms(tokens, n = 10)
+            if (notes.size <= 3) {
+                Bm25Scorer.topTerms(tokens, n = 8)
+            } else {
+                Bm25Scorer.topTermsByIdf(tokens, idf, n = 8).ifEmpty {
+                    Bm25Scorer.topTerms(tokens, n = 8)
+                }
+            }
         }
         val noteTermFreqs = tokenized.map { tokens ->
             tokens.groupBy { it }.mapValues { it.value.size }
@@ -220,6 +272,10 @@ class GraphEngine @Inject constructor(
 
         val seen = mutableSetOf<Pair<String, String>>()
         val pairs = mutableListOf<Triple<String, String, Float>>()
+
+        // Calibrated BM25 floor: single common words score ~0.5 - 1.2 in small corpora.
+        // True semantic relevance in normal corpora requires multiple term co-occurrences or score >= 2.2.
+        val minScoreThreshold = if (notes.size <= 3) 0.5f else 2.2f
 
         for (i in notes.indices) {
             val queryTerms = noteTopTerms[i]
@@ -231,14 +287,28 @@ class GraphEngine @Inject constructor(
                     notes[i].id to notes[j].id else notes[j].id to notes[i].id
                 if (pairKey in seen) continue
 
+                val docFreqs = noteTermFreqs[j]
+                val matchedTerms = queryTerms.count { it in docFreqs }
+                if (matchedTerms == 0) continue
+
                 val score = Bm25Scorer.score(
                     queryTerms = queryTerms,
-                    docTermFreqs = noteTermFreqs[j],
+                    docTermFreqs = docFreqs,
                     docLength = tokenized[j].size,
                     avgDocLength = avgDocLength,
                     idf = idf
                 )
-                if (score > 0.5f) {
+
+                // Precision gate:
+                // For small corpora (<= 3 notes), score >= 0.5 with at least 1 matched term
+                // For realistic corpora (> 3 notes), score >= 2.2 with at least 2 distinct matched terms, OR score >= 3.5
+                val qualifies = if (notes.size <= 3) {
+                    score >= minScoreThreshold && matchedTerms >= 1
+                } else {
+                    (score >= minScoreThreshold && matchedTerms >= 2) || (score >= 3.5f)
+                }
+
+                if (qualifies) {
                     pairs.add(Triple(pairKey.first, pairKey.second, score))
                     seen.add(pairKey)
                 }
@@ -320,7 +390,8 @@ class GraphEngine @Inject constructor(
             }
         }
 
-        // Persist all unique edges to the encrypted note_links Room table
+        // Persist all unique edges to the encrypted note_links Room table,
+        // and reconcile stale rule-generated links so removed connections don't linger forever
         val now = System.currentTimeMillis()
         val linkEntities = edges.map { edge ->
             val linkType = when {
@@ -340,7 +411,13 @@ class GraphEngine @Inject constructor(
                 createdAt = now
             )
         }
+        val activeRuleIds = linkEntities.filter { it.createdBy == "rule" }.map { it.id }
         try {
+            if (activeRuleIds.isNotEmpty()) {
+                noteLinkDao.deleteStaleRuleLinks(activeRuleIds)
+            } else {
+                noteLinkDao.deleteAllRuleLinks()
+            }
             noteLinkDao.insertLinks(linkEntities)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to persist note links to Room", e)
