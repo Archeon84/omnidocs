@@ -162,4 +162,30 @@ class LocalChatTest {
         assertTrue(prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nHow are you?<|eot_id|>"))
         assertTrue(prompt.endsWith("<|start_header_id|>assistant<|end_header_id|>\n\n"))
     }
+
+    @Test
+    fun `multi-turn prompt formatting includes attachment text context`() {
+        val userPromptWithAttachment = """
+            [Attached Document: test_doc.pdf]
+            Document Content:
+            Quarterly revenue grew by 15%.
+
+            User Request:
+            What was the quarterly revenue growth?
+        """.trimIndent()
+
+        val messages = listOf(
+            "user" to userPromptWithAttachment
+        )
+
+        val prompt = PromptBuilder.buildMultiTurnPrompt(
+            format = PromptFormat.CHATML,
+            systemPrompt = "You are an offline assistant.",
+            messages = messages
+        )
+
+        assertTrue(prompt.contains("[Attached Document: test_doc.pdf]"))
+        assertTrue(prompt.contains("Quarterly revenue grew by 15%."))
+        assertTrue(prompt.contains("What was the quarterly revenue growth?"))
+    }
 }

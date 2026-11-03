@@ -30,5 +30,9 @@ data class ChatMessageEntity(
     val tokenCount: Int,
     val tokPerSec: Double,
     val modelName: String,
-    val isError: Boolean
+    val isError: Boolean,
+    val attachmentName: String? = null,
+    val attachmentType: String? = null,
+    val attachmentUri: String? = null,
+    val attachmentExtractedText: String? = null
 )

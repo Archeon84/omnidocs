@@ -160,5 +160,20 @@ class LocalChatStorageTest {
         val messageEntity = message.toEntity()
         val messageBack = messageEntity.toModel()
         assertEquals(message, messageBack)
+
+        val messageWithAttachment = LocalChatMessage(
+            id = "m-2",
+            sessionId = "s-1",
+            role = "user",
+            content = "Summarize this PDF",
+            timestamp = 10000L,
+            attachmentName = "document.pdf",
+            attachmentType = "document",
+            attachmentUri = "file:///path/to/document.pdf",
+            attachmentExtractedText = "Extracted contents"
+        )
+        val attachEntity = messageWithAttachment.toEntity()
+        val attachBack = attachEntity.toModel()
+        assertEquals(messageWithAttachment, attachBack)
     }
 }

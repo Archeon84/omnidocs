@@ -1,5 +1,7 @@
 package com.omnidocs.app.ui.screens.localchat
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnidocs.app.ai.LlamaCppService
@@ -18,6 +20,7 @@ import com.omnidocs.app.data.local.LocalChatMessage
 import com.omnidocs.app.data.local.LocalChatSession
 import com.omnidocs.app.data.local.LocalChatStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,6 +38,14 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 
+data class PendingChatAttachment(
+    val uri: Uri,
+    val name: String,
+    val mimeType: String,
+    val type: String, // "image", "audio", "document"
+    val size: Long
+)
+
 /**
  * ViewModel powering the dedicated, airtight offline Local LLM chat experience.
  * Only interacts with local on-device neural runtimes (Google LiteRT-LM / ARM NEON)
@@ -46,6 +57,8 @@ class LocalChatViewModel @Inject constructor(
     private val modelDownloadManager: ModelDownloadManager,
     private val modelPreferences: ModelPreferences,
     private val localChatStorage: LocalChatStorage,
+    private val chatAttachmentProcessor: ChatAttachmentProcessor,
+    @ApplicationContext private val context: Context,
     thermalBudgetManager: ThermalBudgetManager? = null
 ) : ViewModel() {
 
@@ -74,6 +87,12 @@ class LocalChatViewModel @Inject constructor(
 
     private val _activeModel = MutableStateFlow<ModelInfo?>(null)
     val activeModel: StateFlow<ModelInfo?> = _activeModel.asStateFlow()
+
+    private val _pendingAttachment = MutableStateFlow<PendingChatAttachment?>(null)
+    val pendingAttachment: StateFlow<PendingChatAttachment?> = _pendingAttachment.asStateFlow()
+
+    private val _isExtractingAttachment = MutableStateFlow(false)
+    val isExtractingAttachment: StateFlow<Boolean> = _isExtractingAttachment.asStateFlow()
 
     private val _snackbarEvent = MutableSharedFlow<String>()
     val snackbarEvent: SharedFlow<String> = _snackbarEvent.asSharedFlow()
@@ -209,32 +228,99 @@ class LocalChatViewModel @Inject constructor(
         }
     }
 
+    fun setPendingAttachment(attachment: PendingChatAttachment) {
+        _pendingAttachment.value = attachment
+    }
+
+    fun clearPendingAttachment() {
+        _pendingAttachment.value = null
+    }
+
     fun sendMessage(promptText: String) {
         val trimmed = promptText.trim()
-        if (trimmed.isBlank() || _isGenerating.value) return
+        val attachment = _pendingAttachment.value
+        if ((trimmed.isBlank() && attachment == null) || _isGenerating.value || _isExtractingAttachment.value) return
 
         val session = _currentSession.value ?: run {
             createNewSession()
             return
         }
 
-        val userMessage = LocalChatMessage(
-            id = UUID.randomUUID().toString(),
-            sessionId = session.id,
-            role = "user",
-            content = trimmed,
-            timestamp = System.currentTimeMillis()
-        )
+        if (attachment != null) {
+            _isExtractingAttachment.value = true
+            _pendingAttachment.value = null
 
-        val updatedList = _messages.value + userMessage
-        _messages.value = updatedList
-        _isGenerating.value = true
-        _streamingText.value = ""
-        _tokensGenerated.value = 0
-        _tokensPerSecond.value = 0.0
-        _generationDurationMs.value = 0L
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val savedFile = chatAttachmentProcessor.copyAttachmentToInternalStorage(context, attachment.uri, attachment.name)
+                    val extractedText = chatAttachmentProcessor.extractText(
+                        context = context,
+                        file = savedFile,
+                        fileName = attachment.name,
+                        mimeType = attachment.mimeType,
+                        type = attachment.type
+                    )
 
-        executeInference(session, updatedList)
+                    withContext(Dispatchers.Main) {
+                        _isExtractingAttachment.value = false
+                        val userPrompt = if (trimmed.isNotBlank()) {
+                            trimmed
+                        } else {
+                            when (attachment.type) {
+                                "image" -> "Please analyze this image and explain what is in it."
+                                "audio" -> "Please summarize and analyze this audio recording."
+                                else -> "Please analyze and summarize this document."
+                            }
+                        }
+
+                        val userMessage = LocalChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            sessionId = session.id,
+                            role = "user",
+                            content = userPrompt,
+                            timestamp = System.currentTimeMillis(),
+                            attachmentName = attachment.name,
+                            attachmentType = attachment.type,
+                            attachmentUri = Uri.fromFile(savedFile).toString(),
+                            attachmentExtractedText = extractedText
+                        )
+
+                        val updatedList = _messages.value + userMessage
+                        _messages.value = updatedList
+                        _isGenerating.value = true
+                        _streamingText.value = ""
+                        _tokensGenerated.value = 0
+                        _tokensPerSecond.value = 0.0
+                        _generationDurationMs.value = 0L
+
+                        executeInference(session, updatedList)
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        _isExtractingAttachment.value = false
+                        _snackbarEvent.emit("Failed to process attachment: ${e.message}")
+                    }
+                }
+            }
+        } else {
+            val userMessage = LocalChatMessage(
+                id = UUID.randomUUID().toString(),
+                sessionId = session.id,
+                role = "user",
+                content = trimmed,
+                timestamp = System.currentTimeMillis()
+            )
+
+            val updatedList = _messages.value + userMessage
+            _messages.value = updatedList
+            _isGenerating.value = true
+            _streamingText.value = ""
+            _tokensGenerated.value = 0
+            _tokensPerSecond.value = 0.0
+            _generationDurationMs.value = 0L
+
+            executeInference(session, updatedList)
+        }
     }
 
     fun regenerateLast() {
@@ -317,8 +403,28 @@ class LocalChatViewModel @Inject constructor(
                 return@launch
             }
 
-            // Build multi-turn prompt from history
-            val conversationPairs = currentHistory.map { it.role to it.content }
+            // Build multi-turn prompt from history, including any attachment context in user turns
+            val conversationPairs = currentHistory.map { msg ->
+                val fullText = if (msg.role == "user" && !msg.attachmentExtractedText.isNullOrBlank()) {
+                    val label = when (msg.attachmentType) {
+                        "image" -> "Image"
+                        "audio" -> "Audio Recording"
+                        "document" -> "Document"
+                        else -> "File"
+                    }
+                    """
+                    [Attached $label: ${msg.attachmentName ?: "Attachment"}]
+                    $label Content:
+                    ${msg.attachmentExtractedText}
+
+                    User Request:
+                    ${msg.content}
+                    """.trimIndent()
+                } else {
+                    msg.content
+                }
+                msg.role to fullText
+            }
             val formattedPrompt = PromptBuilder.buildMultiTurnPrompt(
                 format = model.promptFormat,
                 systemPrompt = session.systemPrompt,

@@ -99,7 +99,11 @@ data class LocalChatMessage(
     val tokenCount: Int = 0,
     val tokPerSec: Double = 0.0,
     val modelName: String = "",
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val attachmentName: String? = null,
+    val attachmentType: String? = null,
+    val attachmentUri: String? = null,
+    val attachmentExtractedText: String? = null
 )
 
 fun ChatSessionEntity.toModel(): LocalChatSession = LocalChatSession(
@@ -140,7 +144,11 @@ fun ChatMessageEntity.toModel(): LocalChatMessage = LocalChatMessage(
     tokenCount = tokenCount,
     tokPerSec = tokPerSec,
     modelName = modelName,
-    isError = isError
+    isError = isError,
+    attachmentName = attachmentName,
+    attachmentType = attachmentType,
+    attachmentUri = attachmentUri,
+    attachmentExtractedText = attachmentExtractedText
 )
 
 fun LocalChatMessage.toEntity(): ChatMessageEntity = ChatMessageEntity(
@@ -153,7 +161,11 @@ fun LocalChatMessage.toEntity(): ChatMessageEntity = ChatMessageEntity(
     tokenCount = tokenCount,
     tokPerSec = tokPerSec,
     modelName = modelName,
-    isError = isError
+    isError = isError,
+    attachmentName = attachmentName,
+    attachmentType = attachmentType,
+    attachmentUri = attachmentUri,
+    attachmentExtractedText = attachmentExtractedText
 )
 
 /**
