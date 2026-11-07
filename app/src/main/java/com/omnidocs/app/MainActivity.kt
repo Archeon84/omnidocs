@@ -53,10 +53,24 @@ class MainActivity : FragmentActivity() {
     private var pendingQuickAction = mutableStateOf<String?>(null)
     private var pendingSharePayload = mutableStateOf<ShareIntentPayload?>(null)
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
 
         if (savedInstanceState == null) {
             parseIncomingIntent(intent)
@@ -123,10 +137,20 @@ class MainActivity : FragmentActivity() {
         when (intent.action) {
             Intent.ACTION_VIEW -> {
                 val data = intent.data ?: return
-                if (data.scheme == "omnidocs" && data.host == "quick_action") {
-                    val action = data.lastPathSegment
-                    if (!action.isNullOrBlank()) {
-                        pendingQuickAction.value = action
+                if (data.scheme == "omnidocs") {
+                    when (data.host) {
+                        "quick_action" -> {
+                            val action = data.lastPathSegment
+                            if (!action.isNullOrBlank()) {
+                                pendingQuickAction.value = action
+                            }
+                        }
+                        "note" -> {
+                            val noteId = data.lastPathSegment
+                            if (!noteId.isNullOrBlank()) {
+                                pendingQuickAction.value = "open_note:$noteId"
+                            }
+                        }
                     }
                 }
             }
@@ -191,6 +215,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        com.omnidocs.app.widget.OmniDocsWidgetManager.notifyDataChanged(this)
         if (securityPreferences.isAppLockEnabled.value) {
             val now = System.currentTimeMillis()
             if (lastBackgroundTimestamp > 0L && (now - lastBackgroundTimestamp > lockGracePeriodMs)) {

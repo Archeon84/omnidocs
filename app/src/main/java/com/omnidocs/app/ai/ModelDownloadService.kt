@@ -22,8 +22,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-private const val CHANNEL_ID = "model_download_channel"
-private const val NOTIFICATION_ID = 9001
+import com.omnidocs.app.notification.OmniNotificationManager
+
+private const val CHANNEL_ID = OmniNotificationManager.CHANNEL_MODEL_DOWNLOADS
+private const val NOTIFICATION_ID = OmniNotificationManager.NOTIFICATION_ID_MODEL_DOWNLOAD
 private const val EXTRA_MODEL_NAME = "extra_model_name"
 
 @AndroidEntryPoint

@@ -82,12 +82,17 @@ fun NotesNavHost(
     androidx.compose.runtime.LaunchedEffect(pendingQuickAction) {
         val action = pendingQuickAction ?: return@LaunchedEffect
         onConsumeQuickAction()
-        when (action) {
-            "new_note" -> navController.navigate(Screen.Editor.createRoute(templateId = "blank"))
-            "voice_capture" -> navController.navigate(Screen.Voice.route)
-            "ocr_scan" -> navController.navigate(Screen.Ocr.route)
-            "ask" -> navController.navigate(Screen.Ask.route)
-            "study" -> navController.navigate(Screen.Study.createRoute(null))
+        when {
+            action == "new_note" -> navController.navigate(Screen.Editor.createRoute(templateId = "blank"))
+            action == "voice_capture" -> navController.navigate(Screen.Voice.route)
+            action == "ocr_scan" -> navController.navigate(Screen.Ocr.route)
+            action == "ask" -> navController.navigate(Screen.Ask.route)
+            action == "study" -> navController.navigate(Screen.Study.createRoute(null))
+            action == "tasks" -> navController.navigate(Screen.Tasks.route)
+            action.startsWith("open_note:") -> {
+                val noteId = action.removePrefix("open_note:")
+                navController.navigate(Screen.Editor.createRoute(noteId = noteId))
+            }
         }
     }
 

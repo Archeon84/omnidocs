@@ -27,23 +27,18 @@ class AgentJobWorker(
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun getForegroundInfo(): androidx.work.ForegroundInfo {
-        val channelId = "agent_jobs_channel"
-        val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val channel = android.app.NotificationChannel(
-                channelId,
-                "Background Processing",
-                android.app.NotificationManager.IMPORTANCE_LOW
-            )
-            notificationManager.createNotificationChannel(channel)
-        }
-        val notification = androidx.core.app.NotificationCompat.Builder(applicationContext, channelId)
-            .setContentTitle("OmniDocs")
-            .setContentText("Processing note intelligence...")
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+        com.omnidocs.app.notification.OmniNotificationManager.createNotificationChannels(applicationContext)
+        val notification = androidx.core.app.NotificationCompat.Builder(
+            applicationContext,
+            com.omnidocs.app.notification.OmniNotificationManager.CHANNEL_AGENT_WORKFLOW
+        )
+            .setContentTitle("OmniDocs Intelligence")
+            .setContentText("Processing document knowledge in background...")
+            .setSmallIcon(com.omnidocs.app.R.drawable.ic_widget_ai)
             .setOngoing(true)
+            .setCategory(androidx.core.app.NotificationCompat.CATEGORY_PROGRESS)
             .build()
-        return androidx.work.ForegroundInfo(9002, notification)
+        return androidx.work.ForegroundInfo(com.omnidocs.app.notification.OmniNotificationManager.NOTIFICATION_ID_AGENT_WORKFLOW, notification)
     }
 
     override suspend fun doWork(): Result {
@@ -63,7 +58,19 @@ class AgentJobWorker(
 
                     val coordinator = entryPoint.importPipelineCoordinator()
                     val result = coordinator.runImportPipeline(uri, mimeType, fileName)
-                    if (result.isSuccess) Result.success() else Result.failure()
+                    if (result.isSuccess) {
+                        com.omnidocs.app.notification.OmniNotificationManager.postAgentCompletedNotification(
+                            context = applicationContext,
+                            notificationId = com.omnidocs.app.notification.OmniNotificationManager.NOTIFICATION_ID_AGENT_BASE + (result.jobId.hashCode() and 0x7FFF),
+                            title = "Document Imported",
+                            content = "Processed '$fileName' into '${result.noteTitle ?: "new note"}' (${result.taskCount} tasks extracted).",
+                            noteId = result.noteId
+                        )
+                        com.omnidocs.app.widget.OmniDocsWidgetManager.notifyDataChanged(applicationContext)
+                        Result.success()
+                    } else {
+                        Result.failure()
+                    }
                 }
                 "WORKFLOW_MEETING_RECORDING" -> {
                     val storageKey = inputData.getString(KEY_STORAGE_KEY) ?: return Result.failure()
@@ -71,7 +78,19 @@ class AgentJobWorker(
 
                     val coordinator = entryPoint.meetingPipelineCoordinator()
                     val result = coordinator.runMeetingPipeline(storageKey = storageKey, meetingTitle = title)
-                    if (result.isSuccess) Result.success() else Result.failure()
+                    if (result.isSuccess) {
+                        com.omnidocs.app.notification.OmniNotificationManager.postAgentCompletedNotification(
+                            context = applicationContext,
+                            notificationId = com.omnidocs.app.notification.OmniNotificationManager.NOTIFICATION_ID_AGENT_BASE + (result.jobId.hashCode() and 0x7FFF),
+                            title = "Meeting Notes Ready",
+                            content = "Generated notes for '${result.noteTitle ?: title}' (${result.taskCount} tasks extracted).",
+                            noteId = result.noteId
+                        )
+                        com.omnidocs.app.widget.OmniDocsWidgetManager.notifyDataChanged(applicationContext)
+                        Result.success()
+                    } else {
+                        Result.failure()
+                    }
                 }
                 "WORKFLOW_WORKSPACE_HEALTH_SCAN" -> {
                     val coordinator = entryPoint.healthCoordinator()

@@ -35,7 +35,9 @@ class NotesApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.omnidocs.app.notification.OmniNotificationManager.createNotificationChannels(this)
         workManagerCoordinator.schedulePeriodicDailyHealthScan()
+        workManagerCoordinator.schedulePeriodicReminders()
         preloadGenerativeModel()
     }
 

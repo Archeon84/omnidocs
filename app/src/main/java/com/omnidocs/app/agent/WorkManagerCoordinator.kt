@@ -109,6 +109,25 @@ class WorkManagerCoordinator @Inject constructor(
     }
 
     /**
+     * Schedules periodic check for due action items and flashcard review intervals.
+     */
+    fun schedulePeriodicReminders() {
+        val constraints = Constraints.Builder()
+            .setRequiresBatteryNotLow(true)
+            .build()
+
+        val periodicRequest = PeriodicWorkRequestBuilder<com.omnidocs.app.notification.TaskReminderWorker>(4, TimeUnit.HOURS)
+            .setConstraints(constraints)
+            .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            "periodic_task_reminders",
+            ExistingPeriodicWorkPolicy.KEEP,
+            periodicRequest
+        )
+    }
+
+    /**
      * Cancels an enqueued background work request.
      */
     fun cancelWork(workId: UUID) {

@@ -165,6 +165,11 @@ class VoiceCaptureManager @Inject constructor(
             }
 
             _isListening.value = true
+            try {
+                VoiceRecordingService.start(context, recordingStartTime)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start foreground VoiceRecordingService", e)
+            }
 
             if (!useSystemRecognizer && activeEngine != null) {
                 activeEngine?.startListening(
@@ -208,6 +213,11 @@ class VoiceCaptureManager @Inject constructor(
                 override fun onReadyForSpeech(params: Bundle?) {
                     if (!isCurrentSession()) return
                     _isListening.value = true
+            try {
+                VoiceRecordingService.start(context, recordingStartTime)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start foreground VoiceRecordingService", e)
+            }
                     _error.value = null
                 }
 
@@ -313,6 +323,11 @@ class VoiceCaptureManager @Inject constructor(
         }
         _isListening.value = false
         _liveAudioLevel.value = 0f
+        try {
+            VoiceRecordingService.stop(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop foreground VoiceRecordingService", e)
+        }
 
         if (finalText.isNotBlank()) {
             sessionText = if (sessionText.isBlank()) finalText else "$sessionText $finalText"
@@ -332,6 +347,11 @@ class VoiceCaptureManager @Inject constructor(
         _transcript.value = ""
         _liveAudioLevel.value = 0f
         _error.value = null
+        try {
+            VoiceRecordingService.stop(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop foreground VoiceRecordingService", e)
+        }
     }
 
     fun clearError() {

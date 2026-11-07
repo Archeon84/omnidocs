@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -85,11 +86,28 @@
                 android:resource="@xml/quick_capture_widget_info" />
         </receiver>
 
+        <!-- Widget Dynamic Collection Service -->
+        <service
+            android:name=".widget.OmniDocsWidgetService"
+            android:permission="android:permission.BIND_REMOTEVIEWS"
+            android:exported="false" />
+
+        <!-- Notification Task Action Receiver -->
+        <receiver
+            android:name=".notification.TaskActionReceiver"
+            android:exported="false" />
+
+        <!-- Foreground Microphone Voice Recording Service -->
+        <service
+            android:name=".voice.VoiceRecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- Android Quick Settings Tile for 1-Tap Voice Note -->
         <service
             android:name=".widget.VoiceNoteQuickTileService"
             android:exported="true"
-            android:icon="@mipmap/ic_launcher"
+            android:icon="@drawable/ic_widget_mic"
             android:label="@string/quick_tile_voice_note"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>

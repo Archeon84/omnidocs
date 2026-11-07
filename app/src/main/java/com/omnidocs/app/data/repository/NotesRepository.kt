@@ -1,5 +1,7 @@
 package com.omnidocs.app.data.repository
 
+import android.content.Context
+import android.util.Log
 import androidx.room.withTransaction
 import com.omnidocs.app.ai.BackgroundInferenceDispatcher
 import com.omnidocs.app.data.local.ContentBlockDao
@@ -15,18 +17,20 @@ import com.omnidocs.app.domain.model.Note
 import com.omnidocs.app.search.EmbeddingService
 import com.omnidocs.app.util.MarkdownCodec
 import com.omnidocs.app.voice.RecordingStorage
+import com.omnidocs.app.widget.OmniDocsWidgetManager
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import android.util.Log
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class NotesRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val noteDao: NoteDao,
     private val recordingDao: RecordingDao,
     private val contentBlockDao: ContentBlockDao,
@@ -120,16 +124,19 @@ class NotesRepository @Inject constructor(
         )
         noteDao.insertNote(note)
         reindexOnSave(note)
+        OmniDocsWidgetManager.notifyDataChanged(context)
         return note.toDomain()
     }
 
     suspend fun updateNote(note: Note) {
         noteDao.updateNote(note.toEntity())
         reindexOnSave(note.toEntity())
+        OmniDocsWidgetManager.notifyDataChanged(context)
     }
 
     suspend fun updateNoteMetadataOnly(note: Note) {
         noteDao.updateNote(note.toEntity())
+        OmniDocsWidgetManager.notifyDataChanged(context)
     }
 
     /**
@@ -195,6 +202,7 @@ class NotesRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e("NotesRepository", "Failed to clean up flashcards for deleted notes", e)
         }
+        OmniDocsWidgetManager.notifyDataChanged(context)
     }
 
     /**
